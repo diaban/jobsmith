@@ -11,6 +11,7 @@ from agent_oo.core.registry import CapabilityRegistry
 from agent_oo.examples.banking.capabilities.refs import RefsCapability
 from agent_oo.examples.banking.capabilities.search import SearchCapability
 from agent_oo.examples.banking.capabilities.vision import VisionCapability
+from agent_oo.examples.banking.profile import BANKING_PROFILE
 
 
 def banking_builder(llm: FakeLLM, checkpointer, store, *, search=None) -> AgentBuilder:
@@ -20,7 +21,10 @@ def banking_builder(llm: FakeLLM, checkpointer, store, *, search=None) -> AgentB
         VisionCapability(llm, FakeS3({"img1": b"bytes"})),
         RefsCapability(search),
     ])
-    return AgentBuilder(Deps(llm=llm), registry, checkpointer=checkpointer, store=store)
+    return AgentBuilder(
+        Deps(llm=llm), registry,
+        profile=BANKING_PROFILE, checkpointer=checkpointer, store=store,
+    )
 
 
 async def test_happy_path_search_only(checkpointer, store):

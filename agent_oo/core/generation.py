@@ -12,14 +12,15 @@ from __future__ import annotations
 from typing import Any
 
 from .deps import Deps
+from .profile import AgentProfile
 from .registry import CapabilityRegistry
 from .state import AgentState, NodeError
 
 
 class ContextMerger:
-    def __init__(self, registry: CapabilityRegistry, *, empty_message: str = "(no context available)"):
+    def __init__(self, registry: CapabilityRegistry, profile: AgentProfile):
         self.registry = registry
-        self.empty_message = empty_message
+        self.empty_message = profile.context_empty_message
 
     async def run(self, state: AgentState) -> dict:
         plan = state.get("plan")
@@ -38,21 +39,16 @@ class ContextMerger:
 
 
 class Generator:
-    SYSTEM_PROMPT = (
-        "You are a banking assistant. Answer the banker's query using ONLY the "
-        "provided context. Cite sources inline as [doc_id] when relevant. "
-        "If the context is insufficient, say so explicitly. Be concise and precise."
-    )
-
-    def __init__(self, deps: Deps, *, temperature: float = 0.2):
+    def __init__(self, deps: Deps, profile: AgentProfile):
         self.deps = deps
-        self.temperature = temperature
+        self.system_prompt = profile.generator_system_prompt
+        self.temperature = profile.generation_temperature
 
     async def run(self, state: AgentState) -> dict:
         try:
             answer = await self.deps.llm.chat(
                 messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
+                    {"role": "system", "content": self.system_prompt},
                     {
                         "role": "user",
                         "content": (
@@ -75,16 +71,10 @@ class Generator:
 
 
 class Refiner:
-    SYSTEM_PROMPT_TEMPLATE = (
-        "You previously produced an answer that failed validation.\n"
-        "Validation issues: {issues}\n"
-        "Re-write the answer fixing these issues. Keep using only the provided "
-        "context and inline [doc_id] citations."
-    )
-
-    def __init__(self, deps: Deps, *, temperature: float = 0.2):
+    def __init__(self, deps: Deps, profile: AgentProfile):
         self.deps = deps
-        self.temperature = temperature
+        self.prompt_template = profile.refiner_prompt_template
+        self.temperature = profile.generation_temperature
 
     async def run(self, state: AgentState) -> dict:
         issues = ", ".join(state.get("validation_issues", []))
@@ -93,7 +83,7 @@ class Refiner:
                 messages=[
                     {
                         "role": "system",
-                        "content": self.SYSTEM_PROMPT_TEMPLATE.format(issues=issues),
+                        "content": self.prompt_template.format(issues=issues),
                     },
                     {
                         "role": "user",

@@ -13,32 +13,14 @@ import json
 from typing import Any
 
 from .deps import Deps
+from .profile import DEFAULT_PLANNER_TEMPLATE
 from .registry import CapabilityRegistry
 from .state import AgentState, NodeError, Plan
 
 
 class Planner:
 
-    DEFAULT_TEMPLATE = """You are the planner of an assistant agent.
-Given a user's request, decide which of the available capabilities are needed
-and in what order. Output a JSON object describing a DAG.
-
-Available capabilities:
-{capabilities}
-
-Schema:
-{{
-  "steps": [
-    {{"capability": "<name>", "depends_on": [<other capability names>]}}
-  ],
-  "rationale": "<short explanation>"
-}}
-
-Rules:
-- Include only capabilities that are actually needed.
-- depends_on values must refer to other steps in the same plan.
-- The DAG must be acyclic.
-- Return ONLY the JSON object, no prose, no markdown fences."""
+    DEFAULT_TEMPLATE = DEFAULT_PLANNER_TEMPLATE
 
     def __init__(
         self,

@@ -101,7 +101,7 @@ async def test_partial_success_escalates(checkpointer, store):
 async def test_refine_loop_recovers(checkpointer, store):
     llm = FakeLLM({
         "planner": plan_json("first"),
-        "banking assistant": ["too short", "Now a sufficiently long refined answer indeed."],
+        "ONLY the provided": ["too short", "Now a sufficiently long refined answer indeed."],
         "failed validation": "Now a sufficiently long refined answer indeed.",
     })
     registry = CapabilityRegistry([EchoCapability("first", "hello")])

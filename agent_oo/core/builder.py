@@ -24,6 +24,7 @@ from .errors import Escalator, ExecutionError, UserErrorEmitter
 from .executor import Executor
 from .generation import ContextMerger, Generator, PostProcessor, Refiner
 from .planner import Planner
+from .profile import AgentProfile
 from .registry import CapabilityRegistry
 from .state import AgentState
 from .validate import InputValidator, OutputValidator
@@ -41,26 +42,29 @@ class AgentBuilder:
         deps: Deps,
         registry: CapabilityRegistry,
         *,
+        profile: AgentProfile | None = None,
         checkpointer: Any = None,
         store: Any = None,
     ):
         self.deps = deps
         self.registry = registry
+        self.profile = profile or AgentProfile()
         self.checkpointer = checkpointer
         self.store = store
 
         # --- Step instances ---
-        self.input_validator  = InputValidator()
-        self.planner          = Planner(deps, registry)
+        self.input_validator  = InputValidator(self.profile)
+        self.planner          = Planner(deps, registry,
+                                        prompt_template=self.profile.planner_prompt_template)
         self.executor         = Executor(registry)
-        self.context_merger   = ContextMerger(registry)
-        self.generator        = Generator(deps)
-        self.output_validator = OutputValidator()
-        self.refiner          = Refiner(deps)
+        self.context_merger   = ContextMerger(registry, self.profile)
+        self.generator        = Generator(deps, self.profile)
+        self.output_validator = OutputValidator(self.profile)
+        self.refiner          = Refiner(deps, self.profile)
         self.post_processor   = PostProcessor(store)
         self.execution_error  = ExecutionError()
-        self.escalator        = Escalator(store)
-        self.user_error       = UserErrorEmitter()
+        self.escalator        = Escalator(store, self.profile)
+        self.user_error       = UserErrorEmitter(self.profile)
 
     # ---- Conditional edge functions ----
 
@@ -163,5 +167,14 @@ class AgentBuilder:
 
 
 # Convenience function
-def build_agent(deps: Deps, registry: CapabilityRegistry, *, checkpointer: Any = None, store: Any = None):
-    return AgentBuilder(deps, registry, checkpointer=checkpointer, store=store).build()
+def build_agent(
+    deps: Deps,
+    registry: CapabilityRegistry,
+    *,
+    profile: AgentProfile | None = None,
+    checkpointer: Any = None,
+    store: Any = None,
+):
+    return AgentBuilder(
+        deps, registry, profile=profile, checkpointer=checkpointer, store=store
+    ).build()
