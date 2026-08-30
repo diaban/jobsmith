@@ -5,11 +5,9 @@ Four classes:
   result (render_context), iterating in PLAN order for determinism
 - Generator:     LLM call to produce the draft answer
 - Refiner:       LLM call to fix a rejected draft
-- PostProcessor: persists to the long-term store
+- PostProcessor: marks the terminal answer (persistence lives in the job layer)
 """
 from __future__ import annotations
-
-from typing import Any
 
 from .deps import Deps
 from .profile import AgentProfile
@@ -111,18 +109,8 @@ class Refiner:
 
 
 class PostProcessor:
-    def __init__(self, store: Any):
-        self.store = store
+    """Marks the terminal answer. Persistence is the job layer's concern —
+    JobManager observes this node's update via astream and stores the answer."""
 
     async def run(self, state: AgentState) -> dict:
-        final = state["draft_answer"]
-        await self.store.aput(
-            ("answers", state["job_id"]),
-            state["job_id"],
-            {
-                "query": state["query"],
-                "answer": final,
-                "plan": state.get("plan"),
-            },
-        )
-        return {"final_answer": final, "terminal_kind": "answer"}
+        return {"final_answer": state["draft_answer"], "terminal_kind": "answer"}

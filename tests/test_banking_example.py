@@ -23,7 +23,7 @@ def banking_builder(llm: FakeLLM, checkpointer, store, *, search=None) -> AgentB
     ])
     return AgentBuilder(
         Deps(llm=llm), registry,
-        profile=BANKING_PROFILE, checkpointer=checkpointer, store=store,
+        profile=BANKING_PROFILE, checkpointer=checkpointer,
     )
 
 
@@ -131,7 +131,7 @@ async def test_search_failure_escalates_with_partial_refs(checkpointer, store):
         config={"configurable": {"thread_id": "t6"}},
     )
     assert out["terminal_kind"] == "escalated"
-    # escalation payload persisted for a human analyst
-    stored = await store.aget(("escalations", "t6"), "t6")
-    assert stored is not None
-    assert stored.value["partial_results"]["refs"]["ok"] is True
+    assert out["user_error_message"].startswith("Votre demande a été transmise")
+    # escalation payload available in state for the job layer to persist
+    assert out["results"]["refs"]["ok"] is True
+    assert out["results"]["search"]["ok"] is False

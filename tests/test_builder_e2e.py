@@ -44,7 +44,7 @@ async def test_two_capabilities_to_final_answer(checkpointer, store):
         EchoCapability("first", "hello"),
         EchoCapability("second", "world"),
     ])
-    builder = AgentBuilder(Deps(llm=llm), registry, checkpointer=checkpointer, store=store)
+    builder = AgentBuilder(Deps(llm=llm), registry, checkpointer=checkpointer)
     graph = builder.build()
     out = await graph.ainvoke(
         {"query": "do the thing", "job_id": "e1"},
@@ -70,7 +70,7 @@ async def test_all_capabilities_fail_routes_to_user_error(checkpointer, store):
             raise RuntimeError("llm down")
 
     registry = CapabilityRegistry([EchoCapability("only", "x", fail=True)])
-    graph = build_agent(Deps(llm=ExplodingLLM()), registry, checkpointer=checkpointer, store=store)
+    graph = build_agent(Deps(llm=ExplodingLLM()), registry, checkpointer=checkpointer)
     out = await graph.ainvoke(
         {"query": "q", "job_id": "e2"},
         config={"configurable": {"thread_id": "e2"}},
@@ -90,7 +90,7 @@ async def test_partial_success_escalates(checkpointer, store):
         EchoCapability("good", "ok"),
         EchoCapability("bad", "x", fail=True),
     ])
-    graph = build_agent(Deps(llm=ExplodingGenLLM()), registry, checkpointer=checkpointer, store=store)
+    graph = build_agent(Deps(llm=ExplodingGenLLM()), registry, checkpointer=checkpointer)
     out = await graph.ainvoke(
         {"query": "q", "job_id": "e3"},
         config={"configurable": {"thread_id": "e3"}},
@@ -105,7 +105,7 @@ async def test_refine_loop_recovers(checkpointer, store):
         "failed validation": "Now a sufficiently long refined answer indeed.",
     })
     registry = CapabilityRegistry([EchoCapability("first", "hello")])
-    graph = build_agent(Deps(llm=llm), registry, checkpointer=checkpointer, store=store)
+    graph = build_agent(Deps(llm=llm), registry, checkpointer=checkpointer)
     out = await graph.ainvoke(
         {"query": "q", "job_id": "e4"},
         config={"configurable": {"thread_id": "e4"}},
@@ -119,6 +119,6 @@ async def test_registry_frozen_after_build(checkpointer, store):
     import pytest
 
     registry = CapabilityRegistry([EchoCapability("first", "x")])
-    build_agent(Deps(llm=FakeLLM()), registry, checkpointer=checkpointer, store=store)
+    build_agent(Deps(llm=FakeLLM()), registry, checkpointer=checkpointer)
     with pytest.raises(RuntimeError, match="frozen"):
         registry.register(EchoCapability("second", "y"))

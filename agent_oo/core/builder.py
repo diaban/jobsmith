@@ -44,13 +44,11 @@ class AgentBuilder:
         *,
         profile: AgentProfile | None = None,
         checkpointer: Any = None,
-        store: Any = None,
     ):
         self.deps = deps
         self.registry = registry
         self.profile = profile or AgentProfile()
         self.checkpointer = checkpointer
-        self.store = store
 
         # --- Step instances ---
         self.input_validator  = InputValidator(self.profile)
@@ -61,9 +59,9 @@ class AgentBuilder:
         self.generator        = Generator(deps, self.profile)
         self.output_validator = OutputValidator(self.profile)
         self.refiner          = Refiner(deps, self.profile)
-        self.post_processor   = PostProcessor(store)
+        self.post_processor   = PostProcessor()
         self.execution_error  = ExecutionError()
-        self.escalator        = Escalator(store, self.profile)
+        self.escalator        = Escalator(self.profile)
         self.user_error       = UserErrorEmitter(self.profile)
 
     # ---- Conditional edge functions ----
@@ -173,8 +171,5 @@ def build_agent(
     *,
     profile: AgentProfile | None = None,
     checkpointer: Any = None,
-    store: Any = None,
 ):
-    return AgentBuilder(
-        deps, registry, profile=profile, checkpointer=checkpointer, store=store
-    ).build()
+    return AgentBuilder(deps, registry, profile=profile, checkpointer=checkpointer).build()
