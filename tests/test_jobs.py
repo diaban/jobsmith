@@ -4,8 +4,8 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from langgraph.constants import END
 from conftest import FakeLLM, plan_json
+from langgraph.constants import END
 
 from agent_oo.core.builder import build_agent
 from agent_oo.core.capability import Capability, CapabilityBaseState, CapabilitySpec

@@ -1,7 +1,6 @@
 """Terminal error nodes."""
 from __future__ import annotations
 
-
 from .profile import AgentProfile
 from .state import AgentState
 

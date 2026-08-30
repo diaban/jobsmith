@@ -4,49 +4,67 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-`agent_oo` is a LangGraph agent for a banking assistant, built with an **object-oriented** node pattern (as opposed to the more common factory-function style). Every graph step — nodes, routers, and sub-graphs — is a class instance that owns its own `Deps` and configuration, and exposes bound methods that LangGraph registers directly as callables.
+`agent_oo` is a **domain-agnostic agent planner/executor framework** on LangGraph, written in an **object-oriented** node pattern. A user message comes in; a registry-driven planner emits a DAG of pluggable capabilities (self-describing agentic sub-graphs); a wave-based executor fans them out in parallel where dependencies allow; a generation pipeline merges their results into an answer. Each run is a persistent, trackable, cancellable **Job**. The original banking-specific agent survives as an example under `agent_oo/examples/banking/`.
 
-There is no build system, lint config, or test suite in this directory yet (no `pyproject.toml`, `requirements.txt`, or `tests/`). Treat any tooling commands as something to set up, not something to assume exists.
+## Commands
+
+```bash
+uv venv --python 3.12 .venv && uv pip install -e ".[dev]"   # setup
+.venv/bin/python -m pytest tests/ -q                        # all tests
+.venv/bin/python -m pytest tests/test_jobs.py -q            # one file
+.venv/bin/python -m pytest tests/test_planner.py::test_cycle_rejected  # one test
+.venv/bin/ruff check .                                      # lint
+.venv/bin/python -m agent_oo.examples.banking.main          # runnable demo (fakes)
+```
+
+Domain-leakage gate (must return nothing): `grep -ri "banking\|banquier\|Votre\|analyste" agent_oo/core agent_oo/jobs`
 
 ## Architecture
 
 ### The OO pattern
 
-- A class's `__init__` takes `Deps` (and any tunables like `max_retries`, `top_k`) and stores them as instance attributes.
-- Node logic is an **async instance method** (e.g. `self.planner.run`), registered with `g.add_node("planner", self.planner.run)`.
-- Conditional-edge routers are **sync instance methods** (or `@staticmethod`s), registered with `g.add_conditional_edges(...)`.
-- Sub-graphs are classes whose instances are *not* callable themselves — they expose `.build()`, which returns a compiled `CompiledGraph` that the parent graph adds as a single node (`g.add_node("subgraph_search", self.search_subgraph.build())`).
-- `AgentBuilder` (`graph.py`) is the composition root: it instantiates every step, wires nodes/edges, and holds references to each instance (useful for tests/observability — e.g. `builder.planner.SYSTEM_PROMPT`, or swapping an instance before `.build()`).
+Every graph step is a class instance owning its deps and config. Node logic is **async instance methods** registered directly (`g.add_node("planner", self.planner.run)`); routers are **sync methods**; capabilities expose `.build()` returning a compiled sub-graph mounted as one parent node. `AgentBuilder` (`core/builder.py`) is the composition root and holds references to every step instance (swap one before `.build()` in tests).
 
-### Dependency injection (`deps.py`)
+### Core concepts (read these files first)
 
-`Deps` is a frozen dataclass aggregating three `Protocol`-typed clients: `SearchEngine`, `OpenAIClient` (chat + vision), `S3Client`. No DI framework — factories/classes just close over a `Deps` instance, which makes mocking trivial in tests. The LangGraph `checkpointer` and `store` are passed separately (not part of `Deps`) since their types come directly from `langgraph`.
+- **`core/capability.py`** — `Capability` ABC + `CapabilitySpec` (name, description, JSON-schema dicts, `requires_inputs`). Capabilities take *exactly the clients they need* in their constructors; the framework never introspects them. Terminal sub-graph nodes call `_emit_success`/`_emit_failure` so every capability reports uniformly.
+- **`core/registry.py`** — `CapabilityRegistry`: single source of truth for what the agent can do. The planner prompt, executor Send targets, and builder node map all derive from it. **Frozen at `build()`** — a compiled graph's capability set is fixed; new capability ⇒ new `AgentBuilder` (compilation is milliseconds).
+- **`core/state.py`** — capability results live in one `results: dict[str, CapabilityResult]` with a dict-union reducer. Fan-in safety: each capability writes only its own key; registry-unique names + no-duplicate plan steps ⇒ disjoint keys. **Determinism caveat:** consumers must iterate in *plan order*, never dict order (ContextMerger does).
+- **`core/profile.py`** — `AgentProfile` is the entire domain surface: prompt templates, user-facing messages, input/output validation rules (plain callables), `max_refine`. Core defaults are neutral English; the banking example overrides them (French messages live *only* in `examples/banking/profile.py`).
 
-### State design (`state.py`)
-
-- `AgentState` is the **global** parent-graph state (`TypedDict, total=False`).
-- Each sub-graph declares its **own** private state (`SearchSubState`, `VisionSubState`, `RefsSubState`) to keep intermediate values (retry counters, raw API responses) out of the global state.
-- Fields written by parallel/fanned-out branches use explicit reducers: `completed_subgraphs: Annotated[list[str], add]` and `errors: Annotated[list[NodeError], add]`. Every other field has exactly one writer, so no reducer is needed.
-- `NodeError["recoverable"]` is the key control-flow signal: `False` forces a hard stop into `execution_error`; `True` just gets logged and the graph continues.
-
-### Graph flow (`graph.py`)
+### Graph flow
 
 ```
-validate_input → planner → executor_dispatch ⇄ {subgraph_search, subgraph_vision, subgraph_refs}
-                                  ↓ (all done)
-                            merge_results → generation → validate_output
-                                                            ↓ fail (retries left)   ↓ pass
-                                                          refine → generation    post_process → END
+validate_input → planner → executor_dispatch ⇄ {cap_<name> × registry}
+                                ↓ (all done)
+                          merge_results → generation → validate_output
+                                              ↑ refine ←┘ (≤ max_refine)  → post_process → END
+errors: execution_error → escalate (some ok result) | user_error (none) → END
 ```
 
-- **Planner** (`nodes/planner.py`) asks the LLM for a JSON DAG of which sub-graphs to run (`search` / `vision` / `refs`) and their dependencies, then validates it: allowed subgraph names, no duplicates, `vision` dropped if no image was supplied, and a Kahn's-algorithm cycle check.
-- **Executor** (`nodes/executor.py`) does *not* execute anything itself — `dispatch` is a pass-through node; the real logic is in `route`, a router that computes which subgraph steps are "ready" (all `depends_on` satisfied, not yet in `completed_subgraphs`) and returns a `list[langgraph.types.Send]` to fan them out in parallel. Each sub-graph, on completion, loops back to `executor_dispatch` so the next wave can be computed — this is how a dependency DAG is executed wave-by-wave without a fixed topological schedule baked into the graph.
-- **Sub-graphs** (`subgraphs/search.py`, `vision.py`, `refs.py`) each follow the same internal shape: do the work → on failure, retry with backoff → fall back to a degraded path → always end at one of `emit_success` / `emit_failure`, which appends to `completed_subgraphs` (and `errors` if failed, marked `recoverable: True`). This means a single sub-graph failing does not halt the parent graph; it degrades gracefully and is aggregated later.
-- **Generation pipeline** (`nodes/generation.py`): `ContextMerger` (deterministic, formats search/vision/refs results into one context string) → `Generator` (LLM call) → `OutputValidator` (nodes/validate.py; checks for empty/too-short answers and missing `[doc_id]` citations when search results exist) → on failure, `Refiner` rewrites the draft against the same context and loops back to `generation`, up to `state["max_refine"]` times → `PostProcessor` persists the final answer to the long-term `store` and marks `terminal_kind: "answer"`.
-- **Error/escalation path** (`nodes/errors.py`): any unrecoverable error or exhausted refine budget routes to `execution_error`, which then routes to `escalate` (if any partial sub-graph result exists — persists context to the store for a human analyst) or `user_error` (nothing recoverable at all). Both are terminal.
+- **Planner** (`core/planner.py`) renders its prompt from `registry.specs()`, validates the LLM's JSON DAG: names against the registry, drops steps whose `is_applicable(state)` is false (generalizes "vision only if image" via `spec.requires_inputs`), **prunes dropped names from surviving `depends_on`**, Kahn cycle check.
+- **Executor** (`core/executor.py`) is a pass-through node + router: computes ready capabilities each wave and returns `list[Send]`; capability nodes edge back to `executor_dispatch`. This executes an arbitrary DAG without a baked-in schedule.
+- **Two error channels**: `NodeError.recoverable=False` (planner/generation failures) hard-stops into `execution_error`; capability failures are recoverable — they land in `results` with `ok: False` and the run degrades gracefully.
 
-### Notes for future work
+### Critical invariant: capability output schema
 
-- User-facing error/escalation strings are in **French** (e.g. `"Votre requête est vide."`, `"Une erreur est survenue."`) — match that when adding new user-facing messages.
-- `nodes/__init__.py` and `subgraphs/__init__.py` are currently empty — nothing is re-exported at the package level; import directly from the submodule (`from .nodes.planner import Planner`).
-- `graph.py` keeps a `build_agent(deps, checkpointer, store)` free function for backwards compatibility with a pre-OO factory-function API; prefer `AgentBuilder` directly in new code.
+Capability `build()` MUST use `self.state_graph(PrivateState)` (which sets `output_schema=CapabilityOutputState`). Without it, the sub-graph echoes its full state (including `query`) to the parent, and two capabilities finishing in the same superstep collide with `InvalidUpdateError`. Private states extend `CapabilityBaseState`.
+
+### Jobs layer (`jobs/`)
+
+`JobManager(graph, store)` — `create_job` / `run_job` (awaitable) / `start_job` (background task) / `get_job` / `list_jobs` / `cancel_job`. `job_id` doubles as the LangGraph `thread_id`.
+
+- **Graph nodes are job-agnostic**: `run_job` drives `graph.astream(stream_mode="updates")` and persists plan/artifacts/status as node updates arrive. `PostProcessor`/`Escalator` do NOT write to the store — if you add persistence, put it in the JobManager, not in nodes.
+- Store schema: `("jobs","index")/job_id` → summary; `("jobs",job_id,"meta")` → plan/errors; `("jobs",job_id,"artifacts")/cap_name` → per-capability result. Fine-grained state stays in the checkpointer under the same thread_id.
+- Cancellation is in-process (asyncio.Task cancel → CANCELLED persisted, checkpoint retained for future resume). Cross-process cancel is a best-effort tombstone — documented v1 limit.
+
+### Adding a capability
+
+1. Subclass `Capability`; define `spec` (unique snake_case name), constructor taking needed clients, async node methods, `build()` via `self.state_graph(...)`, terminal nodes returning `self._emit_success(...)`/`self._emit_failure(...)`, and `render_context()` if its result should feed generation.
+2. Register it in the composition root before `AgentBuilder(...).build()`. Nothing else: planner prompt, dispatch, merging all pick it up from the registry.
+
+## Testing conventions
+
+- `tests/conftest.py` — `FakeLLM` scripts responses by **substring of the system prompt** (`{"planner": ..., "ONLY the provided": ...}`); `plan_json()` builds planner responses. Fixtures: `checkpointer` (MemorySaver), `store` (InMemoryStore).
+- `tests/test_banking_example.py` is the behavior-parity suite for the pre-refactor agent (French rejection messages, citation rule, vision-dropped-without-image).
+- Tests import capabilities/stubs directly and assert on the final state dict (`terminal_kind`, `results`, `completed_capabilities`).

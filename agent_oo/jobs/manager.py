@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ..core.state import NodeError
@@ -38,7 +38,7 @@ _TERMINAL_NODES = ("post_process", "escalate", "user_error")
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class JobManager:

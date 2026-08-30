@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Optional
+from enum import StrEnum
+from typing import Any
 
 from ..core.state import CapabilityResult, Plan
 
 
-class JobStatus(str, Enum):
+class JobStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
     DONE = "done"
@@ -25,11 +25,11 @@ class Job:
     inputs: dict[str, Any] = field(default_factory=dict)
     created_at: str = ""                    # ISO timestamps
     updated_at: str = ""
-    plan: Optional[Plan] = None
+    plan: Plan | None = None
     results: dict[str, CapabilityResult] = field(default_factory=dict)
-    final_answer: Optional[str] = None
-    terminal_kind: Optional[str] = None
-    error: Optional[str] = None
+    final_answer: str | None = None
+    terminal_kind: str | None = None
+    error: str | None = None
 
     def summary(self) -> dict[str, Any]:
         """The record stored in the ("jobs", "index") namespace."""

@@ -1,8 +1,8 @@
 """End-to-end framework test with pure stub capabilities (no banking)."""
 from __future__ import annotations
 
-from langgraph.constants import END
 from conftest import FakeLLM, plan_json
+from langgraph.constants import END
 
 from agent_oo.core.builder import AgentBuilder, build_agent
 from agent_oo.core.capability import Capability, CapabilityBaseState, CapabilitySpec

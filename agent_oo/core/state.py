@@ -21,8 +21,7 @@ Determinism caveat:
 from __future__ import annotations
 
 from operator import add
-from typing import Annotated, Any, Optional, TypedDict
-
+from typing import Annotated, Any, TypedDict
 
 # ---------- Plan ----------
 
@@ -41,7 +40,7 @@ class Plan(TypedDict):
 class CapabilityResult(TypedDict, total=False):
     ok: bool
     data: dict[str, Any]        # capability-specific payload (matches its output_schema)
-    error: Optional[str]
+    error: str | None
     meta: dict[str, Any]        # via_fallback, timings, artifact refs, ...
 
 
@@ -76,21 +75,21 @@ class AgentState(TypedDict, total=False):
 
     # --- Validation ---
     input_valid: bool
-    rejection_reason: Optional[str]
+    rejection_reason: str | None
 
     # --- Planner output ---
-    plan: Optional[Plan]
+    plan: Plan | None
 
     # --- Capability execution (fan-in safe) ---
     completed_capabilities: Annotated[list[str], add]
     results: Annotated[dict[str, CapabilityResult], merge_results]
 
     # --- Generation pipeline ---
-    merged_context: Optional[str]
-    draft_answer: Optional[str]
+    merged_context: str | None
+    draft_answer: str | None
     output_valid: bool
     validation_issues: list[str]
-    final_answer: Optional[str]
+    final_answer: str | None
 
     # --- Control ---
     errors: Annotated[list[NodeError], add]
@@ -98,5 +97,5 @@ class AgentState(TypedDict, total=False):
     max_refine: int
 
     # --- Terminal status (for routing to user_error / escalate) ---
-    terminal_kind: Optional[str]  # "answer" | "user_error" | "escalated"
-    user_error_message: Optional[str]
+    terminal_kind: str | None  # "answer" | "user_error" | "escalated"
+    user_error_message: str | None
