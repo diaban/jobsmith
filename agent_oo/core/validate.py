@@ -1,15 +1,11 @@
-"""Input / Output validators — object-oriented version."""
+"""Input / Output validators."""
 from __future__ import annotations
 
-from ..deps import Deps
-from ..state import AgentState
+from .state import AgentState
 
 
 class InputValidator:
     MAX_QUERY_LEN = 4000
-
-    def __init__(self, deps: Deps):
-        self.deps = deps  # kept for symmetry / future compliance checks
 
     async def run(self, state: AgentState) -> dict:
         query = (state.get("query") or "").strip()
@@ -33,9 +29,6 @@ class InputValidator:
 class OutputValidator:
     MIN_ANSWER_LEN = 20
 
-    def __init__(self, deps: Deps):
-        self.deps = deps
-
     async def run(self, state: AgentState) -> dict:
         draft = state.get("draft_answer") or ""
         issues: list[str] = []
@@ -44,7 +37,8 @@ class OutputValidator:
             issues.append("empty_answer")
         if len(draft) < self.MIN_ANSWER_LEN:
             issues.append("answer_too_short")
-        if state.get("search_result") and "[" not in draft and "(" not in draft:
+        search = state.get("results", {}).get("search")
+        if search and search.get("ok") and "[" not in draft and "(" not in draft:
             issues.append("missing_citations")
 
         return {

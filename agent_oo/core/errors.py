@@ -1,10 +1,9 @@
-"""Terminal error nodes — object-oriented version."""
+"""Terminal error nodes."""
 from __future__ import annotations
 
 from typing import Any
 
-from ..deps import Deps
-from ..state import AgentState
+from .state import AgentState
 
 
 class ExecutionError:
@@ -19,24 +18,19 @@ class Escalator:
         "Votre demande a été transmise à un analyste. Vous serez recontacté."
     )
 
-    def __init__(self, deps: Deps, store: Any, *, message: str | None = None):
-        self.deps = deps
+    def __init__(self, store: Any, *, message: str | None = None):
         self.store = store
         self.message = message or self.DEFAULT_MESSAGE
 
     async def run(self, state: AgentState) -> dict:
         await self.store.aput(
-            namespace=("escalations", state["thread_id"]),
-            key=state["thread_id"],
-            value={
+            ("escalations", state["job_id"]),
+            state["job_id"],
+            {
                 "query": state.get("query"),
                 "errors": state.get("errors", []),
                 "plan": state.get("plan"),
-                "partial_results": {
-                    "search": state.get("search_result"),
-                    "vision": state.get("vision_result"),
-                    "refs": state.get("refs_result"),
-                },
+                "partial_results": state.get("results", {}),
             },
         )
         return {"terminal_kind": "escalated", "user_error_message": self.message}

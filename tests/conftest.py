@@ -83,7 +83,7 @@ def plan_json(*caps: str, deps: dict[str, list[str]] | None = None) -> str:
     """Build a planner JSON response for the given capability names."""
     deps = deps or {}
     return json.dumps({
-        "steps": [{"subgraph": c, "depends_on": deps.get(c, [])} for c in caps],
+        "steps": [{"capability": c, "depends_on": deps.get(c, [])} for c in caps],
         "rationale": "test plan",
     })
 

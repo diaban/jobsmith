@@ -1,12 +1,16 @@
-"""Compose the parent agent graph from class instances.
+"""Compose the parent agent graph from class instances + a capability registry.
 
-Pattern differences vs the factory-functions version:
-- Each step is a class instance owning `deps` and config.
+Pattern:
+- Each step is a class instance owning its deps and config.
 - Nodes registered as `instance.run` (bound method, async).
 - Routers registered as `instance.route` (bound method, sync).
-- Sub-graphs registered as `instance.build()` (compiled CompiledGraph).
+- Capabilities registered as `capability.build()` (compiled sub-graphs), one
+  node per registry entry, each edging back to `executor_dispatch`.
 
-We expose a single `AgentBuilder` so the wiring lives next to the instances.
+Static vs dynamic trade-off: the capability set of a compiled graph is FIXED —
+Send targets and conditional-edge path maps must name real nodes. `build()`
+therefore freezes the registry. Registering a new capability means creating a
+fresh AgentBuilder with a new registry; compilation costs milliseconds.
 """
 from __future__ import annotations
 
@@ -16,46 +20,49 @@ from langgraph.constants import END
 from langgraph.graph import StateGraph
 
 from .deps import Deps
-from .nodes.errors import Escalator, ExecutionError, UserErrorEmitter
-from .nodes.executor import Executor
-from .nodes.generation import ContextMerger, Generator, PostProcessor, Refiner
-from .nodes.planner import Planner
-from .nodes.validate import InputValidator, OutputValidator
+from .errors import Escalator, ExecutionError, UserErrorEmitter
+from .executor import Executor
+from .generation import ContextMerger, Generator, PostProcessor, Refiner
+from .planner import Planner
+from .registry import CapabilityRegistry
 from .state import AgentState
-from .subgraphs.refs import RefsSubgraph
-from .subgraphs.search import SearchSubgraph
-from .subgraphs.vision import VisionSubgraph
+from .validate import InputValidator, OutputValidator
 
 
 class AgentBuilder:
     """Builds the parent graph and holds references to every step instance.
 
     Holding references is useful for tests / observability (you can inspect
-    `builder.planner.SYSTEM_PROMPT`, swap an instance before `.build()`, etc).
+    `builder.planner.system_prompt()`, swap an instance before `.build()`, etc).
     """
 
-    def __init__(self, deps: Deps, checkpointer: Any, store: Any):
+    def __init__(
+        self,
+        deps: Deps,
+        registry: CapabilityRegistry,
+        *,
+        checkpointer: Any = None,
+        store: Any = None,
+    ):
         self.deps = deps
+        self.registry = registry
         self.checkpointer = checkpointer
         self.store = store
 
         # --- Step instances ---
-        self.input_validator  = InputValidator(deps)
-        self.planner          = Planner(deps)
-        self.executor         = Executor()
-        self.search_subgraph  = SearchSubgraph(deps)
-        self.vision_subgraph  = VisionSubgraph(deps)
-        self.refs_subgraph    = RefsSubgraph(deps)
-        self.context_merger   = ContextMerger(deps)
+        self.input_validator  = InputValidator()
+        self.planner          = Planner(deps, registry)
+        self.executor         = Executor(registry)
+        self.context_merger   = ContextMerger(registry)
         self.generator        = Generator(deps)
-        self.output_validator = OutputValidator(deps)
+        self.output_validator = OutputValidator()
         self.refiner          = Refiner(deps)
-        self.post_processor   = PostProcessor(deps, store)
+        self.post_processor   = PostProcessor(store)
         self.execution_error  = ExecutionError()
-        self.escalator        = Escalator(deps, store)
+        self.escalator        = Escalator(store)
         self.user_error       = UserErrorEmitter()
 
-    # ---- Conditional edge functions (kept as methods for symmetry) ----
+    # ---- Conditional edge functions ----
 
     @staticmethod
     def _route_validate_input(state: AgentState) -> str:
@@ -71,6 +78,10 @@ class AgentBuilder:
 
     @staticmethod
     def _route_validate_output(state: AgentState) -> str:
+        # Unrecoverable generation/refine failure — bail out instead of looping
+        # the refine cycle (the refine counter only advances on success).
+        if any(not e["recoverable"] for e in state.get("errors", [])):
+            return "execution_error"
         if state.get("output_valid"):
             return "post_process"
         if state.get("refine_count", 0) >= state.get("max_refine", 2):
@@ -80,23 +91,20 @@ class AgentBuilder:
     @staticmethod
     def _route_execution_error(state: AgentState) -> str:
         has_partial = any(
-            state.get(k) is not None
-            for k in ("search_result", "vision_result", "refs_result")
+            r.get("ok") for r in state.get("results", {}).values()
         )
         return "escalate" if has_partial else "user_error"
 
     # ---- Build ----
 
     def build(self):
+        self.registry.freeze()
         g = StateGraph(AgentState)
 
-        # Nodes — methods are valid LangGraph callables
+        # Static nodes
         g.add_node("validate_input",    self.input_validator.run)
         g.add_node("planner",           self.planner.run)
         g.add_node("executor_dispatch", self.executor.dispatch)
-        g.add_node("subgraph_search",   self.search_subgraph.build())
-        g.add_node("subgraph_vision",   self.vision_subgraph.build())
-        g.add_node("subgraph_refs",     self.refs_subgraph.build())
         g.add_node("merge_results",     self.context_merger.run)
         g.add_node("generation",        self.generator.run)
         g.add_node("validate_output",   self.output_validator.run)
@@ -105,6 +113,14 @@ class AgentBuilder:
         g.add_node("execution_error",   self.execution_error.run)
         g.add_node("escalate",          self.escalator.run)
         g.add_node("user_error",        self.user_error.run)
+
+        # One node per registered capability, each looping back to the dispatcher
+        cap_targets: dict[str, str] = {}
+        for cap in self.registry:
+            node = Executor.node_name(cap.spec.name)
+            g.add_node(node, cap.build())
+            g.add_edge(node, "executor_dispatch")
+            cap_targets[node] = node
 
         # Edges
         g.set_entry_point("validate_input")
@@ -121,13 +137,8 @@ class AgentBuilder:
         g.add_conditional_edges("executor_dispatch", self.executor.route, {
             "merge_results": "merge_results",
             "execution_error": "execution_error",
-            "subgraph_search": "subgraph_search",
-            "subgraph_vision": "subgraph_vision",
-            "subgraph_refs": "subgraph_refs",
+            **cap_targets,
         })
-        g.add_edge("subgraph_search", "executor_dispatch")
-        g.add_edge("subgraph_vision", "executor_dispatch")
-        g.add_edge("subgraph_refs",   "executor_dispatch")
 
         # Generation pipeline
         g.add_edge("merge_results", "generation")
@@ -151,6 +162,6 @@ class AgentBuilder:
         return g.compile(checkpointer=self.checkpointer)
 
 
-# Backwards-compatible convenience function
-def build_agent(deps: Deps, checkpointer: Any, store: Any):
-    return AgentBuilder(deps, checkpointer, store).build()
+# Convenience function
+def build_agent(deps: Deps, registry: CapabilityRegistry, *, checkpointer: Any = None, store: Any = None):
+    return AgentBuilder(deps, registry, checkpointer=checkpointer, store=store).build()

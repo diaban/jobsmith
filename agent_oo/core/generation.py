@@ -1,7 +1,8 @@
-"""Generation pipeline — object-oriented version.
+"""Generation pipeline.
 
-Three classes:
-- ContextMerger: deterministic node, no LLM
+Four classes:
+- ContextMerger: deterministic node — asks each capability to render its own
+  result (render_context), iterating in PLAN order for determinism
 - Generator:     LLM call to produce the draft answer
 - Refiner:       LLM call to fix a rejected draft
 - PostProcessor: persists to the long-term store
@@ -10,35 +11,30 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..deps import Deps
-from ..state import AgentState, NodeError
+from .deps import Deps
+from .registry import CapabilityRegistry
+from .state import AgentState, NodeError
 
 
 class ContextMerger:
-    def __init__(self, deps: Deps):
-        self.deps = deps
-
-    @staticmethod
-    def _format(state: AgentState) -> str:
-        parts: list[str] = []
-        sr = state.get("search_result")
-        if sr:
-            parts.append("# Search results")
-            for i, d in enumerate(sr["docs"]):
-                parts.append(f"[{d.get('id', f'doc_{i}')}] {d.get('text', '')}")
-        vr = state.get("vision_result")
-        if vr:
-            parts.append("# Image analysis")
-            parts.append(vr["description"])
-        rr = state.get("refs_result")
-        if rr:
-            parts.append("# References")
-            for i, r in enumerate(rr["refs"]):
-                parts.append(f"[{r.get('id', f'ref_{i}')}] {r.get('summary', '')}")
-        return "\n\n".join(parts) if parts else "(no context available)"
+    def __init__(self, registry: CapabilityRegistry, *, empty_message: str = "(no context available)"):
+        self.registry = registry
+        self.empty_message = empty_message
 
     async def run(self, state: AgentState) -> dict:
-        return {"merged_context": self._format(state)}
+        plan = state.get("plan")
+        results = state.get("results", {})
+        parts: list[str] = []
+        # Iterate in plan order, NOT results-dict order (see state.py determinism caveat)
+        for step in (plan["steps"] if plan else []):
+            name = step["capability"]
+            result = results.get(name)
+            if not result or not result.get("ok"):
+                continue
+            text = self.registry.get(name).render_context(result)
+            if text:
+                parts.append(text)
+        return {"merged_context": "\n\n".join(parts) if parts else self.empty_message}
 
 
 class Generator:
@@ -70,7 +66,7 @@ class Generator:
             return {"draft_answer": answer}
         except Exception as e:
             err: NodeError = {
-                "subgraph": "generation",
+                "source": "generation",
                 "kind": "generation_fail",
                 "detail": str(e),
                 "recoverable": False,
@@ -116,7 +112,7 @@ class Refiner:
             }
         except Exception as e:
             err: NodeError = {
-                "subgraph": "refine",
+                "source": "refine",
                 "kind": "refine_fail",
                 "detail": str(e),
                 "recoverable": False,
@@ -125,16 +121,15 @@ class Refiner:
 
 
 class PostProcessor:
-    def __init__(self, deps: Deps, store: Any):
-        self.deps = deps
+    def __init__(self, store: Any):
         self.store = store
 
     async def run(self, state: AgentState) -> dict:
         final = state["draft_answer"]
         await self.store.aput(
-            namespace=("answers", state["thread_id"]),
-            key=state["thread_id"],
-            value={
+            ("answers", state["job_id"]),
+            state["job_id"],
+            {
                 "query": state["query"],
                 "answer": final,
                 "plan": state.get("plan"),

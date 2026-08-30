@@ -1,14 +1,13 @@
-"""Executor step — object-oriented version.
+"""Executor step — wave-based dispatch over registered capabilities.
 
 Owns:
-- the mapping subgraph-name → parent-graph node name
-- the wave-computation logic (which subgraphs are ready)
+- the naming convention capability-name → parent-graph node name
+- the wave-computation logic (which capabilities are ready)
 - the dispatch node (pass-through) and the router function
 
-Usage in the parent graph:
-    executor = Executor()
-    g.add_node("executor_dispatch", executor.dispatch)
-    g.add_conditional_edges("executor_dispatch", executor.route, {...})
+Each capability sub-graph edges back to `executor_dispatch` on completion, so
+the router can compute the next wave — this executes an arbitrary dependency
+DAG without baking a topological schedule into the graph.
 """
 from __future__ import annotations
 
@@ -16,20 +15,19 @@ from typing import Any
 
 from langgraph.types import Send
 
-from ..state import AgentState
+from .registry import CapabilityRegistry
+from .state import AgentState
 
 
 class Executor:
 
-    # Default mapping; override in the constructor if you rename parent nodes.
-    DEFAULT_SUBGRAPH_NODE = {
-        "search": "subgraph_search",
-        "vision": "subgraph_vision",
-        "refs":   "subgraph_refs",
-    }
+    @staticmethod
+    def node_name(cap_name: str) -> str:
+        """Parent-graph node name for a capability."""
+        return f"cap_{cap_name}"
 
-    def __init__(self, subgraph_node_map: dict[str, str] | None = None):
-        self.subgraph_node = subgraph_node_map or self.DEFAULT_SUBGRAPH_NODE
+    def __init__(self, registry: CapabilityRegistry):
+        self.registry = registry
 
     # -------- Helpers --------
 
@@ -38,18 +36,18 @@ class Executor:
         return any(not e["recoverable"] for e in state.get("errors", []))
 
     @staticmethod
-    def _ready_subgraphs(state: AgentState) -> list[str]:
+    def _ready_capabilities(state: AgentState) -> list[str]:
         plan = state.get("plan")
         if not plan:
             return []
-        done = set(state.get("completed_subgraphs", []))
+        done = set(state.get("completed_capabilities", []))
         ready: list[str] = []
         for step in plan["steps"]:
-            sg = step["subgraph"]
-            if sg in done:
+            cap = step["capability"]
+            if cap in done:
                 continue
             if all(dep in done for dep in step["depends_on"]):
-                ready.append(sg)
+                ready.append(cap)
         return ready
 
     @staticmethod
@@ -57,7 +55,7 @@ class Executor:
         plan = state.get("plan")
         if not plan:
             return False
-        done = set(state.get("completed_subgraphs", []))
+        done = set(state.get("completed_capabilities", []))
         return len(done) >= len(plan["steps"])
 
     # -------- Node + Router --------
@@ -74,7 +72,7 @@ class Executor:
             return "execution_error"
         if self._all_done(state):
             return "merge_results"
-        ready = self._ready_subgraphs(state)
+        ready = self._ready_capabilities(state)
         if not ready:
             return "execution_error"  # deadlock — shouldn't happen
-        return [Send(self.subgraph_node[sg], state) for sg in ready]
+        return [Send(self.node_name(cap), state) for cap in ready]

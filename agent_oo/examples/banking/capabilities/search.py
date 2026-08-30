@@ -1,30 +1,43 @@
-"""SEARCH (RAG) sub-graph — object-oriented version.
+"""SEARCH (RAG) capability.
 
-Pattern:
-- The class owns `deps` and any configuration (max retries, prompts).
-- Each node is an async method, bound to the instance.
-- Routers are methods too (sync, since LangGraph routers are sync).
-- `build()` returns the compiled graph.
-
-The class is NOT a node itself — instances are not callable. They expose
-`build()` which produces a CompiledGraph that the parent graph adds as a node.
+Internal shape: rewrite query → search → retry w/ back-off → fallback → emit.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import random
-from typing import Literal
+from typing import Any, Literal
 
 from langgraph.constants import END
-from langgraph.graph import StateGraph
 
-from ..deps import Deps
-from ..state import NodeError, SearchResult, SearchSubState, SubgraphName
+from ....core.capability import Capability, CapabilityBaseState, CapabilitySpec
+from ....core.deps import LLMClient
+from ....core.state import CapabilityResult
+from ..deps import SearchEngine
 
 
-class SearchSubgraph:
-    """RAG sub-graph: rewrite query → search → retry w/ back-off → fallback → emit."""
+class SearchState(CapabilityBaseState, total=False):
+    generated_query: str
+    raw_docs: list[dict[str, Any]]
+    retry_count: int
+    max_retries: int
+
+
+class SearchCapability(Capability):
+    """RAG over the internal knowledge base."""
+
+    spec = CapabilitySpec(
+        name="search",
+        description="RAG over the internal knowledge base",
+        output_schema={
+            "type": "object",
+            "properties": {
+                "docs": {"type": "array", "items": {"type": "object"}},
+                "query_used": {"type": "string"},
+            },
+        },
+    )
 
     QUERY_REWRITE_SYSTEM = (
         'Rewrite the banker\'s question into a concise search query for a '
@@ -32,16 +45,17 @@ class SearchSubgraph:
         'No prose, no markdown.'
     )
 
-    def __init__(self, deps: Deps, *, max_retries: int = 2, top_k: int = 10):
-        self.deps = deps
+    def __init__(self, llm: LLMClient, search: SearchEngine, *, max_retries: int = 2, top_k: int = 10):
+        self.llm = llm
+        self.search = search
         self.max_retries = max_retries
         self.top_k = top_k
 
     # -------------------- Nodes --------------------
 
-    async def generate_query(self, state: SearchSubState) -> dict:
+    async def generate_query(self, state: SearchState) -> dict:
         try:
-            raw = await self.deps.llm.chat(
+            raw = await self.llm.chat(
                 messages=[
                     {"role": "system", "content": self.QUERY_REWRITE_SYSTEM},
                     {"role": "user", "content": state["query"]},
@@ -59,84 +73,59 @@ class SearchSubgraph:
             "max_retries": self.max_retries,
         }
 
-    async def search_call(self, state: SearchSubState) -> dict:
+    async def search_call(self, state: SearchState) -> dict:
         try:
-            docs = await self.deps.search.search(
-                state["generated_query"], top_k=self.top_k
-            )
+            docs = await self.search.search(state["generated_query"], top_k=self.top_k)
             return {"raw_docs": docs}
         except Exception:
             return {"raw_docs": []}
 
-    async def retry_search(self, state: SearchSubState) -> dict:
+    async def retry_search(self, state: SearchState) -> dict:
         n = state.get("retry_count", 0) + 1
         # Exponential back-off with jitter
         delay = (2 ** (n - 1)) * 0.5 + random.uniform(0, 0.25)
         await asyncio.sleep(delay)
         try:
-            docs = await self.deps.search.search(
-                state["generated_query"], top_k=self.top_k
-            )
+            docs = await self.search.search(state["generated_query"], top_k=self.top_k)
             return {"raw_docs": docs, "retry_count": n}
         except Exception:
             return {"raw_docs": [], "retry_count": n}
 
-    async def fallback_search(self, state: SearchSubState) -> dict:
+    async def fallback_search(self, state: SearchState) -> dict:
         try:
-            docs = await self.deps.search.search_cached(
-                state["generated_query"], top_k=self.top_k
-            )
+            docs = await self.search.search_cached(state["generated_query"], top_k=self.top_k)
             return {"raw_docs": docs}
         except Exception:
             return {"raw_docs": []}
 
     # -------------------- Terminal nodes --------------------
 
-    async def emit_success(self, state: SearchSubState) -> dict:
-        result: SearchResult = {
+    def _success_data(self, state: SearchState) -> dict[str, Any]:
+        return {
             "docs": state.get("raw_docs", []),
             "query_used": state.get("generated_query", ""),
-            "via_fallback": False,
-        }
-        return {
-            "search_result": result,
-            "completed_subgraphs": [SubgraphName.SEARCH.value],
         }
 
-    async def emit_success_via_fallback(self, state: SearchSubState) -> dict:
-        result: SearchResult = {
-            "docs": state.get("raw_docs", []),
-            "query_used": state.get("generated_query", ""),
-            "via_fallback": True,
-        }
-        return {
-            "search_result": result,
-            "completed_subgraphs": [SubgraphName.SEARCH.value],
-        }
+    async def emit_success(self, state: SearchState) -> dict:
+        return self._emit_success(self._success_data(state), meta={"via_fallback": False})
 
-    async def emit_failure(self, state: SearchSubState) -> dict:
-        err: NodeError = {
-            "subgraph": SubgraphName.SEARCH.value,
-            "kind": "search_fail",
-            "detail": "search engine exhausted and fallback failed",
-            "recoverable": True,
-        }
-        return {
-            "completed_subgraphs": [SubgraphName.SEARCH.value],
-            "errors": [err],
-        }
+    async def emit_success_via_fallback(self, state: SearchState) -> dict:
+        return self._emit_success(self._success_data(state), meta={"via_fallback": True})
+
+    async def emit_failure(self, state: SearchState) -> dict:
+        return self._emit_failure("search engine exhausted and fallback failed")
 
     # -------------------- Routers (sync methods) --------------------
 
     @staticmethod
-    def _has_docs(state: SearchSubState) -> bool:
+    def _has_docs(state: SearchState) -> bool:
         return bool(state.get("raw_docs"))
 
-    def route_after_search(self, state: SearchSubState) -> Literal["success", "retry"]:
+    def route_after_search(self, state: SearchState) -> Literal["success", "retry"]:
         return "success" if self._has_docs(state) else "retry"
 
     def route_after_retry(
-        self, state: SearchSubState
+        self, state: SearchState
     ) -> Literal["retry_ok", "exhausted", "retry_again"]:
         if self._has_docs(state):
             return "retry_ok"
@@ -145,17 +134,26 @@ class SearchSubgraph:
         return "retry_again"
 
     def route_after_fallback(
-        self, state: SearchSubState
+        self, state: SearchState
     ) -> Literal["fallback_ok", "fallback_fail"]:
         return "fallback_ok" if self._has_docs(state) else "fallback_fail"
+
+    # -------------------- Context rendering --------------------
+
+    def render_context(self, result: CapabilityResult) -> str | None:
+        docs = result.get("data", {}).get("docs", [])
+        if not docs:
+            return None
+        parts = ["# Search results"]
+        for i, d in enumerate(docs):
+            parts.append(f"[{d.get('id', f'doc_{i}')}] {d.get('text', '')}")
+        return "\n\n".join(parts)
 
     # -------------------- Compilation --------------------
 
     def build(self):
-        """Return the compiled sub-graph (without checkpointer — parent owns it)."""
-        g = StateGraph(SearchSubState)
+        g = self.state_graph(SearchState)
 
-        # Bound methods are valid LangGraph nodes / routers.
         g.add_node("generate_query", self.generate_query)
         g.add_node("search_call", self.search_call)
         g.add_node("retry_search", self.retry_search)

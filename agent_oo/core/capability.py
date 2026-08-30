@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from operator import add
 from typing import Annotated, Any, TypedDict
 
+from langgraph.graph import StateGraph
+
 from .state import AgentState, CapabilityResult, NodeError, merge_results
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -41,17 +43,28 @@ class CapabilitySpec:
             )
 
 
-class CapabilityBaseState(TypedDict, total=False):
-    """Base for private capability states — carries the shared output channels.
+class CapabilityOutputState(TypedDict, total=False):
+    """The ONLY channels a capability sub-graph emits back to the parent.
+
+    All three have reducers, so parallel Send branches finishing in the same
+    superstep merge safely. Capability `build()` implementations MUST pass this
+    as `output_schema` — otherwise the sub-graph echoes its whole final state
+    (including plain channels like `query`) and concurrent branches collide
+    with InvalidUpdateError.
+    """
+    results: Annotated[dict[str, CapabilityResult], merge_results]
+    completed_capabilities: Annotated[list[str], add]
+    errors: Annotated[list[NodeError], add]
+
+
+class CapabilityBaseState(CapabilityOutputState, total=False):
+    """Base for private capability states — inputs plus the output channels.
 
     Sub-graph private schemas extend this with their own intermediate fields.
     The reducers MUST match AgentState's so parent fan-in works.
     """
     query: str
     inputs: dict[str, Any]
-    results: Annotated[dict[str, CapabilityResult], merge_results]
-    completed_capabilities: Annotated[list[str], add]
-    errors: Annotated[list[NodeError], add]
 
 
 class Capability(ABC):
@@ -63,6 +76,11 @@ class Capability(ABC):
     def build(self):
         """Return the compiled sub-graph (no checkpointer — the parent owns it)."""
         ...
+
+    @staticmethod
+    def state_graph(private_schema: type) -> StateGraph:
+        """StateGraph pre-configured with the mandatory capability output schema."""
+        return StateGraph(private_schema, output_schema=CapabilityOutputState)
 
     # ---- Planner integration ----
 
