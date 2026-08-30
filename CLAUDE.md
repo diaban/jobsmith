@@ -9,13 +9,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-uv venv --python 3.12 .venv && uv pip install -e ".[dev]"   # setup
+uv venv --python 3.12 .venv && uv pip install -e ".[dev,anthropic]"  # setup
 .venv/bin/python -m pytest tests/ -q                        # all tests
 .venv/bin/python -m pytest tests/test_jobs.py -q            # one file
 .venv/bin/python -m pytest tests/test_planner.py::test_cycle_rejected  # one test
 .venv/bin/ruff check .                                      # lint
 .venv/bin/python -m agent_oo.examples.banking.main          # runnable demo (fakes)
+.venv/bin/python -m agent_oo.examples.banking.chat          # interactive REPL
 ```
+
+The chat REPL auto-selects the LLM: real Claude (`agent_oo/clients.py`, `AnthropicLLMClient`, model `claude-opus-5`) when `ANTHROPIC_API_KEY` is set, else the deterministic `KeywordLLM` fake. The adapter deliberately drops `temperature` (removed on Claude Opus 5 — sending it 400s), enables server-side refusal fallbacks by default, and raises on `stop_reason: "refusal"` so refusals flow through the framework's NodeError path.
 
 Domain-leakage gate (must return nothing): `grep -ri "banking\|banquier\|Votre\|analyste" agent_oo/core agent_oo/jobs`
 

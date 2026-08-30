@@ -11,16 +11,19 @@ Commands:
   /cancel <id-pfx>  cancel a background job
   /quit             exit
 
-By default this uses KeywordLLM — a deterministic fake whose *planning* reacts
-to your wording (mentions of decks/slides pull in `refs`, an attached image
-pulls in `vision`, etc.) so different prompts genuinely produce different
-plans without any API key. To use a real model, implement the LLMClient
-protocol (core/deps.py) and pass it to build_chat() instead.
+LLM selection:
+- If ANTHROPIC_API_KEY is set (or an `ant auth login` profile exists and you
+  pass --real), the REPL uses Claude (claude-opus-5) via AnthropicLLMClient —
+  real planning and real answers (search/S3 stay fake).
+- Otherwise it falls back to KeywordLLM — a deterministic fake whose
+  *planning* reacts to your wording (deck/slide words pull in `refs`, an
+  attached image pulls in `vision`) so plans still vary without any API key.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from typing import Any
 
@@ -101,8 +104,20 @@ class FakeS3:
 
 # ---------------------------------------------------------------- wiring
 
+def make_llm() -> Any:
+    """Pick the LLM: real Claude when credentials are available, else the fake."""
+    use_real = bool(os.environ.get("ANTHROPIC_API_KEY")) or "--real" in sys.argv
+    if use_real:
+        from ...clients import AnthropicLLMClient
+
+        print("[llm: Claude via AnthropicLLMClient — claude-opus-5]")
+        return AnthropicLLMClient()
+    print("[llm: KeywordLLM fake — set ANTHROPIC_API_KEY (or pass --real) for Claude]")
+    return KeywordLLM()
+
+
 def build_chat(llm: Any | None = None) -> JobManager:
-    llm = llm or KeywordLLM()
+    llm = llm if llm is not None else make_llm()
     search = KeywordSearch()
     registry = CapabilityRegistry([
         SearchCapability(llm, search),
@@ -151,7 +166,7 @@ async def find_job(jobs: JobManager, prefix: str) -> Job | None:
 async def repl() -> None:
     jobs = build_chat()
     pending_inputs: dict[str, Any] = {}
-    print(__doc__.split("Commands:")[1].split("By default")[0])
+    print(__doc__.split("Commands:")[1].split("LLM selection")[0])
 
     loop = asyncio.get_event_loop()
     while True:
