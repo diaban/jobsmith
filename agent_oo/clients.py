@@ -26,6 +26,7 @@ Protocol impedance notes (LLMClient was shaped after an OpenAI-style API):
 from __future__ import annotations
 
 import base64
+import os
 from typing import Any
 
 DEFAULT_MODEL = "claude-opus-5"
@@ -36,7 +37,7 @@ class AnthropicLLMClient:
     def __init__(
         self,
         *,
-        model: str = DEFAULT_MODEL,
+        model: str | None = None,   # default: $ANTHROPIC_MODEL or claude-opus-5
         max_output_tokens: int = DEFAULT_MAX_TOKENS,
         enable_fallbacks: bool = True,
         client: Any = None,        # injectable for tests
@@ -46,7 +47,7 @@ class AnthropicLLMClient:
 
             client = AsyncAnthropic()
         self._client = client
-        self.model = model
+        self.model = model or os.environ.get("ANTHROPIC_MODEL", DEFAULT_MODEL)
         self.max_output_tokens = max_output_tokens
         self.enable_fallbacks = enable_fallbacks
 
@@ -164,7 +165,7 @@ class OpenAILLMClient:
     def __init__(
         self,
         *,
-        model: str = DEFAULT_OPENAI_MODEL,
+        model: str | None = None,   # default: $OPENAI_MODEL or gpt-5.1
         max_output_tokens: int = DEFAULT_MAX_TOKENS,
         client: Any = None,        # injectable for tests
     ):
@@ -173,7 +174,7 @@ class OpenAILLMClient:
 
             client = AsyncOpenAI()
         self._client = client
-        self.model = model
+        self.model = model or os.environ.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
         self.max_output_tokens = max_output_tokens
 
     # -------------------- helpers --------------------

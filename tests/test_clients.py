@@ -185,3 +185,28 @@ async def test_openai_vision_builds_data_uri_block():
     assert content[0]["type"] == "image_url"
     assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
     assert content[1] == {"type": "text", "text": "what is this?"}
+
+
+async def test_openai_model_from_env(monkeypatch):
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-5-nano")
+    client, stub = make_openai()
+    assert client.model == "gpt-5-nano"
+    # nano is in the gpt-5 reasoning family: no temperature, completion-token cap
+    await client.chat([{"role": "user", "content": "hi"}], temperature=0.5)
+    call = stub.calls[0]
+    assert call["model"] == "gpt-5-nano"
+    assert "temperature" not in call
+    assert call["max_completion_tokens"] == 16000
+
+
+async def test_explicit_model_beats_env(monkeypatch):
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-5-nano")
+    client, _ = make_openai(model="gpt-4o")
+    assert client.model == "gpt-4o"
+
+
+async def test_anthropic_model_from_env(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-sonnet-5")
+    client, stub = make_client()
+    await client.chat([{"role": "user", "content": "hi"}])
+    assert stub.calls[0]["model"] == "claude-sonnet-5"

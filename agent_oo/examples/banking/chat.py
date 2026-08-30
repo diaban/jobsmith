@@ -105,6 +105,21 @@ class FakeS3:
 
 # ---------------------------------------------------------------- wiring
 
+def load_dotenv(path: str = ".env") -> None:
+    """Minimal .env loader (KEY=VALUE lines; real env vars take precedence)."""
+    try:
+        with open(path) as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
 def make_llm() -> Any:
     """Pick the LLM: --llm=... flag wins, else auto-detect by available key."""
     choice = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--llm=")), None)
@@ -182,6 +197,7 @@ async def find_job(jobs: JobManager, prefix: str) -> Job | None:
 # ---------------------------------------------------------------- REPL
 
 async def repl() -> None:
+    load_dotenv()
     jobs = build_chat()
     pending_inputs: dict[str, Any] = {}
     print(__doc__.split("Commands:")[1].split("LLM selection")[0])
