@@ -11,6 +11,9 @@ dependencies = [
 anthropic = [
     "anthropic>=0.60",
 ]
+openai = [
+    "openai>=1.60",
+]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",

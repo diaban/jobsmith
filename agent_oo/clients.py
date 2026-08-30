@@ -1,11 +1,16 @@
 """Real LLM clients implementing the framework protocols.
 
-`AnthropicLLMClient` satisfies both `core.deps.LLMClient` (chat) and the
-banking example's `VisionClient` (vision), backed by the official `anthropic`
-SDK. Install with:  pip install -e ".[anthropic]"
+Both classes satisfy `core.deps.LLMClient` (chat) and the banking example's
+`VisionClient` (vision):
 
-Credentials resolve from the environment (ANTHROPIC_API_KEY, or an
-`ant auth login` profile) — construct with no arguments for local dev.
+- `AnthropicLLMClient` — official `anthropic` SDK.  pip install -e ".[anthropic]"
+  Credentials from ANTHROPIC_API_KEY or an `ant auth login` profile.
+- `OpenAILLMClient` — official `openai` SDK.        pip install -e ".[openai]"
+  Credentials from OPENAI_API_KEY; OPENAI_BASE_URL also works, so any
+  OpenAI-compatible endpoint (Azure, Ollama, vLLM, a corporate gateway) can
+  be targeted without code changes.
+
+Construct either with no arguments for local dev.
 
 Protocol impedance notes (LLMClient was shaped after an OpenAI-style API):
 - `temperature` is accepted and IGNORED: sampling parameters are removed on
@@ -137,4 +142,99 @@ class AnthropicLLMClient:
                 ],
             }],
         )
+        return self._text_of(response)
+
+
+DEFAULT_OPENAI_MODEL = "gpt-5.1"
+
+# Reasoning-model families: temperature is rejected (only the default is
+# allowed) and the output cap is `max_completion_tokens`, not `max_tokens`.
+_OPENAI_REASONING_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+
+
+class OpenAILLMClient:
+    """LLMClient/VisionClient backed by an OpenAI-compatible chat API.
+
+    The framework's LLMClient protocol is OpenAI-shaped, so this is mostly a
+    pass-through. Two model-dependent quirks are handled automatically for
+    reasoning models (gpt-5*/o*): `temperature` is dropped (the API rejects
+    non-default values) and the cap is sent as `max_completion_tokens`.
+    """
+
+    def __init__(
+        self,
+        *,
+        model: str = DEFAULT_OPENAI_MODEL,
+        max_output_tokens: int = DEFAULT_MAX_TOKENS,
+        client: Any = None,        # injectable for tests
+    ):
+        if client is None:
+            from openai import AsyncOpenAI
+
+            client = AsyncOpenAI()
+        self._client = client
+        self.model = model
+        self.max_output_tokens = max_output_tokens
+
+    # -------------------- helpers --------------------
+
+    @property
+    def _is_reasoning_model(self) -> bool:
+        return self.model.startswith(_OPENAI_REASONING_PREFIXES)
+
+    def _base_kwargs(self, max_tokens: int | None) -> dict[str, Any]:
+        cap = max_tokens or self.max_output_tokens
+        if self._is_reasoning_model:
+            return {"model": self.model, "max_completion_tokens": cap}
+        return {"model": self.model, "max_tokens": cap}
+
+    @staticmethod
+    def _text_of(response: Any) -> str:
+        message = response.choices[0].message
+        refusal = getattr(message, "refusal", None)
+        if refusal:
+            raise RuntimeError(f"model refused the request: {refusal}")
+        return message.content or ""
+
+    # -------------------- LLMClient protocol --------------------
+
+    async def chat(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        response_format: dict[str, Any] | None = None,
+        temperature: float = 0.0,
+        max_tokens: int | None = None,
+    ) -> str:
+        kwargs = self._base_kwargs(max_tokens)
+        kwargs["messages"] = messages
+        if response_format is not None:
+            kwargs["response_format"] = response_format  # json_object maps 1:1
+        if not self._is_reasoning_model:
+            kwargs["temperature"] = temperature
+        response = await self._client.chat.completions.create(**kwargs)
+        return self._text_of(response)
+
+    # -------------------- VisionClient protocol --------------------
+
+    async def vision(
+        self,
+        image_bytes: bytes,
+        prompt: str,
+        *,
+        mime_type: str = "image/png",
+    ) -> str:
+        data_uri = (
+            f"data:{mime_type};base64,"
+            + base64.standard_b64encode(image_bytes).decode("utf-8")
+        )
+        kwargs = self._base_kwargs(None)
+        kwargs["messages"] = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": data_uri}},
+                {"type": "text", "text": prompt},
+            ],
+        }]
+        response = await self._client.chat.completions.create(**kwargs)
         return self._text_of(response)

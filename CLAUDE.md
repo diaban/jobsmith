@@ -18,7 +18,7 @@ uv venv --python 3.12 .venv && uv pip install -e ".[dev,anthropic]"  # setup
 .venv/bin/python -m agent_oo.examples.banking.chat          # interactive REPL
 ```
 
-The chat REPL auto-selects the LLM: real Claude (`agent_oo/clients.py`, `AnthropicLLMClient`, model `claude-opus-5`) when `ANTHROPIC_API_KEY` is set, else the deterministic `KeywordLLM` fake. The adapter deliberately drops `temperature` (removed on Claude Opus 5 — sending it 400s), enables server-side refusal fallbacks by default, and raises on `stop_reason: "refusal"` so refusals flow through the framework's NodeError path.
+The chat REPL auto-selects the LLM (`--llm=anthropic|openai|fake` overrides): `AnthropicLLMClient` (`claude-opus-5`) when `ANTHROPIC_API_KEY` is set, else `OpenAILLMClient` (`gpt-5.1`; honors `OPENAI_BASE_URL` for Ollama/vLLM/gateways) when `OPENAI_API_KEY` is set, else the deterministic `KeywordLLM` fake. Both real adapters live in `agent_oo/clients.py`, implement chat+vision, take an injectable `client` for tests, and raise `RuntimeError` on refusals so they flow through the framework's NodeError path. Provider quirks handled there: the Anthropic adapter drops `temperature` (removed on Claude Opus 5 — sending it 400s), hoists `system` messages to the top-level param, and enables server-side refusal fallbacks; the OpenAI adapter drops `temperature` and uses `max_completion_tokens` for reasoning models (gpt-5*/o*).
 
 Domain-leakage gate (must return nothing): `grep -ri "banking\|banquier\|Votre\|analyste" agent_oo/core agent_oo/jobs`
 

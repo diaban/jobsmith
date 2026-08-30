@@ -1,6 +1,6 @@
-"""AnthropicLLMClient adapter: message mapping, JSON handling, refusals.
+"""LLM client adapters: message mapping, JSON handling, refusals.
 
-Uses an injected stub client — no network, no real SDK objects.
+Uses injected stub clients — no network, no real SDK objects.
 """
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_oo.clients import AnthropicLLMClient
+from agent_oo.clients import AnthropicLLMClient, OpenAILLMClient
 
 
 def make_response(text="hello", stop_reason="end_turn", category=None):
@@ -104,4 +104,84 @@ async def test_vision_builds_image_block():
     content = stub.calls[0]["messages"][0]["content"]
     assert content[0]["type"] == "image"
     assert content[0]["source"]["media_type"] == "image/png"
+    assert content[1] == {"type": "text", "text": "what is this?"}
+
+
+# ==================== OpenAILLMClient ====================
+
+
+def make_openai_response(text="hello", refusal=None):
+    message = SimpleNamespace(content=text, refusal=refusal)
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+class StubOpenAIClient:
+    """Mimics AsyncOpenAI's .chat.completions surface."""
+
+    def __init__(self, response):
+        self.calls: list[dict] = []
+        self._response = response
+
+        async def create(**kwargs):
+            self.calls.append(kwargs)
+            return self._response
+
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=create))
+
+
+def make_openai(response=None, **kwargs) -> tuple[OpenAILLMClient, StubOpenAIClient]:
+    stub = StubOpenAIClient(response or make_openai_response())
+    return OpenAILLMClient(client=stub, **kwargs), stub
+
+
+async def test_openai_reasoning_model_drops_temperature_uses_completion_cap():
+    client, stub = make_openai()  # default gpt-5.1 -> reasoning family
+    out = await client.chat(
+        [
+            {"role": "system", "content": "You are a planner."},
+            {"role": "user", "content": "plan this"},
+        ],
+        temperature=0.7,
+    )
+    assert out == "hello"
+    call = stub.calls[0]
+    assert call["model"] == "gpt-5.1"
+    assert "temperature" not in call
+    assert call["max_completion_tokens"] == 16000
+    assert "max_tokens" not in call
+    # system message passes through unchanged (native role on this API)
+    assert call["messages"][0] == {"role": "system", "content": "You are a planner."}
+
+
+async def test_openai_classic_model_keeps_temperature_and_max_tokens():
+    client, stub = make_openai(model="gpt-4o")
+    await client.chat([{"role": "user", "content": "hi"}], temperature=0.7, max_tokens=512)
+    call = stub.calls[0]
+    assert call["temperature"] == 0.7
+    assert call["max_tokens"] == 512
+    assert "max_completion_tokens" not in call
+
+
+async def test_openai_response_format_passes_through():
+    client, stub = make_openai()
+    await client.chat(
+        [{"role": "user", "content": "q"}],
+        response_format={"type": "json_object"},
+    )
+    assert stub.calls[0]["response_format"] == {"type": "json_object"}
+
+
+async def test_openai_refusal_raises():
+    client, _ = make_openai(make_openai_response(text=None, refusal="cannot help with that"))
+    with pytest.raises(RuntimeError, match="cannot help with that"):
+        await client.chat([{"role": "user", "content": "q"}])
+
+
+async def test_openai_vision_builds_data_uri_block():
+    client, stub = make_openai(make_openai_response("a chart"))
+    out = await client.vision(b"\x89PNG...", "what is this?", mime_type="image/png")
+    assert out == "a chart"
+    content = stub.calls[0]["messages"][0]["content"]
+    assert content[0]["type"] == "image_url"
+    assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
     assert content[1] == {"type": "text", "text": "what is this?"}

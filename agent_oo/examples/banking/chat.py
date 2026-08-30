@@ -11,13 +11,14 @@ Commands:
   /cancel <id-pfx>  cancel a background job
   /quit             exit
 
-LLM selection:
-- If ANTHROPIC_API_KEY is set (or an `ant auth login` profile exists and you
-  pass --real), the REPL uses Claude (claude-opus-5) via AnthropicLLMClient —
-  real planning and real answers (search/S3 stay fake).
-- Otherwise it falls back to KeywordLLM — a deterministic fake whose
-  *planning* reacts to your wording (deck/slide words pull in `refs`, an
-  attached image pulls in `vision`) so plans still vary without any API key.
+LLM selection (override with --llm=anthropic|openai|fake):
+- ANTHROPIC_API_KEY set -> Claude (claude-opus-5) via AnthropicLLMClient.
+- else OPENAI_API_KEY set -> OpenAI (gpt-5.1, or any OpenAI-compatible
+  endpoint via OPENAI_BASE_URL) via OpenAILLMClient.
+- else KeywordLLM — a deterministic fake whose *planning* reacts to your
+  wording (deck/slide words pull in `refs`, an attached image pulls in
+  `vision`) so plans still vary without any API key.
+Search/S3 stay fake in every mode.
 """
 from __future__ import annotations
 
@@ -105,14 +106,31 @@ class FakeS3:
 # ---------------------------------------------------------------- wiring
 
 def make_llm() -> Any:
-    """Pick the LLM: real Claude when credentials are available, else the fake."""
-    use_real = bool(os.environ.get("ANTHROPIC_API_KEY")) or "--real" in sys.argv
-    if use_real:
+    """Pick the LLM: --llm=... flag wins, else auto-detect by available key."""
+    choice = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--llm=")), None)
+    if choice is None and "--real" in sys.argv:
+        choice = "anthropic"
+    if choice is None:
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            choice = "anthropic"
+        elif os.environ.get("OPENAI_API_KEY"):
+            choice = "openai"
+        else:
+            choice = "fake"
+
+    if choice == "anthropic":
         from ...clients import AnthropicLLMClient
 
-        print("[llm: Claude via AnthropicLLMClient — claude-opus-5]")
-        return AnthropicLLMClient()
-    print("[llm: KeywordLLM fake — set ANTHROPIC_API_KEY (or pass --real) for Claude]")
+        llm = AnthropicLLMClient()
+        print(f"[llm: Claude via AnthropicLLMClient — {llm.model}]")
+        return llm
+    if choice == "openai":
+        from ...clients import OpenAILLMClient
+
+        llm = OpenAILLMClient()
+        print(f"[llm: OpenAI via OpenAILLMClient — {llm.model}]")
+        return llm
+    print("[llm: KeywordLLM fake — set ANTHROPIC_API_KEY or OPENAI_API_KEY for a real model]")
     return KeywordLLM()
 
 
