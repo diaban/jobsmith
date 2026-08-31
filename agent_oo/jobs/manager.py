@@ -27,8 +27,10 @@ cross-process preemption is out of scope for v1.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from ..core.state import NodeError
@@ -42,9 +44,10 @@ def _now() -> str:
 
 
 class JobManager:
-    def __init__(self, graph: Any, store: Any):
+    def __init__(self, graph: Any, store: Any, *, reports_dir: str | Path = "artifacts"):
         self.graph = graph
         self.store = store
+        self.reports_dir = Path(reports_dir)  # markdown reports of finished jobs
         self._tasks: dict[str, asyncio.Task] = {}  # in-process cancellation handles
 
     # ---------------- Persistence helpers ----------------
@@ -61,12 +64,19 @@ class JobManager:
 
     # ---------------- API ----------------
 
-    async def create_job(self, query: str, inputs: dict[str, Any] | None = None) -> Job:
+    async def create_job(
+        self,
+        query: str,
+        inputs: dict[str, Any] | None = None,
+        *,
+        session_id: str | None = None,
+    ) -> Job:
         job = Job(
             job_id=uuid.uuid4().hex,
             status=JobStatus.QUEUED,
             query=query,
             inputs=inputs or {},
+            session_id=session_id,
             created_at=_now(),
         )
         await self._persist_summary(job)
@@ -104,6 +114,8 @@ class JobManager:
         if errors:
             await self._persist_meta(job.job_id, "errors", list(errors))
         job.status = JobStatus.DONE if job.terminal_kind == "answer" else JobStatus.FAILED
+        if job.status is JobStatus.DONE:
+            job.report_path = str(self._write_report(job))
         await self._persist_summary(job)
         return job
 
@@ -114,22 +126,29 @@ class JobManager:
         task.add_done_callback(lambda _: self._tasks.pop(job_id, None))
         return task
 
-    async def get_job(self, job_id: str) -> Job | None:
-        item = await self.store.aget(("jobs", "index"), job_id)
-        if item is None:
-            return None
-        s = item.value
-        job = Job(
+    @staticmethod
+    def _job_from_summary(job_id: str, s: dict[str, Any]) -> Job:
+        return Job(
             job_id=job_id,
             status=JobStatus(s["status"]),
             query=s["query"],
             inputs=s.get("inputs") or {},
+            session_id=s.get("session_id"),
             created_at=s.get("created_at", ""),
             updated_at=s.get("updated_at", ""),
+            step_finished_at=s.get("step_finished_at") or {},
             terminal_kind=s.get("terminal_kind"),
             final_answer=s.get("final_answer"),
             error=s.get("error"),
+            report_path=s.get("report_path"),
+            announced=bool(s.get("announced")),
         )
+
+    async def get_job(self, job_id: str) -> Job | None:
+        item = await self.store.aget(("jobs", "index"), job_id)
+        if item is None:
+            return None
+        job = self._job_from_summary(job_id, item.value)
         plan_item = await self.store.aget(("jobs", job_id, "meta"), "plan")
         if plan_item is not None:
             job.plan = plan_item.value
@@ -138,26 +157,36 @@ class JobManager:
         return job
 
     async def list_jobs(
-        self, *, status: JobStatus | None = None, limit: int = 50
+        self,
+        *,
+        status: JobStatus | None = None,
+        session_id: str | None = None,
+        limit: int = 50,
     ) -> list[Job]:
         items = await self.store.asearch(("jobs", "index"), limit=limit)
-        jobs = [
-            Job(
-                job_id=item.key,
-                status=JobStatus(item.value["status"]),
-                query=item.value["query"],
-                inputs=item.value.get("inputs") or {},
-                created_at=item.value.get("created_at", ""),
-                updated_at=item.value.get("updated_at", ""),
-                terminal_kind=item.value.get("terminal_kind"),
-                final_answer=item.value.get("final_answer"),
-                error=item.value.get("error"),
-            )
-            for item in items
-        ]
+        jobs = [self._job_from_summary(item.key, item.value) for item in items]
         if status is not None:
             jobs = [j for j in jobs if j.status is status]
+        if session_id is not None:
+            jobs = [j for j in jobs if j.session_id == session_id]
         return sorted(jobs, key=lambda j: j.created_at, reverse=True)
+
+    # ---------------- Chat-session support ----------------
+
+    async def list_finished_unannounced(self, session_id: str) -> list[Job]:
+        """Finished jobs of a session whose completion was not yet surfaced
+        in its conversation (the chat layer announces, then marks them)."""
+        jobs = await self.list_jobs(session_id=session_id, limit=100)
+        return [
+            j for j in jobs
+            if j.status in (JobStatus.DONE, JobStatus.FAILED) and not j.announced
+        ]
+
+    async def mark_announced(self, job_id: str) -> None:
+        job = await self.get_job(job_id)
+        if job is not None and not job.announced:
+            job.announced = True
+            await self._persist_summary(job)
 
     async def cancel_job(self, job_id: str) -> Job | None:
         task = self._tasks.get(job_id)
@@ -175,6 +204,67 @@ class JobManager:
             await self._persist_summary(job)
         return job
 
+    # ---------------- Markdown report ----------------
+
+    def _write_report(self, job: Job) -> Path:
+        """Write the job's markdown report to reports_dir/<job_id>.md."""
+        self.reports_dir.mkdir(parents=True, exist_ok=True)
+        path = self.reports_dir / f"{job.job_id}.md"
+        path.write_text(self._render_report(job), encoding="utf-8")
+        return path
+
+    def _render_report(self, job: Job) -> str:
+        lines = [
+            f"# Job report — {job.query[:80]}",
+            "",
+            f"- **Job**: `{job.job_id}`",
+            f"- **Created**: {job.created_at}",
+            f"- **Finished**: {_now()}",
+        ]
+        if job.session_id:
+            lines.append(f"- **Session**: `{job.session_id}`")
+        lines += ["", "## Answer", "", job.final_answer or "_(no answer)_"]
+
+        if job.plan and job.plan.get("steps"):
+            steps = job.plan["steps"]
+            lines += ["", "## Plan", ""]
+            if job.plan.get("rationale"):
+                lines += [f"_{job.plan['rationale']}_", ""]
+            lines += ["| step | depends on | status | finished at |", "|---|---|---|---|"]
+            for s in steps:
+                name = s["capability"]
+                result = job.results.get(name)
+                status = "ok" if result and result.get("ok") else (
+                    f"failed ({result.get('error')})" if result else "not run"
+                )
+                lines.append(
+                    f"| {name} | {', '.join(s['depends_on']) or '—'} | {status} "
+                    f"| {job.step_finished_at.get(name, '—')} |"
+                )
+            lines += ["", "```mermaid", "flowchart LR"]
+            for s in steps:
+                if s["depends_on"]:
+                    lines += [f"  {dep} --> {s['capability']}" for dep in s["depends_on"]]
+                else:
+                    lines.append(f"  {s['capability']}")
+            lines += ["```"]
+
+        if job.results:
+            lines += ["", "## Capability artifacts"]
+            order = [s["capability"] for s in (job.plan or {}).get("steps", [])]
+            for name in sorted(job.results, key=lambda n: order.index(n) if n in order else 99):
+                result = job.results[name]
+                lines += [
+                    "",
+                    f"### {name} — {'ok' if result.get('ok') else 'failed'}",
+                    "",
+                    "```json",
+                    json.dumps(result.get("data") or {"error": result.get("error")},
+                               indent=2, ensure_ascii=False),
+                    "```",
+                ]
+        return "\n".join(lines) + "\n"
+
     # ---------------- Streaming updates ----------------
 
     async def _apply_update(
@@ -191,6 +281,7 @@ class JobManager:
             elif node.startswith("cap_"):
                 for cap_name, result in (val.get("results") or {}).items():
                     job.results[cap_name] = result
+                    job.step_finished_at[cap_name] = _now()
                     await self._persist_artifact(job.job_id, cap_name, result)
                 await self._persist_summary(job)  # touch updated_at for progress
             elif node in _TERMINAL_NODES:

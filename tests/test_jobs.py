@@ -39,18 +39,18 @@ class SlowEcho(Capability):
         return g.compile()
 
 
-def make_manager(store, checkpointer, *, caps=None, llm=None) -> JobManager:
+def make_manager(store, checkpointer, tmp_path, *, caps=None, llm=None) -> JobManager:
     caps = caps if caps is not None else [SlowEcho("alpha")]
     llm = llm or FakeLLM(
         {"planner": plan_json(*[c.spec.name for c in caps])},
         default="A sufficiently long final answer for the job test.",
     )
     graph = build_agent(Deps(llm=llm), CapabilityRegistry(caps), checkpointer=checkpointer)
-    return JobManager(graph, store)
+    return JobManager(graph, store, reports_dir=tmp_path / "artifacts")
 
 
-async def test_create_run_done_with_store_contents(store, checkpointer):
-    mgr = make_manager(store, checkpointer, caps=[SlowEcho("alpha"), SlowEcho("beta")])
+async def test_create_run_done_with_store_contents(store, checkpointer, tmp_path):
+    mgr = make_manager(store, checkpointer, tmp_path, caps=[SlowEcho("alpha"), SlowEcho("beta")])
     job = await mgr.create_job("do the thing", {"key": "val"})
     assert job.status is JobStatus.QUEUED
 
@@ -75,14 +75,14 @@ async def test_create_run_done_with_store_contents(store, checkpointer):
     assert fetched.results["beta"]["data"]["echo"] == "beta"
 
 
-async def test_failed_job_records_error_and_errors_meta(store, checkpointer):
+async def test_failed_job_records_error_and_errors_meta(store, checkpointer, tmp_path):
     class ExplodingGenLLM(FakeLLM):
         async def chat(self, messages, **kwargs):
             if "planner" in self._system_of(messages):
                 return plan_json("alpha")
             raise RuntimeError("llm down")
 
-    mgr = make_manager(store, checkpointer, llm=ExplodingGenLLM())
+    mgr = make_manager(store, checkpointer, tmp_path, llm=ExplodingGenLLM())
     job = await mgr.create_job("q")
     done = await mgr.run_job(job.job_id)
     assert done.status is JobStatus.FAILED
@@ -92,8 +92,8 @@ async def test_failed_job_records_error_and_errors_meta(store, checkpointer):
     assert any(e["kind"] == "generation_fail" for e in errors.value)
 
 
-async def test_run_requires_queued(store, checkpointer):
-    mgr = make_manager(store, checkpointer)
+async def test_run_requires_queued(store, checkpointer, tmp_path):
+    mgr = make_manager(store, checkpointer, tmp_path)
     job = await mgr.create_job("q")
     await mgr.run_job(job.job_id)
     with pytest.raises(ValueError, match="expected queued"):
@@ -102,8 +102,8 @@ async def test_run_requires_queued(store, checkpointer):
         await mgr.run_job("nonexistent")
 
 
-async def test_list_jobs_filtering(store, checkpointer):
-    mgr = make_manager(store, checkpointer)
+async def test_list_jobs_filtering(store, checkpointer, tmp_path):
+    mgr = make_manager(store, checkpointer, tmp_path)
     j1 = await mgr.create_job("first")
     j2 = await mgr.create_job("second")
     await mgr.run_job(j1.job_id)
@@ -116,8 +116,8 @@ async def test_list_jobs_filtering(store, checkpointer):
     assert [j.job_id for j in done] == [j1.job_id]
 
 
-async def test_start_and_cancel_running_job(store, checkpointer):
-    mgr = make_manager(store, checkpointer, caps=[SlowEcho("slow", delay=30.0)])
+async def test_start_and_cancel_running_job(store, checkpointer, tmp_path):
+    mgr = make_manager(store, checkpointer, tmp_path, caps=[SlowEcho("slow", delay=30.0)])
     job = await mgr.create_job("long thing")
     task = mgr.start_job(job.job_id)
 
@@ -136,8 +136,8 @@ async def test_start_and_cancel_running_job(store, checkpointer):
     assert snapshot is not None and snapshot.values.get("plan") is not None
 
 
-async def test_cancel_tombstone_without_task(store, checkpointer):
-    mgr = make_manager(store, checkpointer)
+async def test_cancel_tombstone_without_task(store, checkpointer, tmp_path):
+    mgr = make_manager(store, checkpointer, tmp_path)
     job = await mgr.create_job("q")
     cancelled = await mgr.cancel_job(job.job_id)  # never started
     assert cancelled.status is JobStatus.CANCELLED
@@ -148,7 +148,62 @@ async def test_cancel_tombstone_without_task(store, checkpointer):
     assert after.status is JobStatus.DONE
 
 
-async def test_status_transitions_observed_mid_stream(store, checkpointer):
+async def test_report_written_on_done(store, checkpointer, tmp_path):
+    mgr = make_manager(store, checkpointer, tmp_path, caps=[SlowEcho("alpha"), SlowEcho("beta")])
+    job = await mgr.create_job("write the report")
+    done = await mgr.run_job(job.job_id)
+
+    assert done.report_path is not None
+    report = (tmp_path / "artifacts" / f"{job.job_id}.md").read_text()
+    assert "# Job report — write the report" in report
+    assert "final answer" in report          # the answer section
+    assert "| alpha |" in report             # plan table
+    assert "flowchart LR" in report          # mermaid DAG
+    assert '"echo": "beta"' in report        # artifact payload
+    # per-step timestamps recorded as capabilities finished
+    assert set(done.step_finished_at) == {"alpha", "beta"}
+    # the path survives a round-trip through the store
+    fetched = await mgr.get_job(job.job_id)
+    assert fetched.report_path == done.report_path
+
+
+async def test_no_report_on_failed_job(store, checkpointer, tmp_path):
+    class ExplodingGenLLM(FakeLLM):
+        async def chat(self, messages, **kwargs):
+            if "planner" in self._system_of(messages):
+                return plan_json("alpha")
+            raise RuntimeError("llm down")
+
+    mgr = make_manager(store, checkpointer, tmp_path, llm=ExplodingGenLLM())
+    job = await mgr.create_job("q")
+    done = await mgr.run_job(job.job_id)
+    assert done.status is JobStatus.FAILED
+    assert done.report_path is None
+
+
+async def test_session_filter_and_announcement_flow(store, checkpointer, tmp_path):
+    mgr = make_manager(store, checkpointer, tmp_path)
+    in_session = await mgr.create_job("mine", session_id="s1")
+    _other = await mgr.create_job("other", session_id="s2")
+    no_session = await mgr.create_job("bare")
+
+    listed = await mgr.list_jobs(session_id="s1")
+    assert [j.job_id for j in listed] == [in_session.job_id]
+
+    # nothing finished yet → nothing to announce
+    assert await mgr.list_finished_unannounced("s1") == []
+
+    await mgr.run_job(in_session.job_id)
+    await mgr.run_job(no_session.job_id)  # finished but session-less: never announced
+    pending = await mgr.list_finished_unannounced("s1")
+    assert [j.job_id for j in pending] == [in_session.job_id]
+    assert pending[0].final_answer is not None  # enough to build the synthesis
+
+    await mgr.mark_announced(in_session.job_id)
+    assert await mgr.list_finished_unannounced("s1") == []
+
+
+async def test_status_transitions_observed_mid_stream(store, checkpointer, tmp_path):
     """Artifacts are persisted as capabilities finish, before the job ends."""
     seen: list[str] = []
 
@@ -166,7 +221,7 @@ async def test_status_transitions_observed_mid_stream(store, checkpointer):
         def __getattr__(self, name):
             return getattr(self.inner, name)
 
-    mgr = make_manager(ObservantStore(store), checkpointer)
+    mgr = make_manager(ObservantStore(store), checkpointer, tmp_path)
     job = await mgr.create_job("q")
     await mgr.run_job(job.job_id)
     assert seen[0] == "status:queued"
