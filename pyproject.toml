@@ -30,6 +30,10 @@ packages = ["agent_oo"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+filterwarnings = [
+    # create_react_agent moves to langchain.agents in langgraph v2; migrate then.
+    "ignore:create_react_agent has been moved:DeprecationWarning",
+]
 
 [tool.ruff]
 line-length = 100

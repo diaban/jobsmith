@@ -5,8 +5,12 @@ import json
 from typing import Any
 
 import pytest
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
+from pydantic import Field
 
 
 class FakeLLM:
@@ -48,6 +52,30 @@ class FakeLLM:
     async def vision(self, image_bytes: bytes, prompt: str, *, mime_type: str = "image/png") -> str:
         self.calls.append({"vision_prompt": prompt})
         return "a chart showing quarterly revenue"
+
+
+class ScriptedChatModel(BaseChatModel):
+    """Scripted LangChain chat model for the chat-agent tests.
+
+    Pops `responses` in order (last one repeats); records every model input in
+    `calls` so tests can assert on injected messages. `bind_tools` is a no-op —
+    scripted responses carry their own `tool_calls`.
+    """
+
+    responses: list[AIMessage]
+    calls: list[list[BaseMessage]] = Field(default_factory=list)
+
+    @property
+    def _llm_type(self) -> str:
+        return "scripted"
+
+    def bind_tools(self, tools: Any, **kwargs: Any) -> ScriptedChatModel:
+        return self
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+        self.calls.append(list(messages))
+        msg = self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
+        return ChatResult(generations=[ChatGeneration(message=msg)])
 
 
 class FakeSearch:
