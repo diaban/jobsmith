@@ -4,26 +4,35 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-`agent_oo` is a **domain-agnostic agent planner/executor framework** on LangGraph, written in an **object-oriented** node pattern. A user message comes in; a registry-driven planner emits a DAG of pluggable capabilities (self-describing agentic sub-graphs); a wave-based executor fans them out in parallel where dependencies allow; a generation pipeline merges their results into an answer. Each run is a persistent, trackable, cancellable **Job**. Above the job engine sits a **conversational chat layer** (`agent_oo/chat/`): a LangGraph prebuilt ReAct agent that answers simple messages directly and launches complex tasks as background jobs (human-in-the-loop approval), then surfaces finished-job reports back into the conversation. The original banking-specific agent survives as an example under `agent_oo/examples/banking/`.
+`agent_oo` is both a **product** — a general-purpose conversational agent (`python -m agent_oo`) that answers simple messages directly and launches complex tasks as **background jobs** (human-in-the-loop approval), keeps chatting while they run, then surfaces finished-job markdown reports back into the conversation — and the **domain-agnostic framework** it is built on (LangGraph, object-oriented node pattern): a registry-driven planner emits a DAG of pluggable capabilities (self-describing agentic sub-graphs); a wave-based executor fans them out in parallel; a generation pipeline merges their results; each run is a persistent, trackable, cancellable **Job**; a chat layer (`agent_oo/chat/`, LangGraph prebuilt ReAct agent) sits on top. **`agent_oo/app/` is the product's composition root** (provider selection, default LLM-only capability pack research→analysis→critique, generic REPL shell, entrypoints); `agent_oo/examples/banking/` is a domain example that reuses those shells and only supplies its own capabilities/profile.
 
 ## Commands
 
-A Makefile wraps the common ones: `make help` lists them (`install`, `install-all`, `test [T=kw]`, `lint`, `fix`, `check` = lint+leak-gate+tests, `demo`, `chat [LLM=...]`, `api [PORT=...]`, `clean`). Raw equivalents:
+A Makefile wraps the common ones: `make help` lists them (`install`, `install-all`, `test [T=kw]`, `lint`, `fix`, `check` = lint+leak-gate+tests, `chat`/`api` = the global agent, `chat-banking`/`api-banking`/`demo-banking` = the example, `clean`). Raw equivalents:
 
 ```bash
-uv venv --python 3.12 .venv && uv pip install -e ".[dev,anthropic]"  # setup
+uv venv --python 3.12 .venv && uv pip install -e ".[dev,api,anthropic]"  # setup
 .venv/bin/python -m pytest tests/ -q                        # all tests
-.venv/bin/python -m pytest tests/test_jobs.py -q            # one file
 .venv/bin/python -m pytest tests/test_planner.py::test_cycle_rejected  # one test
 .venv/bin/ruff check .                                      # lint
-.venv/bin/python -m agent_oo.examples.banking.main          # runnable demo (fakes)
-.venv/bin/python -m agent_oo.examples.banking.chat          # interactive REPL
-.venv/bin/python -m agent_oo.examples.banking.api [port]    # HTTP API (needs .[api]); docs at /docs
+.venv/bin/python -m agent_oo                                # ★ the global agent (chat REPL)
+.venv/bin/python -m agent_oo api [port]                     # ★ its HTTP API (needs .[api]); docs at /docs
+.venv/bin/python -m agent_oo.examples.banking.main          # banking demo (fakes)
+.venv/bin/python -m agent_oo.examples.banking.chat          # banking REPL
+.venv/bin/python -m agent_oo.examples.banking.api [port]    # banking API
 ```
 
 The REPL is a CONVERSATION by default (chat agent; complex asks → job proposal → y/N approval → background job → synthesis + report path on a later turn); `/bg <text>` bypasses the chat and runs a job directly. It auto-selects the provider for BOTH stacks (`--llm=anthropic|openai|fake` overrides): the job engine uses `agent_oo/clients.py` adapters, the chat agent uses LangChain models (`langchain-anthropic`/`langchain-openai`, extras `chat-anthropic`/`chat-openai`; fake mode needs neither). Job-engine LLM selection: `AnthropicLLMClient` (`claude-opus-5`) when `ANTHROPIC_API_KEY` is set, else `OpenAILLMClient` (`gpt-5.1`; honors `OPENAI_BASE_URL` for Ollama/vLLM/gateways) when `OPENAI_API_KEY` is set, else the deterministic `KeywordLLM` fake. Both real adapters live in `agent_oo/clients.py`, implement chat+vision, take an injectable `client` for tests, and raise `RuntimeError` on refusals so they flow through the framework's NodeError path. Provider quirks handled there: the Anthropic adapter drops `temperature` (removed on Claude Opus 5 — sending it 400s), hoists `system` messages to the top-level param, and enables server-side refusal fallbacks; the OpenAI adapter drops `temperature` and uses `max_completion_tokens` for reasoning models (gpt-5*/o*).
 
-Domain-leakage gate (must return nothing): `grep -ri "banking\|banquier\|Votre\|analyste" agent_oo/core agent_oo/jobs`
+Domain-leakage gate (`make leak-check`, must return nothing): `grep -ri --include="*.py" "banking\|banquier\|votre\|analyste" agent_oo/core agent_oo/jobs agent_oo/chat agent_oo/api agent_oo/app`
+
+### The global agent (`app/`)
+
+The product's composition root — everything here is domain-neutral:
+- `providers.py`: `pick_provider` (one `--llm=` flag / key auto-detect shared by both LLM stacks), `make_llm` (job engine, `clients.py` adapters), `make_chat_model` (LangChain), `load_dotenv`, and the keyless fakes — `KeywordLLM` plans by **parsing capability names out of the rendered planner prompt** (works with any registry), `KeywordChatModel` proposes a job on analysis-ish keywords.
+- `capabilities/`: the default LLM-only pack — `research` (decompose into aspects, lenient JSON, then structured notes) → `analysis` → `critique`. The latter two subclass `SingleStepCapability` (`_step.py`): one LLM node reading the best upstream `results` entry, degrading to the bare request when the upstream failed/was skipped. `default_capabilities(llm)` builds the pack.
+- `repl.py`: the generic chat shell (`run_repl(manager, session)`) with HITL y/N rendering and the `/jobs` `/job` `/bg` `/image` `/cancel` commands — reused by the banking example.
+- `agent.py`/`main.py`: `build_app(**overrides) -> AgentApp(manager, session_factory)`; `python -m agent_oo [api [port]]`.
 
 ## Architecture
 
