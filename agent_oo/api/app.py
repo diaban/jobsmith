@@ -1,0 +1,158 @@
+"""FastAPI app factory — the HTTP shape of the future chat + jobs UI.
+
+    create_api(manager, session_factory) -> FastAPI
+
+- Chat tab:   POST /sessions, then POST /sessions/{id}/messages. A reply is
+  either {"type": "message"} or {"type": "proposal"} (the agent wants to
+  launch a background job — human-in-the-loop); the client answers with
+  POST /sessions/{id}/approval {"approved": bool}.
+- Jobs tab:   GET /jobs (+?session_id/?status), GET /jobs/{id} (plan/DAG,
+  step timestamps, artifacts), POST /jobs (direct launch, bypassing chat),
+  POST /jobs/{id}/cancel.
+- Artifacts:  GET /jobs/{id}/report — the markdown report.
+- Live:       GET /events — SSE stream of job-progress events
+  (JobManager.subscribe; in-process pub/sub, same v1 scope as cancellation).
+
+Domain-agnostic: the domain arrives entirely through the injected manager and
+session factory (see examples/banking/api.py for a runnable composition).
+"""
+from __future__ import annotations
+
+import dataclasses
+import json
+from collections.abc import Callable
+from typing import Any
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import PlainTextResponse, StreamingResponse
+from langchain_core.messages import HumanMessage
+from langgraph.types import Command
+from pydantic import BaseModel
+
+from ..chat.session import ChatSession
+from ..jobs.manager import JobManager
+from ..jobs.models import JobStatus
+
+
+class MessageIn(BaseModel):
+    text: str
+
+
+class ApprovalIn(BaseModel):
+    approved: bool
+
+
+class JobIn(BaseModel):
+    query: str
+    inputs: dict[str, Any] | None = None
+    session_id: str | None = None
+
+
+class _SessionEntry:
+    def __init__(self, session: ChatSession):
+        self.session = session
+        self.agent = session.build()
+        self.config = {"configurable": {"thread_id": session.session_id}}
+
+
+def _shape_reply(result: dict) -> dict:
+    """Chat result → API reply: a plain message, or a job proposal to approve."""
+    if "__interrupt__" in result:
+        proposal = result["__interrupt__"][0].value
+        return {
+            "type": "proposal",
+            "query": proposal.get("query"),
+            "rationale": proposal.get("rationale"),
+        }
+    return {"type": "message", "content": result["messages"][-1].content}
+
+
+def create_api(manager: JobManager, session_factory: Callable[[], ChatSession]) -> FastAPI:
+    app = FastAPI(title="agent_oo", version="0.1.0")
+    sessions: dict[str, _SessionEntry] = {}
+
+    def _entry(session_id: str) -> _SessionEntry:
+        entry = sessions.get(session_id)
+        if entry is None:
+            raise HTTPException(404, f"unknown session: {session_id}")
+        return entry
+
+    async def _job_or_404(job_id: str):
+        job = await manager.get_job(job_id)
+        if job is None:
+            raise HTTPException(404, f"unknown job: {job_id}")
+        return job
+
+    # ---------------- chat ----------------
+
+    @app.post("/sessions", status_code=201)
+    async def create_session() -> dict:
+        entry = _SessionEntry(session_factory())
+        sessions[entry.session.session_id] = entry
+        return {"session_id": entry.session.session_id}
+
+    @app.post("/sessions/{session_id}/messages")
+    async def post_message(session_id: str, body: MessageIn) -> dict:
+        entry = _entry(session_id)
+        result = await entry.agent.ainvoke(
+            {"messages": [HumanMessage(body.text)]}, entry.config
+        )
+        return _shape_reply(result)
+
+    @app.post("/sessions/{session_id}/approval")
+    async def post_approval(session_id: str, body: ApprovalIn) -> dict:
+        entry = _entry(session_id)
+        result = await entry.agent.ainvoke(
+            Command(resume={"approved": body.approved}), entry.config
+        )
+        return _shape_reply(result)
+
+    # ---------------- jobs ----------------
+
+    @app.get("/jobs")
+    async def list_jobs(session_id: str | None = None, status: JobStatus | None = None):
+        jobs = await manager.list_jobs(session_id=session_id, status=status, limit=100)
+        return [j.summary() | {"job_id": j.job_id} for j in jobs]
+
+    @app.get("/jobs/{job_id}")
+    async def get_job(job_id: str):
+        return dataclasses.asdict(await _job_or_404(job_id))
+
+    @app.post("/jobs", status_code=201)
+    async def launch_job(body: JobIn) -> dict:
+        job = await manager.create_job(body.query, body.inputs, session_id=body.session_id)
+        manager.start_job(job.job_id)
+        return {"job_id": job.job_id, "status": job.status.value}
+
+    @app.post("/jobs/{job_id}/cancel")
+    async def cancel_job(job_id: str):
+        await _job_or_404(job_id)
+        cancelled = await manager.cancel_job(job_id)
+        return {"job_id": job_id, "status": cancelled.status.value}
+
+    @app.get("/jobs/{job_id}/report")
+    async def get_report(job_id: str) -> PlainTextResponse:
+        job = await _job_or_404(job_id)
+        if not job.report_path:
+            raise HTTPException(404, "no report for this job (not DONE yet?)")
+        return PlainTextResponse(
+            (manager.reports_dir / f"{job_id}.md").read_text(encoding="utf-8"),
+            media_type="text/markdown",
+        )
+
+    # ---------------- live events ----------------
+
+    @app.get("/events")
+    async def events(request: Request) -> StreamingResponse:
+        async def stream():
+            queue = manager.subscribe()
+            try:
+                while True:
+                    event = await queue.get()
+                    yield f"data: {json.dumps(event)}\n\n"
+            finally:
+                manager.unsubscribe(queue)
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
+    return app

@@ -203,6 +203,26 @@ async def test_session_filter_and_announcement_flow(store, checkpointer, tmp_pat
     assert await mgr.list_finished_unannounced("s1") == []
 
 
+async def test_subscribe_streams_job_events(store, checkpointer, tmp_path):
+    mgr = make_manager(store, checkpointer, tmp_path)
+    queue = mgr.subscribe()
+    job = await mgr.create_job("watched", session_id="s1")
+    await mgr.run_job(job.job_id)
+
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    assert events[0]["status"] == "queued"
+    assert events[-1]["status"] == "done"
+    assert events[-1]["report_path"] is not None
+    assert all(e["job_id"] == job.job_id and e["session_id"] == "s1" for e in events)
+    assert any(e["steps_done"] == ["alpha"] for e in events)  # mid-run progress
+
+    mgr.unsubscribe(queue)
+    await mgr.mark_announced(job.job_id)  # persists a summary → would emit
+    assert queue.empty()
+
+
 async def test_status_transitions_observed_mid_stream(store, checkpointer, tmp_path):
     """Artifacts are persisted as capabilities finish, before the job ends."""
     seen: list[str] = []

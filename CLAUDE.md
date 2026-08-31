@@ -16,6 +16,7 @@ uv venv --python 3.12 .venv && uv pip install -e ".[dev,anthropic]"  # setup
 .venv/bin/ruff check .                                      # lint
 .venv/bin/python -m agent_oo.examples.banking.main          # runnable demo (fakes)
 .venv/bin/python -m agent_oo.examples.banking.chat          # interactive REPL
+.venv/bin/python -m agent_oo.examples.banking.api [port]    # HTTP API (needs .[api]); docs at /docs
 ```
 
 The REPL is a CONVERSATION by default (chat agent; complex asks → job proposal → y/N approval → background job → synthesis + report path on a later turn); `/bg <text>` bypasses the chat and runs a job directly. It auto-selects the provider for BOTH stacks (`--llm=anthropic|openai|fake` overrides): the job engine uses `agent_oo/clients.py` adapters, the chat agent uses LangChain models (`langchain-anthropic`/`langchain-openai`, extras `chat-anthropic`/`chat-openai`; fake mode needs neither). Job-engine LLM selection: `AnthropicLLMClient` (`claude-opus-5`) when `ANTHROPIC_API_KEY` is set, else `OpenAILLMClient` (`gpt-5.1`; honors `OPENAI_BASE_URL` for Ollama/vLLM/gateways) when `OPENAI_API_KEY` is set, else the deterministic `KeywordLLM` fake. Both real adapters live in `agent_oo/clients.py`, implement chat+vision, take an injectable `client` for tests, and raise `RuntimeError` on refusals so they flow through the framework's NodeError path. Provider quirks handled there: the Anthropic adapter drops `temperature` (removed on Claude Opus 5 — sending it 400s), hoists `system` messages to the top-level param, and enables server-side refusal fallbacks; the OpenAI adapter drops `temperature` and uses `max_completion_tokens` for reasoning models (gpt-5*/o*).
@@ -71,6 +72,14 @@ Capability `build()` MUST use `self.state_graph(PrivateState)` (which sets `outp
 - **Tools** (`chat/tools.py`) wrap JobManager use-cases, scoped to the session's own jobs. `launch_job` is **human-in-the-loop**: it `interrupt()`s with `{action, query, rationale}` before creating anything; resume with `Command(resume={"approved": bool})`. Approved → `create_job(session_id=...)` + `start_job` (background, non-blocking).
 - **Notifications**: `notify_finished_jobs` pre-model hook injects a `SystemMessage` ("background jobs finished" marker) with final answer + report path for unannounced session jobs, marks them announced. **Gotcha**: `llm_input_messages` is a persisted channel — the hook must reset it every turn (return current messages) or a stale notice replays.
 - Tests script the model with `conftest.ScriptedChatModel` (AIMessages with `tool_calls`, `bind_tools` no-op, records inputs in `.calls`).
+
+### HTTP API (`api/`)
+
+`create_api(manager, session_factory) -> FastAPI` (extra `.[api]`; banking runner: `examples/banking/api.py`). Domain-agnostic — everything arrives via the injected manager/factory.
+
+- **Chat**: `POST /sessions` → id; `POST /sessions/{id}/messages` returns `{"type": "message"}` or `{"type": "proposal"}` (HITL interrupt surfaced over HTTP); client answers with `POST /sessions/{id}/approval {"approved": bool}`.
+- **Jobs**: `GET /jobs[?session_id&status]`, `GET /jobs/{id}` (plan/step_finished_at/results — the UI's DAG data), `POST /jobs` (direct launch), `POST /jobs/{id}/cancel`, `GET /jobs/{id}/report` (markdown).
+- **Live**: `GET /events` — SSE over `JobManager.subscribe()`: every `_persist_summary` emits `{job_id, status, steps_done, report_path, ...}` to subscriber queues (`put_nowait`, drops on full — never blocks a run; in-process only, same v1 scope as cancellation). SSE can't be exercised through httpx `ASGITransport` (it buffers the whole body) — the pub/sub is unit-tested in `test_jobs.py`, endpoints in `test_api.py`.
 
 ### Adding a capability
 

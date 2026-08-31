@@ -49,12 +49,14 @@ class JobManager:
         self.store = store
         self.reports_dir = Path(reports_dir)  # markdown reports of finished jobs
         self._tasks: dict[str, asyncio.Task] = {}  # in-process cancellation handles
+        self._subscribers: set[asyncio.Queue] = set()  # live job-event queues (SSE, UI)
 
     # ---------------- Persistence helpers ----------------
 
     async def _persist_summary(self, job: Job) -> None:
         job.updated_at = _now()
         await self.store.aput(("jobs", "index"), job.job_id, job.summary())
+        self._emit(job)
 
     async def _persist_meta(self, job_id: str, key: str, value: Any) -> None:
         await self.store.aput(("jobs", job_id, "meta"), key, value)
@@ -170,6 +172,34 @@ class JobManager:
         if session_id is not None:
             jobs = [j for j in jobs if j.session_id == session_id]
         return sorted(jobs, key=lambda j: j.created_at, reverse=True)
+
+    # ---------------- Live events (in-process pub/sub) ----------------
+
+    def subscribe(self, *, max_queue: int = 256) -> asyncio.Queue:
+        """Get a queue of job-progress events (every summary persist emits one).
+        In-process only — same v1 scope as task cancellation."""
+        queue: asyncio.Queue = asyncio.Queue(maxsize=max_queue)
+        self._subscribers.add(queue)
+        return queue
+
+    def unsubscribe(self, queue: asyncio.Queue) -> None:
+        self._subscribers.discard(queue)
+
+    def _emit(self, job: Job) -> None:
+        event = {
+            "job_id": job.job_id,
+            "status": job.status.value,
+            "session_id": job.session_id,
+            "query": job.query[:80],
+            "steps_done": sorted(job.step_finished_at),
+            "report_path": job.report_path,
+            "updated_at": job.updated_at,
+        }
+        for queue in list(self._subscribers):
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:  # slow consumer: drop rather than block a run
+                pass
 
     # ---------------- Chat-session support ----------------
 
