@@ -13,8 +13,9 @@ import sys
 from langgraph.checkpoint.memory import MemorySaver
 
 from ...api import create_api
+from ...app.providers import load_dotenv, make_chat_model, make_llm, pick_provider
 from ...chat import ChatSession
-from .chat import build_chat, load_dotenv, make_chat_model, make_llm, pick_provider
+from .chat import build_chat
 from .profile import BANKING_CHAT_PROMPT
 
 
