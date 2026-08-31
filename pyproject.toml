@@ -14,6 +14,14 @@ anthropic = [
 openai = [
     "openai>=1.60",
 ]
+# LangChain chat models for the conversational front agent (agent_oo/chat).
+# langchain-core itself already comes in transitively via langgraph.
+chat-anthropic = [
+    "langchain-anthropic>=0.3",
+]
+chat-openai = [
+    "langchain-openai>=0.3",
+]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
