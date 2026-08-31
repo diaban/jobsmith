@@ -3,7 +3,7 @@
 Everything user-facing or prompt-shaped lives here — core node classes read
 their prompts, messages, and validation rules from the profile instead of
 hardcoding them. The defaults are neutral English; a domain ships its own
-profile (see examples/banking/profile.py).
+profile (see the bundled example under agent_oo/examples/).
 
 Validation rules are plain callables:
 - InputRule(state)  -> user-facing rejection message, or None if OK

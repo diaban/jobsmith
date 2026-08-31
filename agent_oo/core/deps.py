@@ -3,7 +3,7 @@
 Domain-specific clients (search engines, object stores, ...) belong to the
 capabilities that use them — capability constructors take exactly the clients
 they need. `Deps` can be subclassed by a domain profile to aggregate more
-clients for its own composition root (see examples/banking/deps.py).
+clients for its own composition root (see the bundled example under agent_oo/examples/).
 """
 from __future__ import annotations
 

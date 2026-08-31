@@ -8,6 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
+A Makefile wraps the common ones: `make help` lists them (`install`, `install-all`, `test [T=kw]`, `lint`, `fix`, `check` = lint+leak-gate+tests, `demo`, `chat [LLM=...]`, `api [PORT=...]`, `clean`). Raw equivalents:
+
 ```bash
 uv venv --python 3.12 .venv && uv pip install -e ".[dev,anthropic]"  # setup
 .venv/bin/python -m pytest tests/ -q                        # all tests

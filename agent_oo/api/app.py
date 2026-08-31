@@ -14,7 +14,7 @@
   (JobManager.subscribe; in-process pub/sub, same v1 scope as cancellation).
 
 Domain-agnostic: the domain arrives entirely through the injected manager and
-session factory (see examples/banking/api.py for a runnable composition).
+session factory (a runnable composition ships with the bundled example).
 """
 from __future__ import annotations
 
@@ -23,9 +23,10 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from langchain_core.messages import HumanMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 from pydantic import BaseModel
 
@@ -52,7 +53,7 @@ class _SessionEntry:
     def __init__(self, session: ChatSession):
         self.session = session
         self.agent = session.build()
-        self.config = {"configurable": {"thread_id": session.session_id}}
+        self.config: RunnableConfig = {"configurable": {"thread_id": session.session_id}}
 
 
 def _shape_reply(result: dict) -> dict:
@@ -126,9 +127,9 @@ def create_api(manager: JobManager, session_factory: Callable[[], ChatSession]) 
 
     @app.post("/jobs/{job_id}/cancel")
     async def cancel_job(job_id: str):
-        await _job_or_404(job_id)
-        cancelled = await manager.cancel_job(job_id)
-        return {"job_id": job_id, "status": cancelled.status.value}
+        job = await _job_or_404(job_id)
+        cancelled = await manager.cancel_job(job.job_id) or job
+        return {"job_id": job.job_id, "status": cancelled.status.value}
 
     @app.get("/jobs/{job_id}/report")
     async def get_report(job_id: str) -> PlainTextResponse:
@@ -143,7 +144,7 @@ def create_api(manager: JobManager, session_factory: Callable[[], ChatSession]) 
     # ---------------- live events ----------------
 
     @app.get("/events")
-    async def events(request: Request) -> StreamingResponse:
+    async def events() -> StreamingResponse:
         async def stream():
             queue = manager.subscribe()
             try:
