@@ -22,6 +22,21 @@ OutputRule = Callable[[AgentState], "str | None"]
 
 # ---------- Default prompts / messages ----------
 
+# NOTE: wording matters for tests — FakeLLM/KeywordLLM script responses by
+# system-prompt substring, so each prompt keeps a distinctive marker
+# ("triage" here, "planner" below, "ONLY the provided" in the generator, ...).
+DEFAULT_ROUTER_TEMPLATE = """You are the triage step of an assistant agent.
+Read the user's message and choose exactly one route.
+
+Routes:
+{routes}
+
+For reference, the capabilities the "plan" route can orchestrate:
+{capabilities}
+
+Return ONLY a JSON object, no prose, no markdown fences:
+{{"route": "<route name>", "rationale": "<short explanation>"}}"""
+
 DEFAULT_PLANNER_TEMPLATE = """You are the planner of an assistant agent.
 Given a user's request, decide which of the available capabilities are needed
 and in what order. Output a JSON object describing a DAG.
@@ -54,6 +69,12 @@ DEFAULT_REFINER_TEMPLATE = (
     "Validation issues: {issues}\n"
     "Re-write the answer fixing these issues. Keep using only the provided "
     "context and inline [doc_id] citations."
+)
+
+DEFAULT_DIRECT_ANSWER_TEMPLATE = (
+    "You are an assistant. Answer the user's message directly, concisely and "
+    "helpfully — it needs no external context. If asked what you can do, "
+    "describe the capabilities below in plain language:\n{capabilities}"
 )
 
 DEFAULT_USER_ERROR_MESSAGE = "An error occurred while processing your request."
@@ -92,7 +113,9 @@ def rule_min_answer_len(min_len: int = 20) -> OutputRule:
 
 @dataclass(frozen=True)
 class AgentProfile:
+    router_prompt_template: str = DEFAULT_ROUTER_TEMPLATE
     planner_prompt_template: str = DEFAULT_PLANNER_TEMPLATE
+    direct_answer_prompt_template: str = DEFAULT_DIRECT_ANSWER_TEMPLATE
     generator_system_prompt: str = DEFAULT_GENERATOR_PROMPT
     refiner_prompt_template: str = DEFAULT_REFINER_TEMPLATE
     user_error_message: str = DEFAULT_USER_ERROR_MESSAGE

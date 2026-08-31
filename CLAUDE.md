@@ -38,13 +38,15 @@ Every graph step is a class instance owning its deps and config. Node logic is *
 ### Graph flow
 
 ```
-validate_input → planner → executor_dispatch ⇄ {cap_<name> × registry}
-                                ↓ (all done)
+validate_input → router ─(direct)→ direct_answer ────────────────┐
+                   └(plan)→ planner → executor_dispatch ⇄ {cap_<name> × registry}
+                                ↓ (all done)                     ↓
                           merge_results → generation → validate_output
                                               ↑ refine ←┘ (≤ max_refine)  → post_process → END
 errors: execution_error → escalate (some ok result) | user_error (none) → END
 ```
 
+- **Router** (`core/router.py`) is a dedicated triage node — the planner never decides *whether* to plan. LLM picks a route from `Router.routes` (`"plan"` → planner, `"direct"` → `DirectResponder`, which renders the registry into its prompt so "what can you do?" is answerable, then joins at `validate_output`). **Fail-open**: any LLM/parse error or unknown route falls back to `"plan"`. New route = entry in `Router.routes` + node + `AgentBuilder.route_targets` entry before `.build()`.
 - **Planner** (`core/planner.py`) renders its prompt from `registry.specs()`, validates the LLM's JSON DAG: names against the registry, drops steps whose `is_applicable(state)` is false (generalizes "vision only if image" via `spec.requires_inputs`), **prunes dropped names from surviving `depends_on`**, Kahn cycle check.
 - **Executor** (`core/executor.py`) is a pass-through node + router: computes ready capabilities each wave and returns `list[Send]`; capability nodes edge back to `executor_dispatch`. This executes an arbitrary DAG without a baked-in schedule.
 - **Two error channels**: `NodeError.recoverable=False` (planner/generation failures) hard-stops into `execution_error`; capability failures are recoverable — they land in `results` with `ok: False` and the run degrades gracefully.

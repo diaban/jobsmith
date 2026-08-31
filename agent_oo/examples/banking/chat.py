@@ -51,11 +51,23 @@ class KeywordLLM:
     """
 
     REFS_WORDS = ("deck", "slide", "presentation", "past", "previous", "reference")
+    DIRECT_WORDS = ("what can you do", "who are you", "hello", "bonjour", "capabilit", "aide")
 
     async def chat(self, messages: list[dict[str, Any]], **kwargs: Any) -> str:
         system = messages[0]["content"]
         user = messages[-1]["content"]
 
+        if "triage" in system.lower():
+            direct = any(w in user.lower() for w in self.DIRECT_WORDS)
+            return json.dumps({
+                "route": "direct" if direct else "plan",
+                "rationale": "keyword triage",
+            })
+        if "Answer the user's message directly" in system:
+            return (
+                "I'm a demo assistant: I plan and run capability jobs — "
+                "search (KB lookup), vision (image analysis), refs (past decks)."
+            )
         if "planner" in system.lower():
             return self._plan(user)
         if "Rewrite" in system:

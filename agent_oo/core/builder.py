@@ -22,10 +22,11 @@ from langgraph.graph import StateGraph
 from .deps import Deps
 from .errors import Escalator, ExecutionError, UserErrorEmitter
 from .executor import Executor
-from .generation import ContextMerger, Generator, PostProcessor, Refiner
+from .generation import ContextMerger, DirectResponder, Generator, PostProcessor, Refiner
 from .planner import Planner
 from .profile import AgentProfile
 from .registry import CapabilityRegistry
+from .router import Router
 from .state import AgentState
 from .validate import InputValidator, OutputValidator
 
@@ -52,11 +53,14 @@ class AgentBuilder:
 
         # --- Step instances ---
         self.input_validator  = InputValidator(self.profile)
+        self.router           = Router(deps, registry,
+                                       prompt_template=self.profile.router_prompt_template)
         self.planner          = Planner(deps, registry,
                                         prompt_template=self.profile.planner_prompt_template)
         self.executor         = Executor(registry)
         self.context_merger   = ContextMerger(registry, self.profile)
         self.generator        = Generator(deps, self.profile)
+        self.direct_responder = DirectResponder(deps, registry, self.profile)
         self.output_validator = OutputValidator(self.profile)
         self.refiner          = Refiner(deps, self.profile)
         self.post_processor   = PostProcessor()
@@ -64,11 +68,18 @@ class AgentBuilder:
         self.escalator        = Escalator(self.profile)
         self.user_error       = UserErrorEmitter(self.profile)
 
+        # Route name → target node. A new route (added to Router.routes) only
+        # needs its node registered and an entry here before .build().
+        self.route_targets: dict[str, str] = {
+            "plan": "planner",
+            "direct": "direct_answer",
+        }
+
     # ---- Conditional edge functions ----
 
     @staticmethod
     def _route_validate_input(state: AgentState) -> str:
-        return "planner" if state.get("input_valid") else "user_error"
+        return "router" if state.get("input_valid") else "user_error"
 
     @staticmethod
     def _route_after_planner(state: AgentState) -> str:
@@ -105,7 +116,9 @@ class AgentBuilder:
 
         # Static nodes
         g.add_node("validate_input",    self.input_validator.run)
+        g.add_node("router",            self.router.run)
         g.add_node("planner",           self.planner.run)
+        g.add_node("direct_answer",     self.direct_responder.run)
         g.add_node("executor_dispatch", self.executor.dispatch)
         g.add_node("merge_results",     self.context_merger.run)
         g.add_node("generation",        self.generator.run)
@@ -127,9 +140,11 @@ class AgentBuilder:
         # Edges
         g.set_entry_point("validate_input")
         g.add_conditional_edges("validate_input", self._route_validate_input, {
-            "planner": "planner",
+            "router": "router",
             "user_error": "user_error",
         })
+        g.add_conditional_edges("router", self.router.route, dict(self.route_targets))
+        g.add_edge("direct_answer", "validate_output")
         g.add_conditional_edges("planner", self._route_after_planner, {
             "executor_dispatch": "executor_dispatch",
             "execution_error": "execution_error",

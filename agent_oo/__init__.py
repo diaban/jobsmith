@@ -26,6 +26,7 @@ from .core.capability import (
 from .core.deps import Deps, LLMClient
 from .core.profile import AgentProfile
 from .core.registry import CapabilityRegistry
+from .core.router import Router
 from .core.state import AgentState, CapabilityResult, NodeError, Plan, PlanStep
 from .jobs.manager import JobManager
 from .jobs.models import Job, JobStatus
@@ -48,5 +49,6 @@ __all__ = [
     "NodeError",
     "Plan",
     "PlanStep",
+    "Router",
     "build_agent",
 ]

@@ -115,6 +115,45 @@ async def test_refine_loop_recovers(checkpointer, store):
     assert "refined answer" in out["final_answer"]
 
 
+async def test_direct_route_answers_without_capabilities(checkpointer, store):
+    """Router picks "direct" → no planner, no capability run, straight answer."""
+    llm = FakeLLM({
+        "triage": '{"route": "direct", "rationale": "meta question"}',
+        "Answer the user's message directly": (
+            "I can run the first capability, which echoes hello for you."
+        ),
+    })
+    registry = CapabilityRegistry([EchoCapability("first", "hello")])
+    graph = build_agent(Deps(llm=llm), registry, checkpointer=checkpointer)
+    out = await graph.ainvoke(
+        {"query": "what can you do?", "job_id": "e5"},
+        config={"configurable": {"thread_id": "e5"}},
+    )
+    assert out["route"] == "direct"
+    assert out["terminal_kind"] == "answer"
+    assert "echoes hello" in out["final_answer"]
+    assert not out.get("results")  # no capability executed
+    assert not any("planner" in llm._system_of(c["messages"]) for c in llm.calls)
+
+
+async def test_router_failure_fails_open_to_plan(checkpointer, store):
+    """No scripted triage response → FakeLLM default (not JSON) → route "plan"
+    and the normal pipeline still completes."""
+    llm = FakeLLM(
+        {"planner": plan_json("first")},
+        default="A sufficiently long final answer built from context.",
+    )
+    registry = CapabilityRegistry([EchoCapability("first", "hello")])
+    graph = build_agent(Deps(llm=llm), registry, checkpointer=checkpointer)
+    out = await graph.ainvoke(
+        {"query": "do the thing", "job_id": "e6"},
+        config={"configurable": {"thread_id": "e6"}},
+    )
+    assert out["route"] == "plan"
+    assert out["terminal_kind"] == "answer"
+    assert set(out["results"]) == {"first"}
+
+
 async def test_registry_frozen_after_build(checkpointer, store):
     import pytest
 

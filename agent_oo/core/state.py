@@ -77,6 +77,9 @@ class AgentState(TypedDict, total=False):
     input_valid: bool
     rejection_reason: str | None
 
+    # --- Routing (triage decision) ---
+    route: str | None           # "plan" | "direct" (see core/router.py)
+
     # --- Planner output ---
     plan: Plan | None
 

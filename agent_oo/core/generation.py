@@ -1,11 +1,12 @@
 """Generation pipeline.
 
-Four classes:
-- ContextMerger: deterministic node — asks each capability to render its own
+Five classes:
+- ContextMerger:   deterministic node — asks each capability to render its own
   result (render_context), iterating in PLAN order for determinism
-- Generator:     LLM call to produce the draft answer
-- Refiner:       LLM call to fix a rejected draft
-- PostProcessor: marks the terminal answer (persistence lives in the job layer)
+- Generator:       LLM call to produce the draft answer
+- DirectResponder: the router's "direct" route — answers without capabilities
+- Refiner:         LLM call to fix a rejected draft
+- PostProcessor:   marks the terminal answer (persistence lives in the job layer)
 """
 from __future__ import annotations
 
@@ -62,6 +63,52 @@ class Generator:
             err: NodeError = {
                 "source": "generation",
                 "kind": "generation_fail",
+                "detail": str(e),
+                "recoverable": False,
+            }
+            return {"errors": [err]}
+
+
+class DirectResponder:
+    """Answers the user's message with no capability run (router route "direct").
+
+    The registry is rendered into the system prompt so the model can describe
+    what the agent is able to do ("what can you do?"). It also sets
+    `merged_context`, so the shared refine cycle has material if the draft
+    fails output validation.
+    """
+
+    def __init__(self, deps: Deps, registry: CapabilityRegistry, profile: AgentProfile):
+        self.deps = deps
+        self.registry = registry
+        self.prompt_template = profile.direct_answer_prompt_template
+        self.temperature = profile.generation_temperature
+
+    def _capabilities_text(self) -> str:
+        return "\n".join(
+            f"- {spec.name}: {spec.description}" for spec in self.registry.specs()
+        )
+
+    def system_prompt(self) -> str:
+        return self.prompt_template.format(capabilities=self._capabilities_text())
+
+    async def run(self, state: AgentState) -> dict:
+        try:
+            answer = await self.deps.llm.chat(
+                messages=[
+                    {"role": "system", "content": self.system_prompt()},
+                    {"role": "user", "content": state["query"]},
+                ],
+                temperature=self.temperature,
+            )
+            return {
+                "draft_answer": answer,
+                "merged_context": f"Assistant capabilities:\n{self._capabilities_text()}",
+            }
+        except Exception as e:
+            err: NodeError = {
+                "source": "direct_answer",
+                "kind": "direct_answer_fail",
                 "detail": str(e),
                 "recoverable": False,
             }
