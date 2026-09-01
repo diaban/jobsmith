@@ -24,6 +24,7 @@ from ..core.registry import CapabilityRegistry
 from ..jobs.manager import JobManager
 from .capabilities import default_capabilities
 from .persistence import open_persistence, pick_db
+from .profile import DEFAULT_APP_PROFILE
 from .providers import make_chat_model, make_llm, pick_provider
 
 
@@ -60,7 +61,10 @@ async def build_app(
         checkpointer, store = await open_persistence(pick_db(db), stack)
 
         registry = CapabilityRegistry(default_capabilities(llm))
-        graph = AgentBuilder(Deps(llm=llm), registry, checkpointer=checkpointer).build()
+        graph = AgentBuilder(
+            Deps(llm=llm), registry,
+            profile=DEFAULT_APP_PROFILE, checkpointer=checkpointer,
+        ).build()
         manager = JobManager(graph, store, reports_dir=reports_dir)
         # A previous process may have died mid-run: settle those jobs first.
         await manager.recover_interrupted()

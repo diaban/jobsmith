@@ -130,3 +130,21 @@ def test_parser_shape():
     assert parser.parse_args(["chat", "--session", "abc"]).session == "abc"
     assert parser.parse_args(["job", "1a2b"]).job_id == "1a2b"
     assert parser.parse_args([]).command is None      # bare call -> main() maps to chat
+
+
+async def test_embedded_run_actually_runs_the_job(tmp_path, capsys):
+    """Without a daemon the job runs in this process: `run` must not return
+    before it finishes, or the job would die with the command."""
+    from types import SimpleNamespace
+
+    from agent_oo.cli.main import cmd_run
+
+    client = await embedded(tmp_path)
+    try:
+        rc = await cmd_run(client, SimpleNamespace(task="do the thing", wait=False))
+        assert rc == 0
+        (job,) = await client.list_jobs()
+        assert job["status"] == "done"                     # it really ran
+        assert "no daemon" in capsys.readouterr().err      # and said why it waited
+    finally:
+        await client.aclose()

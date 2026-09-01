@@ -70,10 +70,16 @@ async def cmd_chat(client: AgentClient, args) -> int:
 
 
 async def cmd_run(client: AgentClient, args) -> int:
+    # Embedded, the job runs in THIS process: returning immediately would kill
+    # it before it starts. Only a daemon can outlive the command.
+    wait = args.wait or not client.persistent
+    if wait and not args.wait:
+        print("no daemon: running the job here — it needs this process to stay alive",
+              file=sys.stderr)
     launched = await client.launch_job(args.task)
     job_id = launched["job_id"]
     print(f"job {job_id[:8]} launched ({launched['status']})")
-    if not args.wait:
+    if not wait:
         print(f"follow it with:  agent-oo job {job_id[:8]}")
         return 0
     while True:
