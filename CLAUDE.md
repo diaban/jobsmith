@@ -82,10 +82,10 @@ Capability `build()` MUST use `self.state_graph(PrivateState)` (which sets `outp
 
 ### Chat layer (`chat/`)
 
-`ChatSession(manager, model, *, session_id, system_prompt, checkpointer).build()` → a `create_react_agent` (LangChain model, NOT the framework's LLMClient — deliberate two-stack split: LangChain handles per-provider tool formats; the job engine stays dependency-light). Deprecation of `create_react_agent` in langgraph v2 → migrate to `langchain.agents.create_agent` then (warning filtered in pyproject).
+`ChatSession(manager, model, *, session_id, system_prompt, checkpointer).build()` → a `langchain.agents.create_agent` (LangChain model, NOT the framework's LLMClient — deliberate two-stack split: LangChain handles per-provider tool formats; the job engine stays dependency-light).
 
 - **Tools** (`chat/tools.py`) wrap JobManager use-cases, scoped to the session's own jobs. `launch_job` is **human-in-the-loop**: it `interrupt()`s with `{action, query, rationale}` before creating anything; resume with `Command(resume={"approved": bool})`. Approved → `create_job(session_id=...)` + `start_job` (background, non-blocking).
-- **Notifications**: `notify_finished_jobs` pre-model hook injects a `SystemMessage` ("background jobs finished" marker) with final answer + report path for unannounced session jobs, marks them announced. **Gotcha**: `llm_input_messages` is a persisted channel — the hook must reset it every turn (return current messages) or a stale notice replays.
+- **Notifications**: `JobNotificationMiddleware.awrap_model_call` appends a `SystemMessage` ("background jobs finished" marker) with final answer + report path for unannounced session jobs, then marks them announced *after* the model call succeeds. Wrapping the request (rather than writing state) is what keeps the notice out of the persisted thread — `create_agent`'s state has only `messages`/`jump_to`/`structured_response`, and the old `llm_input_messages` ephemeral channel no longer exists.
 - Tests script the model with `conftest.ScriptedChatModel` (AIMessages with `tool_calls`, `bind_tools` no-op, records inputs in `.calls`).
 
 ### HTTP API (`api/`)

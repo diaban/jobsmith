@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "Domain-agnostic agent planner/executor framework on LangGraph (OO node pattern)"
 requires-python = ">=3.11"
 dependencies = [
-    "langgraph>=0.2",
+    "langgraph>=1.0",
+    "langchain>=1.3",   # create_agent + middleware for the chat layer
 ]
 
 [project.optional-dependencies]
@@ -54,10 +55,6 @@ packages = ["agent_oo"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-filterwarnings = [
-    # create_react_agent moves to langchain.agents in langgraph v2; migrate then.
-    "ignore:create_react_agent has been moved:DeprecationWarning",
-]
 
 [tool.ruff]
 line-length = 100
