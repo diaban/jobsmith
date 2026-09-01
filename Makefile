@@ -2,7 +2,7 @@
 #
 # Variables you can override:
 #   make chat LLM=openai        force a provider (anthropic|openai|fake)
-#   make api PORT=9000          API port (default 8000)
+#   make serve PORT=9000        daemon port (default 8000)
 #   make chat DB=agent.db       persist to SQLite (or a postgres:// DSN)
 #   make test T=router          only tests matching a keyword (pytest -k)
 
@@ -12,6 +12,7 @@ RUFF := $(VENV)/bin/ruff
 
 LLM  ?=
 DB   ?=
+ARGS ?=
 PORT ?= 8000
 T    ?=
 
@@ -21,7 +22,7 @@ TEST_ARGS := $(if $(T),-k $(T),)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install install-all test lint fix check leak-check chat api \
+.PHONY: help install install-all test lint fix check leak-check serve chat jobs \
         chat-banking api-banking demo-banking clean
 
 help: ## List available commands
@@ -47,16 +48,19 @@ fix: ## Lint and auto-fix what ruff can
 
 leak-check: ## Domain-leakage gate: framework + global agent must contain no banking-specific strings
 	@! grep -rin --include="*.py" "banking\|banquier\|votre\|analyste" \
-		agent_oo/core agent_oo/jobs agent_oo/chat agent_oo/api agent_oo/app \
+		agent_oo/core agent_oo/jobs agent_oo/chat agent_oo/api agent_oo/app agent_oo/cli \
 		&& echo "leak-check: OK (framework is domain-clean)"
 
 check: lint leak-check test ## Everything CI would run: lint + leakage gate + tests
 
-chat: ## Chat with THE GLOBAL AGENT (LLM=anthropic|openai|fake, DB=file.db|postgres DSN)
-	$(PY) -m agent_oo $(LLM_FLAG) $(DB_FLAG)
+serve: ## Run the DAEMON: it owns the job engine, so jobs outlive their client
+	$(PY) -m agent_oo $(LLM_FLAG) $(DB_FLAG) serve --port $(PORT)
 
-api: ## Global agent HTTP API + SSE on http://127.0.0.1:PORT, default 8000 (docs at /docs)
-	$(PY) -m agent_oo api $(PORT) $(LLM_FLAG) $(DB_FLAG)
+chat: ## Chat with the agent (uses the daemon if one runs, else embedded)
+	$(PY) -m agent_oo $(LLM_FLAG) $(DB_FLAG) chat
+
+jobs: ## List jobs (add ARGS='--status running')
+	$(PY) -m agent_oo $(LLM_FLAG) $(DB_FLAG) jobs $(ARGS)
 
 chat-banking: ## Banking example REPL
 	$(PY) -m agent_oo.examples.banking.chat $(LLM_FLAG)

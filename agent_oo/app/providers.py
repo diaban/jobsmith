@@ -51,6 +51,8 @@ def pick_provider() -> str:
     if choice is None and "--real" in sys.argv:
         choice = "anthropic"
     if choice is None:
+        choice = os.environ.get("AGENT_OO_LLM") or None   # set by the CLI's --llm
+    if choice is None:
         if os.environ.get("ANTHROPIC_API_KEY"):
             choice = "anthropic"
         elif os.environ.get("OPENAI_API_KEY"):
@@ -66,15 +68,15 @@ def make_llm(choice: str) -> Any:
         from ..clients import AnthropicLLMClient
 
         llm = AnthropicLLMClient()
-        print(f"[jobs llm: Claude via AnthropicLLMClient — {llm.model}]")
+        print(f"[jobs llm: Claude via AnthropicLLMClient — {llm.model}]", file=sys.stderr)
         return llm
     if choice == "openai":
         from ..clients import OpenAILLMClient
 
         llm = OpenAILLMClient()
-        print(f"[jobs llm: OpenAI via OpenAILLMClient — {llm.model}]")
+        print(f"[jobs llm: OpenAI via OpenAILLMClient — {llm.model}]", file=sys.stderr)
         return llm
-    print("[jobs llm: KeywordLLM fake — set ANTHROPIC_API_KEY or OPENAI_API_KEY for real models]")
+    print("[jobs llm: KeywordLLM fake — set ANTHROPIC_API_KEY or OPENAI_API_KEY for real models]", file=sys.stderr)
     return KeywordLLM()
 
 
@@ -86,7 +88,7 @@ def make_chat_model(choice: str) -> Any:
         except ImportError:
             sys.exit("chat with Claude needs:  uv pip install langchain-anthropic")
         model = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5")
-        print(f"[chat llm: ChatAnthropic — {model}]")
+        print(f"[chat llm: ChatAnthropic — {model}]", file=sys.stderr)
         return ChatAnthropic(model=model, max_tokens=4096)
     if choice == "openai":
         try:
@@ -94,9 +96,9 @@ def make_chat_model(choice: str) -> Any:
         except ImportError:
             sys.exit("chat with OpenAI needs:  uv pip install langchain-openai")
         model = os.environ.get("OPENAI_MODEL", "gpt-5.1")
-        print(f"[chat llm: ChatOpenAI — {model}]")
+        print(f"[chat llm: ChatOpenAI — {model}]", file=sys.stderr)
         return ChatOpenAI(model=model)
-    print("[chat llm: KeywordChatModel fake]")
+    print("[chat llm: KeywordChatModel fake]", file=sys.stderr)
     return KeywordChatModel()
 
 

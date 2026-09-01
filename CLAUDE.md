@@ -8,15 +8,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-A Makefile wraps the common ones: `make help` lists them (`install`, `install-all`, `test [T=kw]`, `lint`, `fix`, `check` = lint+leak-gate+tests, `chat`/`api` = the global agent, `chat-banking`/`api-banking`/`demo-banking` = the example, `clean`). Raw equivalents:
+A Makefile wraps the common ones: `make help` lists them (`install`, `install-all`, `test [T=kw]`, `lint`, `fix`, `check` = lint+leak-gate+tests, `serve`/`chat`/`jobs` = the global agent, `chat-banking`/`api-banking`/`demo-banking` = the example, `clean`). Raw equivalents:
 
 ```bash
 uv venv --python 3.12 .venv && uv pip install -e ".[dev,api,anthropic]"  # setup
 .venv/bin/python -m pytest tests/ -q                        # all tests
 .venv/bin/python -m pytest tests/test_planner.py::test_cycle_rejected  # one test
 .venv/bin/ruff check .                                      # lint
-.venv/bin/python -m agent_oo                                # ★ the global agent (chat REPL)
-.venv/bin/python -m agent_oo api [port]                     # ★ its HTTP API (needs .[api]); docs at /docs
+agent-oo serve [--port 8000]                                # ★ the daemon: it owns the job engine
+agent-oo chat [--session ID]                                # ★ converse (daemon if up, else embedded)
+agent-oo run "<task>" [--wait] | jobs | job <id> | report <id> | cancel <id>
+# `python -m agent_oo …` is the same entrypoint when the venv's bin isn't on PATH
 .venv/bin/python -m agent_oo.examples.banking.main          # banking demo (fakes)
 .venv/bin/python -m agent_oo.examples.banking.chat          # banking REPL
 .venv/bin/python -m agent_oo.examples.banking.api [port]    # banking API
@@ -24,15 +26,24 @@ uv venv --python 3.12 .venv && uv pip install -e ".[dev,api,anthropic]"  # setup
 
 The REPL is a CONVERSATION by default (chat agent; complex asks → job proposal → y/N approval → background job → synthesis + report path on a later turn); `/bg <text>` bypasses the chat and runs a job directly. It auto-selects the provider for BOTH stacks (`--llm=anthropic|openai|fake` overrides): the job engine uses `agent_oo/clients.py` adapters, the chat agent uses LangChain models (`langchain-anthropic`/`langchain-openai`, extras `chat-anthropic`/`chat-openai`; fake mode needs neither). Job-engine LLM selection: `AnthropicLLMClient` (`claude-opus-5`) when `ANTHROPIC_API_KEY` is set, else `OpenAILLMClient` (`gpt-5.1`; honors `OPENAI_BASE_URL` for Ollama/vLLM/gateways) when `OPENAI_API_KEY` is set, else the deterministic `KeywordLLM` fake. Both real adapters live in `agent_oo/clients.py`, implement chat+vision, take an injectable `client` for tests, and raise `RuntimeError` on refusals so they flow through the framework's NodeError path. Provider quirks handled there: the Anthropic adapter drops `temperature` (removed on Claude Opus 5 — sending it 400s), hoists `system` messages to the top-level param, and enables server-side refusal fallbacks; the OpenAI adapter drops `temperature` and uses `max_completion_tokens` for reasoning models (gpt-5*/o*).
 
-Domain-leakage gate (`make leak-check`, must return nothing): `grep -ri --include="*.py" "banking\|banquier\|votre\|analyste" agent_oo/core agent_oo/jobs agent_oo/chat agent_oo/api agent_oo/app`
+Domain-leakage gate (`make leak-check`, must return nothing): `grep -ri --include="*.py" "banking\|banquier\|votre\|analyste" agent_oo/core agent_oo/jobs agent_oo/chat agent_oo/api agent_oo/app agent_oo/cli`
+
+### CLI + daemon (`cli/`) — where jobs actually run
+
+The point of this layer: **a job must outlive the command that launched it**. `agent-oo serve` is a long-lived process owning the JobManager; every other command is a *client*.
+
+- `cli/client.py` — one `AgentClient` interface, two backings: `DaemonClient` (HTTP, `persistent=True`) and `EmbeddedClient` (in-process, `persistent=False`). Both return the API's dict shapes, so `cli/repl.py` and every command are written once. `open_client()` probes `GET /health` and falls back to embedded, **printing the trade-off on stderr**.
+- **All diagnostics go to stderr** (provider/persistence/daemon banners) — stdout stays pipeable (`agent-oo jobs | cut -d' ' -f1`).
+- `cli/main.py` — argparse; `--llm` is exported as `$AGENT_OO_LLM` so `pick_provider` sees it from both stacks. Bare `agent-oo` == `agent-oo chat`.
+- Sessions are **rebuildable by id**: the API's registry is only a cache, the conversation lives in the checkpointer under `thread_id=session_id`, so `agent-oo chat --session <id>` resumes across a daemon restart (and gets the finished-job announcement). `session_factory` therefore takes an optional `session_id`.
+- Embedded mode is honest about its limit: jobs stop when the process exits (`recover_interrupted` settles them on the next start).
 
 ### The global agent (`app/`)
 
 The product's composition root — everything here is domain-neutral:
 - `providers.py`: `pick_provider` (one `--llm=` flag / key auto-detect shared by both LLM stacks), `make_llm` (job engine, `clients.py` adapters), `make_chat_model` (LangChain), `load_dotenv`, and the keyless fakes — `KeywordLLM` plans by **parsing capability names out of the rendered planner prompt** (works with any registry), `KeywordChatModel` proposes a job on analysis-ish keywords.
 - `capabilities/`: the default LLM-only pack — `research` (decompose into aspects, lenient JSON, then structured notes) → `analysis` → `critique`. The latter two subclass `SingleStepCapability` (`_step.py`): one LLM node reading the best upstream `results` entry, degrading to the bare request when the upstream failed/was skipped. `default_capabilities(llm)` builds the pack.
-- `repl.py`: the generic chat shell (`run_repl(manager, session)`) with HITL y/N rendering and the `/jobs` `/job` `/bg` `/image` `/cancel` commands — reused by the banking example.
-- `agent.py`/`main.py`: `await build_app(**overrides) -> AgentApp(manager, session_factory, aclose)`; `python -m agent_oo [api [port]]`.
+- `agent.py`: `await build_app(**overrides) -> AgentApp(manager, session_factory, aclose)`. The REPL and the entrypoints now live in `cli/` (see below); the banking example reuses them through an `EmbeddedClient(AgentApp(...))`.
 - `persistence.py`: `pick_db()` (arg > `--db=` > `$AGENT_OO_DB` > `memory`) + `open_persistence(spec, stack)` → `(checkpointer, store)`, teardown on the caller's `AsyncExitStack`. Backends: `memory` (default), a SQLite path (`.[sqlite]`), or a Postgres DSN (`.[postgres]`, one shared `AsyncConnectionPool` for saver + store, `autocommit/prepare_threshold=0/dict_row` as those backends require). Chat sessions share the job graph's checkpointer, so conversations persist too (namespaced by `thread_id`: `session_id` vs `job_id`).
 
 **Why `build_app` is async**: real backends must be opened in the event loop that will use them. `python -m agent_oo api` therefore serves with `await uvicorn.Server(config).serve()` inside that same loop — `uvicorn.run()` would start its own loop and strand the pool. **SQLite gotcha** (cost an hour): the *store* needs `isolation_level=None` (it drives its own `BEGIN`/`COMMIT`; under implicit transactions its first write leaves one open and the next `BEGIN` raises "cannot start a transaction within a transaction"), the *saver* keeps the default; never run a stray `PRAGMA` on those live connections (it opens a transaction and deadlocks the other connection) — WAL is set once on a throwaway connection, and the busy timeout via `connect(timeout=...)`.

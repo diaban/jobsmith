@@ -27,10 +27,11 @@ def main() -> None:
     manager = build_chat(make_llm(choice))
     chat_model = make_chat_model(choice)
 
-    def session_factory() -> ChatSession:
+    def session_factory(session_id: str | None = None) -> ChatSession:
         return ChatSession(
             manager,
             chat_model,
+            session_id=session_id,
             system_prompt=BANKING_CHAT_PROMPT,
             checkpointer=MemorySaver(),
         )

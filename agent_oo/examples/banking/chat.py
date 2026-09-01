@@ -15,9 +15,11 @@ from typing import Any
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
 
+from ...app.agent import AgentApp
 from ...app.providers import load_dotenv, make_chat_model, make_llm, pick_provider
-from ...app.repl import run_repl
 from ...chat import ChatSession
+from ...cli.client import EmbeddedClient
+from ...cli.repl import run_repl
 from ...core.builder import AgentBuilder
 from ...core.deps import Deps
 from ...core.registry import CapabilityRegistry
@@ -68,13 +70,17 @@ async def repl() -> None:
     load_dotenv()
     choice = pick_provider()
     manager = build_chat(make_llm(choice))
-    session = ChatSession(
-        manager,
-        make_chat_model(choice),
-        system_prompt=BANKING_CHAT_PROMPT,
-        checkpointer=MemorySaver(),
-    )
-    await run_repl(manager, session)
+    chat_model = make_chat_model(choice)
+    checkpointer = MemorySaver()
+
+    def session_factory(session_id: str | None = None) -> ChatSession:
+        return ChatSession(
+            manager, chat_model, session_id=session_id,
+            system_prompt=BANKING_CHAT_PROMPT, checkpointer=checkpointer,
+        )
+
+    client = EmbeddedClient(AgentApp(manager, session_factory))
+    await run_repl(client, await client.new_session())
 
 
 if __name__ == "__main__":

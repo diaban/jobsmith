@@ -14,7 +14,7 @@ so the whole app holds a single, properly sized pool.
 
 Everything here is async and registers its teardown on the caller's
 AsyncExitStack: resources are created inside the event loop that will use
-them, which is why `build_app` is a coroutine (see app/main.py — uvicorn is
+them, which is why `build_app` is a coroutine (see cli/main.py — uvicorn is
 served from that same loop rather than through `uvicorn.run`).
 """
 from __future__ import annotations
@@ -42,7 +42,7 @@ async def open_persistence(spec: str, stack: AsyncExitStack) -> tuple[Any, Any]:
         from langgraph.checkpoint.memory import MemorySaver
         from langgraph.store.memory import InMemoryStore
 
-        print("[persistence: in-memory — nothing survives this process]")
+        print("[persistence: in-memory — nothing survives this process]", file=sys.stderr)
         return MemorySaver(), InMemoryStore()
 
     if spec.startswith(_POSTGRES_SCHEMES):
@@ -84,7 +84,7 @@ async def _open_sqlite(path: str, stack: AsyncExitStack) -> tuple[Any, Any]:
     checkpointer = AsyncSqliteSaver(await connect())  # sets its schema up lazily
     store = AsyncSqliteStore(await connect(isolation_level=None))
     await store.setup()
-    print(f"[persistence: sqlite — {path}]")
+    print(f"[persistence: sqlite — {path}]", file=sys.stderr)
     return checkpointer, store
 
 
@@ -112,7 +112,7 @@ async def _open_postgres(dsn: str, stack: AsyncExitStack, *, max_size: int = 10)
     await checkpointer.setup()          # creates tables / runs migrations, idempotent
     store = AsyncPostgresStore(pool)
     await store.setup()
-    print(f"[persistence: postgres — pool of {max_size} on {_safe_dsn(dsn)}]")
+    print(f"[persistence: postgres — pool of {max_size} on {_safe_dsn(dsn)}]", file=sys.stderr)
     return checkpointer, store
 
 

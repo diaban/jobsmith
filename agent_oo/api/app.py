@@ -14,7 +14,9 @@
   (JobManager.subscribe; in-process pub/sub, same v1 scope as cancellation).
 
 Domain-agnostic: the domain arrives entirely through the injected manager and
-session factory (a runnable composition ships with the bundled example).
+session factory (a runnable composition ships with the bundled example). The
+factory must accept an optional session_id, so a conversation can be resumed
+by id after a restart.
 """
 from __future__ import annotations
 
@@ -33,6 +35,10 @@ from pydantic import BaseModel
 from ..chat.session import ChatSession
 from ..jobs.manager import JobManager
 from ..jobs.models import JobStatus
+
+
+class SessionIn(BaseModel):
+    session_id: str | None = None   # resume an existing conversation
 
 
 class MessageIn(BaseModel):
@@ -68,14 +74,18 @@ def _shape_reply(result: dict) -> dict:
     return {"type": "message", "content": result["messages"][-1].content}
 
 
-def create_api(manager: JobManager, session_factory: Callable[[], ChatSession]) -> FastAPI:
+def create_api(manager: JobManager, session_factory: Callable[..., ChatSession]) -> FastAPI:
     app = FastAPI(title="agent_oo", version="0.1.0")
     sessions: dict[str, _SessionEntry] = {}
 
     def _entry(session_id: str) -> _SessionEntry:
+        """Sessions are rebuildable: the registry is just a cache, the actual
+        conversation lives in the checkpointer under thread_id=session_id. So a
+        client can keep chatting on its session id across a daemon restart."""
         entry = sessions.get(session_id)
         if entry is None:
-            raise HTTPException(404, f"unknown session: {session_id}")
+            entry = _SessionEntry(session_factory(session_id))
+            sessions[session_id] = entry
         return entry
 
     async def _job_or_404(job_id: str):
@@ -86,9 +96,15 @@ def create_api(manager: JobManager, session_factory: Callable[[], ChatSession]) 
 
     # ---------------- chat ----------------
 
+    @app.get("/health")
+    async def health() -> dict:
+        """Probe used by the CLI to decide between daemon and embedded mode."""
+        return {"status": "ok", "service": "agent_oo", "version": app.version}
+
     @app.post("/sessions", status_code=201)
-    async def create_session() -> dict:
-        entry = _SessionEntry(session_factory())
+    async def create_session(body: SessionIn | None = None) -> dict:
+        entry = _SessionEntry(session_factory(body.session_id) if body and body.session_id
+                              else session_factory())
         sessions[entry.session.session_id] = entry
         return {"session_id": entry.session.session_id}
 

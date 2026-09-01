@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -188,7 +189,7 @@ class JobManager:
             job.error = "interrupted: the process running this job stopped"
             await self._persist_summary(job)
         if stale:
-            print(f"[jobs: {len(stale)} interrupted job(s) marked failed on startup]")
+            print(f"[jobs: {len(stale)} interrupted job(s) marked failed on startup]", file=sys.stderr)
         return stale
 
     # ---------------- Live events (in-process pub/sub) ----------------

@@ -1,4 +1,6 @@
-"""`python -m agent_oo` — run the global agent (chat REPL, or `api [port]`)."""
-from .app.main import main
+"""`python -m agent_oo` — same as the `agent-oo` command."""
+import sys
 
-main()
+from .cli.main import main
+
+sys.exit(main())

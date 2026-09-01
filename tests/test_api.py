@@ -20,12 +20,14 @@ from agent_oo.chat import ChatSession
 
 def make_app(store, checkpointer, tmp_path, responses):
     manager = make_manager(store, checkpointer, tmp_path)
+    checkpointer_for_sessions = MemorySaver()
 
-    def session_factory() -> ChatSession:
+    def session_factory(session_id: str | None = None) -> ChatSession:
         return ChatSession(
             manager,
             ScriptedChatModel(responses=list(responses)),
-            checkpointer=MemorySaver(),
+            session_id=session_id,
+            checkpointer=checkpointer_for_sessions,
         )
 
     return create_api(manager, session_factory), manager
@@ -98,5 +100,26 @@ async def test_direct_job_launch_and_cancel_and_404s(store, checkpointer, tmp_pa
 
         assert (await client.get("/jobs/nope")).status_code == 404
         assert (await client.get("/jobs/nope/report")).status_code == 404
-        assert (await client.post("/sessions/nope/messages",
-                                  json={"text": "x"})).status_code == 404
+
+
+async def test_session_is_resumable_by_id(store, checkpointer, tmp_path):
+    """The registry is a cache: chatting on a known id rebuilds the session,
+    so a client keeps its conversation across a daemon restart."""
+    app, _ = make_app(store, checkpointer, tmp_path, [AIMessage(content="hello again")])
+    async with client_for(app) as client:
+        sid = (await client.post("/sessions")).json()["session_id"]
+        await client.post(f"/sessions/{sid}/messages", json={"text": "first"})
+
+        # an id this process never registered is accepted, not rejected
+        r = await client.post("/sessions/unknown-but-valid/messages", json={"text": "hi"})
+        assert r.status_code == 200
+
+        # explicit resume returns the same id
+        r = await client.post("/sessions", json={"session_id": sid})
+        assert r.json()["session_id"] == sid
+
+
+async def test_health(store, checkpointer, tmp_path):
+    app, _ = make_app(store, checkpointer, tmp_path, [AIMessage(content="hi")])
+    async with client_for(app) as client:
+        assert (await client.get("/health")).json()["service"] == "agent_oo"
