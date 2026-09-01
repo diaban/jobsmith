@@ -159,7 +159,7 @@ async def test_report_written_on_done(store, checkpointer, tmp_path):
     assert "final answer" in report          # the answer section
     assert "| alpha |" in report             # plan table
     assert "flowchart LR" in report          # mermaid DAG
-    assert '"echo": "beta"' in report        # artifact payload
+    assert "\n\nbeta\n" in report            # artifact payload, rendered as prose
     # per-step timestamps recorded as capabilities finished
     assert set(done.step_finished_at) == {"alpha", "beta"}
     # the path survives a round-trip through the store
@@ -249,3 +249,36 @@ async def test_status_transitions_observed_mid_stream(store, checkpointer, tmp_p
     assert "artifact:alpha" in seen
     assert seen.index("status:running") < seen.index("artifact:alpha")
     assert seen[-1] == "status:done"
+
+
+async def test_report_renders_prose_artifacts_readably(store, checkpointer, tmp_path):
+    """Text payloads must read as markdown, not as escaped JSON strings;
+    structured payloads still get a JSON block."""
+
+    class ProseCap(SlowEcho):
+        async def work(self, state):
+            return self._emit_success({
+                "aspects": ["first angle", "second angle"],
+                "notes": "## Heading\n\nA paragraph of real markdown.",
+            })
+
+        def render_context(self, result):
+            return result["data"]["notes"]
+
+    class StructuredCap(SlowEcho):
+        async def work(self, state):
+            return self._emit_success({"docs": [{"id": "d1", "score": 0.9}]})
+
+        def render_context(self, result):
+            return str(result["data"]["docs"])
+
+    caps = [ProseCap("prose"), StructuredCap("structured")]
+    mgr = make_manager(store, checkpointer, tmp_path, caps=caps)
+    job = await mgr.create_job("render me")
+    done = await mgr.run_job(job.job_id)
+
+    report = (tmp_path / "artifacts" / f"{done.job_id}.md").read_text()
+    assert "A paragraph of real markdown." in report      # prose, not escaped
+    assert "\\n" not in report                            # no JSON-escaped newlines
+    assert "- first angle" in report                      # string list -> bullets
+    assert '"score": 0.9' in report                       # structured -> json block

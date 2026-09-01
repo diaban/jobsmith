@@ -303,16 +303,34 @@ class JobManager:
             order = [s["capability"] for s in (job.plan or {}).get("steps", [])]
             for name in sorted(job.results, key=lambda n: order.index(n) if n in order else 99):
                 result = job.results[name]
-                lines += [
-                    "",
-                    f"### {name} — {'ok' if result.get('ok') else 'failed'}",
-                    "",
-                    "```json",
-                    json.dumps(result.get("data") or {"error": result.get("error")},
-                               indent=2, ensure_ascii=False),
-                    "```",
-                ]
+                lines += ["", f"### {name} — {'ok' if result.get('ok') else 'failed'}", ""]
+                if not result.get("ok"):
+                    lines.append(f"_{result.get('error') or 'no detail'}_")
+                    continue
+                lines += self._render_payload(result.get("data") or {})
         return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_payload(data: dict[str, Any]) -> list[str]:
+        """Artifacts are for reading: prose stays prose, only structured
+        values fall back to a JSON block."""
+        if not data:
+            return ["_(empty)_"]
+        # a single text field needs no label: the capability heading says it
+        if len(data) == 1 and isinstance(next(iter(data.values())), str):
+            return [next(iter(data.values())), ""]
+        lines: list[str] = []
+        for key, value in data.items():
+            lines.append(f"**{key}**")
+            lines.append("")
+            if isinstance(value, str):
+                lines += [value, ""]
+            elif isinstance(value, list) and all(isinstance(v, str) for v in value):
+                lines += [*(f"- {v}" for v in value), ""]
+            else:
+                lines += ["```json",
+                          json.dumps(value, indent=2, ensure_ascii=False), "```", ""]
+        return lines
 
     # ---------------- Streaming updates ----------------
 
