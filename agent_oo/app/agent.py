@@ -1,19 +1,21 @@
 """Composition root of the global agent.
 
-`build_app()` assembles the whole product with zero configuration: provider
-auto-selection (or injected clients), the default LLM-only capability pack,
-neutral prompts/profile, in-memory persistence. Every piece can be overridden
+`build_app()` assembles the whole product: provider auto-selection (or
+injected clients), the default LLM-only capability pack, neutral
+prompts/profile, and the persistence backend. Every piece can be overridden
 by argument — a domain agent is just a different composition (see
 agent_oo/examples/).
+
+It is a coroutine because real backends (SQLite/Postgres connections and
+pools) must be opened inside the event loop that will use them; `AgentApp`
+owns their teardown via `aclose()`.
 """
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from contextlib import AsyncExitStack
+from dataclasses import dataclass, field
 from typing import Any
-
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.store.memory import InMemoryStore
 
 from ..chat import ChatSession
 from ..core.builder import AgentBuilder
@@ -21,6 +23,7 @@ from ..core.deps import Deps
 from ..core.registry import CapabilityRegistry
 from ..jobs.manager import JobManager
 from .capabilities import default_capabilities
+from .persistence import open_persistence, pick_db
 from .providers import make_chat_model, make_llm, pick_provider
 
 
@@ -29,18 +32,22 @@ class AgentApp:
     """A ready-to-serve agent: its job engine + a factory for chat sessions."""
 
     manager: JobManager
-    session_factory: Callable[[], ChatSession]
+    session_factory: Callable[..., ChatSession]   # optional session_id argument
+    _stack: AsyncExitStack = field(default_factory=AsyncExitStack)
 
-    def new_session(self) -> ChatSession:
-        return self.session_factory()
+    def new_session(self, session_id: str | None = None) -> ChatSession:
+        return self.session_factory(session_id) if session_id else self.session_factory()
+
+    async def aclose(self) -> None:
+        """Release persistence resources (connections, pools)."""
+        await self._stack.aclose()
 
 
-def build_app(
+async def build_app(
     *,
     llm: Any = None,
     chat_model: Any = None,
-    checkpointer: Any = None,
-    store: Any = None,
+    db: str | None = None,
     reports_dir: str = "artifacts",
 ) -> AgentApp:
     if llm is None or chat_model is None:
@@ -48,13 +55,22 @@ def build_app(
         llm = llm if llm is not None else make_llm(choice)
         chat_model = chat_model if chat_model is not None else make_chat_model(choice)
 
-    registry = CapabilityRegistry(default_capabilities(llm))
-    graph = AgentBuilder(
-        Deps(llm=llm), registry, checkpointer=checkpointer or MemorySaver()
-    ).build()
-    manager = JobManager(graph, store or InMemoryStore(), reports_dir=reports_dir)
+    stack = AsyncExitStack()
+    try:
+        checkpointer, store = await open_persistence(pick_db(db), stack)
 
-    def session_factory() -> ChatSession:
-        return ChatSession(manager, chat_model, checkpointer=MemorySaver())
+        registry = CapabilityRegistry(default_capabilities(llm))
+        graph = AgentBuilder(Deps(llm=llm), registry, checkpointer=checkpointer).build()
+        manager = JobManager(graph, store, reports_dir=reports_dir)
+        # A previous process may have died mid-run: settle those jobs first.
+        await manager.recover_interrupted()
+    except BaseException:
+        await stack.aclose()
+        raise
 
-    return AgentApp(manager, session_factory)
+    def session_factory(session_id: str | None = None) -> ChatSession:
+        # Same checkpointer as the job graph: thread_id namespaces conversations
+        # (session_id) apart from job runs (job_id), so both survive a restart.
+        return ChatSession(manager, chat_model, session_id=session_id, checkpointer=checkpointer)
+
+    return AgentApp(manager, session_factory, stack)

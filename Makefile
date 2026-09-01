@@ -3,6 +3,7 @@
 # Variables you can override:
 #   make chat LLM=openai        force a provider (anthropic|openai|fake)
 #   make api PORT=9000          API port (default 8000)
+#   make chat DB=agent.db       persist to SQLite (or a postgres:// DSN)
 #   make test T=router          only tests matching a keyword (pytest -k)
 
 VENV := .venv
@@ -10,10 +11,12 @@ PY   := $(VENV)/bin/python
 RUFF := $(VENV)/bin/ruff
 
 LLM  ?=
+DB   ?=
 PORT ?= 8000
 T    ?=
 
 LLM_FLAG  := $(if $(LLM),--llm=$(LLM),)
+DB_FLAG   := $(if $(DB),--db=$(DB),)
 TEST_ARGS := $(if $(T),-k $(T),)
 
 .DEFAULT_GOAL := help
@@ -30,8 +33,8 @@ $(VENV):
 install: $(VENV) ## Create the venv and install dev + API deps (fake LLMs work out of the box)
 	uv pip install -p $(PY) -e ".[dev,api]"
 
-install-all: $(VENV) ## Same + every provider (anthropic, openai, langchain chat models)
-	uv pip install -p $(PY) -e ".[dev,api,anthropic,openai,chat-anthropic,chat-openai]"
+install-all: $(VENV) ## Same + every provider and persistence backend
+	uv pip install -p $(PY) -e ".[dev,api,anthropic,openai,chat-anthropic,chat-openai,sqlite,postgres]"
 
 test: ## Run the test suite (T=<keyword> to filter, e.g. make test T=router)
 	$(PY) -m pytest tests/ -q $(TEST_ARGS)
@@ -49,11 +52,11 @@ leak-check: ## Domain-leakage gate: framework + global agent must contain no ban
 
 check: lint leak-check test ## Everything CI would run: lint + leakage gate + tests
 
-chat: ## Chat with THE GLOBAL AGENT (auto-detects provider; LLM=anthropic|openai|fake to force)
-	$(PY) -m agent_oo $(LLM_FLAG)
+chat: ## Chat with THE GLOBAL AGENT (LLM=anthropic|openai|fake, DB=file.db|postgres DSN)
+	$(PY) -m agent_oo $(LLM_FLAG) $(DB_FLAG)
 
 api: ## Global agent HTTP API + SSE on http://127.0.0.1:PORT, default 8000 (docs at /docs)
-	$(PY) -m agent_oo api $(PORT) $(LLM_FLAG)
+	$(PY) -m agent_oo api $(PORT) $(LLM_FLAG) $(DB_FLAG)
 
 chat-banking: ## Banking example REPL
 	$(PY) -m agent_oo.examples.banking.chat $(LLM_FLAG)

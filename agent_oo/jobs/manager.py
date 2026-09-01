@@ -173,6 +173,24 @@ class JobManager:
             jobs = [j for j in jobs if j.session_id == session_id]
         return sorted(jobs, key=lambda j: j.created_at, reverse=True)
 
+    async def recover_interrupted(self) -> list[Job]:
+        """Settle jobs left RUNNING by a process that died (persistent stores).
+
+        Call once at startup, before any job runs: with no in-process task
+        alive, a RUNNING record can only be a leftover. They are marked FAILED
+        while their checkpoint is retained, so a resume stays possible later.
+        QUEUED jobs are left alone — they never started and can still be run.
+        """
+        stale = [j for j in await self.list_jobs(status=JobStatus.RUNNING, limit=1000)
+                 if j.job_id not in self._tasks]
+        for job in stale:
+            job.status = JobStatus.FAILED
+            job.error = "interrupted: the process running this job stopped"
+            await self._persist_summary(job)
+        if stale:
+            print(f"[jobs: {len(stale)} interrupted job(s) marked failed on startup]")
+        return stale
+
     # ---------------- Live events (in-process pub/sub) ----------------
 
     def subscribe(self, *, max_queue: int = 256) -> asyncio.Queue:

@@ -3,8 +3,14 @@
     python -m agent_oo               # chat REPL
     python -m agent_oo api [port]    # HTTP API + SSE (needs .[api])
 
-Both accept --llm=anthropic|openai|fake (auto-detected from API keys
-otherwise) and load .env from the working directory.
+Flags: --llm=anthropic|openai|fake (else auto-detected from API keys) and
+--db=memory|<file.db>|<postgres DSN> (else $AGENT_OO_DB, else memory).
+.env is loaded from the working directory.
+
+Both entrypoints run inside ONE asyncio loop: `build_app` opens the
+persistence connections there, and the API is served with
+`uvicorn.Server.serve()` rather than `uvicorn.run()` — the latter starts its
+own loop, which would leave the pool bound to a dead one.
 """
 from __future__ import annotations
 
@@ -17,27 +23,35 @@ from .repl import run_repl
 
 
 async def chat() -> None:
-    app = build_app()
-    await run_repl(app.manager, app.new_session())
+    app = await build_app()
+    try:
+        await run_repl(app.manager, app.new_session())
+    finally:
+        await app.aclose()
 
 
-def serve() -> None:
+async def serve() -> None:
     import uvicorn
 
     from ..api import create_api
 
-    app = build_app()
-    port = next((int(a) for a in sys.argv[1:] if a.isdigit()), 8000)
-    uvicorn.run(create_api(app.manager, app.session_factory), host="127.0.0.1", port=port)
+    app = await build_app()
+    try:
+        port = next((int(a) for a in sys.argv[1:] if a.isdigit()), 8000)
+        config = uvicorn.Config(
+            create_api(app.manager, app.session_factory),
+            host="127.0.0.1",
+            port=port,
+        )
+        await uvicorn.Server(config).serve()
+    finally:
+        await app.aclose()
 
 
 def main() -> None:
     load_dotenv()
     try:
-        if "api" in sys.argv[1:]:
-            serve()
-        else:
-            asyncio.run(chat())
+        asyncio.run(serve() if "api" in sys.argv[1:] else chat())
     except KeyboardInterrupt:
         sys.exit(0)
 

@@ -9,16 +9,17 @@ from agent_oo.app.providers import KeywordChatModel, KeywordLLM
 from agent_oo.jobs.models import JobStatus
 
 
-def make_app(tmp_path):
-    return build_app(
+async def make_app(tmp_path, *, db: str = "memory"):
+    return await build_app(
         llm=KeywordLLM(),
         chat_model=KeywordChatModel(),
+        db=db,
         reports_dir=str(tmp_path / "artifacts"),
     )
 
 
 async def test_default_pack_job_runs_keyless(tmp_path):
-    app = make_app(tmp_path)
+    app = await make_app(tmp_path)
     job = await app.manager.create_job("study the topic in depth")
     done = await app.manager.run_job(job.job_id)
     assert done.status is JobStatus.DONE
@@ -29,7 +30,7 @@ async def test_default_pack_job_runs_keyless(tmp_path):
 
 
 async def test_chat_session_proposes_and_launches(tmp_path):
-    app = make_app(tmp_path)
+    app = await make_app(tmp_path)
     session = app.new_session()
     agent = session.build()
     cfg = {"configurable": {"thread_id": session.session_id}}
@@ -44,7 +45,7 @@ async def test_chat_session_proposes_and_launches(tmp_path):
 
 
 async def test_direct_answer_stays_in_chat(tmp_path):
-    app = make_app(tmp_path)
+    app = await make_app(tmp_path)
     session = app.new_session()
     agent = session.build()
     cfg = {"configurable": {"thread_id": session.session_id}}
