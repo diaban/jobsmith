@@ -150,7 +150,10 @@ class MarkdownReport:
             lines += ["", "```mermaid", "flowchart LR"]
             edges = doc.dag_edges
             lines += [f"  {src} --> {dst}" for src, dst in edges]
-            lines += [f"  {row.capability}" for row in doc.plan if not row.depends_on]
+            # isolated steps only: a root that already feeds someone is drawn by its edge
+            connected = {n for edge in edges for n in edge}
+            lines += [f"  {row.capability}" for row in doc.plan
+                      if row.capability not in connected]
             lines += ["```"]
 
         for heading, body in doc.annexes:

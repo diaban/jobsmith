@@ -6,6 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `agent_oo` is both a **product** — a general-purpose conversational agent (`python -m agent_oo`) that answers simple messages directly and launches complex tasks as **background jobs** (human-in-the-loop approval), keeps chatting while they run, then surfaces finished-job markdown reports back into the conversation — and the **domain-agnostic framework** it is built on (LangGraph, object-oriented node pattern): a registry-driven planner emits a DAG of pluggable capabilities (self-describing agentic sub-graphs); a wave-based executor fans them out in parallel; a generation pipeline merges their results; each run is a persistent, trackable, cancellable **Job**; a chat layer (`agent_oo/chat/`, LangGraph prebuilt ReAct agent) sits on top. **`agent_oo/app/` is the product's composition root** (provider selection, default LLM-only capability pack research→analysis→critique, generic REPL shell, entrypoints); `agent_oo/examples/banking/` is a domain example that reuses those shells and only supplies its own capabilities/profile.
 
+`README.md` is the human-facing counterpart of this file: product pitch, quickstart,
+CLI/API surface, limits. Keep it in sync when a command or a limit changes.
+
 ## Commands
 
 A Makefile wraps the common ones: `make help` lists them (`install`, `install-all`, `test [T=kw]`, `lint`, `fix`, `check` = lint+leak-gate+tests, `serve`/`chat`/`jobs` = the global agent, `chat-banking`/`api-banking`/`demo-banking` = the example, `clean`). Raw equivalents:

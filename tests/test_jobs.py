@@ -290,3 +290,22 @@ async def test_annexes_are_opt_in_and_rendered_by_the_capability(store, checkpoi
     assert "\\n" not in report                            # no JSON-escaped newlines
     assert "- first angle" in report                      # string list -> bullets
     assert '"score": 0.9' in report                       # structured -> json block
+
+
+def test_mermaid_draws_isolated_steps_once():
+    """A root that feeds another step is drawn by its edge; a step wired to
+    nothing at all still needs its own line or it vanishes from the DAG."""
+    from agent_oo.jobs.report import JobDocument, MarkdownReport, PlanRow
+
+    doc = JobDocument(
+        title="t", request="t", job_id="j", created_at="", finished_at="", answer="a",
+        plan=[
+            PlanRow("research", [], "ok", ""),
+            PlanRow("analysis", ["research"], "ok", ""),
+            PlanRow("aside", [], "ok", ""),
+        ],
+    )
+    mermaid = MarkdownReport().render(doc).split("```mermaid")[1].split("```")[0]
+    assert "research --> analysis" in mermaid
+    assert mermaid.count("research") == 1      # not redrawn as a bare node
+    assert "\n  aside\n" in mermaid            # isolated step still shown
