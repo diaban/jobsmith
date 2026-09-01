@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import sys
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 DEFAULT_URL = "http://127.0.0.1:8000"
@@ -200,10 +201,8 @@ class EmbeddedClient(AgentClient):
         return [j.summary() | {"job_id": j.job_id} for j in jobs]
 
     async def get_job(self, job_id: str) -> dict | None:
-        import dataclasses
-
         job = await self.app.manager.get_job(job_id)
-        return dataclasses.asdict(job) if job else None
+        return job.to_dict() if job else None
 
     async def cancel_job(self, job_id: str) -> dict:
         job = await self.app.manager.cancel_job(job_id)
@@ -219,7 +218,7 @@ class EmbeddedClient(AgentClient):
         if job is None or not job.report_path:
             return None
         with contextlib.suppress(OSError):
-            return (self.app.manager.reports_dir / f"{job_id}.md").read_text(encoding="utf-8")
+            return Path(job.report_path).read_text(encoding="utf-8")
         return None
 
 

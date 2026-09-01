@@ -66,8 +66,8 @@ async def test_create_run_done_with_store_contents(store, checkpointer, tmp_path
     assert index.value["status"] == "done"
     plan = await store.aget(("jobs", job.job_id, "meta"), "plan")
     assert [s["capability"] for s in plan.value["steps"]] == ["alpha", "beta"]
-    artifact = await store.aget(("jobs", job.job_id, "artifacts"), "alpha")
-    assert artifact.value["ok"] is True
+    step = await store.aget(("jobs", job.job_id, "results"), "alpha")
+    assert step.value["ok"] is True
 
     # get_job reconstructs the same view
     fetched = await mgr.get_job(job.job_id)
@@ -154,12 +154,14 @@ async def test_report_written_on_done(store, checkpointer, tmp_path):
     done = await mgr.run_job(job.job_id)
 
     assert done.report_path is not None
+    (output,) = done.outputs
+    assert (output.role, output.format) == ("main", "markdown")
     report = (tmp_path / "artifacts" / f"{job.job_id}.md").read_text()
-    assert "# Job report — write the report" in report
-    assert "final answer" in report          # the answer section
-    assert "| alpha |" in report             # plan table
-    assert "flowchart LR" in report          # mermaid DAG
-    assert "\n\nbeta\n" in report            # artifact payload, rendered as prose
+    assert report.startswith("# write the report")   # title, then the answer
+    assert "final answer" in report                  # the deliverable itself
+    assert "| alpha |" in report                     # provenance: plan table
+    assert "flowchart LR" in report                  # mermaid DAG
+    assert "Step output" not in report               # step material is not inlined
     # per-step timestamps recorded as capabilities finished
     assert set(done.step_finished_at) == {"alpha", "beta"}
     # the path survives a round-trip through the store
@@ -232,8 +234,8 @@ async def test_status_transitions_observed_mid_stream(store, checkpointer, tmp_p
             self.inner = inner
 
         async def aput(self, namespace, key, value):
-            if namespace[-1] == "artifacts":
-                seen.append(f"artifact:{key}")
+            if namespace[-1] == "results":
+                seen.append(f"result:{key}")
             if namespace == ("jobs", "index"):
                 seen.append(f"status:{value['status']}")
             return await self.inner.aput(namespace, key, value)
@@ -246,14 +248,14 @@ async def test_status_transitions_observed_mid_stream(store, checkpointer, tmp_p
     await mgr.run_job(job.job_id)
     assert seen[0] == "status:queued"
     assert "status:running" in seen
-    assert "artifact:alpha" in seen
-    assert seen.index("status:running") < seen.index("artifact:alpha")
+    assert "result:alpha" in seen
+    assert seen.index("status:running") < seen.index("result:alpha")
     assert seen[-1] == "status:done"
 
 
-async def test_report_renders_prose_artifacts_readably(store, checkpointer, tmp_path):
-    """Text payloads must read as markdown, not as escaped JSON strings;
-    structured payloads still get a JSON block."""
+async def test_annexes_are_opt_in_and_rendered_by_the_capability(store, checkpointer, tmp_path):
+    """With annexes on, each capability presents its own result (prose stays
+    prose); structured payloads still get a JSON block."""
 
     class ProseCap(SlowEcho):
         async def work(self, state):
@@ -272,12 +274,18 @@ async def test_report_renders_prose_artifacts_readably(store, checkpointer, tmp_
         def render_context(self, result):
             return str(result["data"]["docs"])
 
+    from agent_oo.core.registry import CapabilityRegistry
+    from agent_oo.jobs.report import MarkdownReport
+
     caps = [ProseCap("prose"), StructuredCap("structured")]
+    registry = CapabilityRegistry(caps)
     mgr = make_manager(store, checkpointer, tmp_path, caps=caps)
+    mgr.reporter = MarkdownReport(registry, with_annexes=True)
     job = await mgr.create_job("render me")
     done = await mgr.run_job(job.job_id)
 
     report = (tmp_path / "artifacts" / f"{done.job_id}.md").read_text()
+    assert "Step output — prose" in report                # annex, collapsible
     assert "A paragraph of real markdown." in report      # prose, not escaped
     assert "\\n" not in report                            # no JSON-escaped newlines
     assert "- first angle" in report                      # string list -> bullets

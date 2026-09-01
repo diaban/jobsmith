@@ -5,7 +5,8 @@
     agent-oo run "<task>"            launch a job directly, without chatting
     agent-oo jobs [--status done]    list jobs
     agent-oo job <id-prefix>         plan, steps, artifacts, answer
-    agent-oo report <id-prefix>      print the markdown report
+    agent-oo report <id-prefix>      print the markdown deliverable
+    agent-oo outputs <id-prefix>     list the files the job produced
     agent-oo cancel <id-prefix>      cancel a running job
 
 Every command except `serve` is a CLIENT: it talks to a daemon when one is
@@ -55,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     for name, help_text in (("job", "show one job in detail"),
                             ("report", "print a job's markdown report"),
+                            ("outputs", "list the files a job produced"),
                             ("cancel", "cancel a job")):
         sub.add_parser(name, help=help_text).add_argument("job_id", metavar="ID-PREFIX")
     return parser
@@ -120,6 +122,21 @@ async def cmd_report(client: AgentClient, args) -> int:
     return 0
 
 
+async def cmd_outputs(client: AgentClient, args) -> int:
+    job = await client.resolve_job(args.job_id)
+    if job is None:
+        print(f"no single job matching {args.job_id!r}")
+        return 1
+    outputs = job.get("outputs") or []
+    if not outputs:
+        print("no output yet (is the job done?)")
+        return 1
+    for output in outputs:
+        title = f"  {output['title']}" if output.get("title") else ""
+        print(f"{output['role']:<6} {output['format']:<9} {output['path']}{title}")
+    return 0
+
+
 async def cmd_cancel(client: AgentClient, args) -> int:
     job = await client.resolve_job(args.job_id)
     if job is None:
@@ -130,8 +147,8 @@ async def cmd_cancel(client: AgentClient, args) -> int:
 
 
 COMMANDS = {
-    "chat": cmd_chat, "run": cmd_run, "jobs": cmd_jobs,
-    "job": cmd_job, "report": cmd_report, "cancel": cmd_cancel,
+    "chat": cmd_chat, "run": cmd_run, "jobs": cmd_jobs, "job": cmd_job,
+    "report": cmd_report, "outputs": cmd_outputs, "cancel": cmd_cancel,
 }
 
 

@@ -9,7 +9,8 @@
 - Jobs tab:   GET /jobs (+?session_id/?status), GET /jobs/{id} (plan/DAG,
   step timestamps, artifacts), POST /jobs (direct launch, bypassing chat),
   POST /jobs/{id}/cancel.
-- Artifacts:  GET /jobs/{id}/report — the markdown report.
+- Outputs:    GET /jobs/{id}/outputs — the files the job produced for the
+  human; /outputs/{name} downloads one; /report is a shortcut to the main one.
 - Live:       GET /events — SSE stream of job-progress events
   (JobManager.subscribe; in-process pub/sub, same v1 scope as cancellation).
 
@@ -23,10 +24,11 @@ from __future__ import annotations
 import dataclasses
 import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
@@ -133,7 +135,7 @@ def create_api(manager: JobManager, session_factory: Callable[..., ChatSession])
 
     @app.get("/jobs/{job_id}")
     async def get_job(job_id: str):
-        return dataclasses.asdict(await _job_or_404(job_id))
+        return (await _job_or_404(job_id)).to_dict()
 
     @app.post("/jobs", status_code=201)
     async def launch_job(body: JobIn) -> dict:
@@ -147,14 +149,28 @@ def create_api(manager: JobManager, session_factory: Callable[..., ChatSession])
         cancelled = await manager.cancel_job(job.job_id) or job
         return {"job_id": job.job_id, "status": cancelled.status.value}
 
+    @app.get("/jobs/{job_id}/outputs")
+    async def list_outputs(job_id: str):
+        """Everything the job produced for the human (deliverable + annexes)."""
+        job = await _job_or_404(job_id)
+        return [dataclasses.asdict(o) | {"name": o.name} for o in job.outputs]
+
+    @app.get("/jobs/{job_id}/outputs/{name}")
+    async def download_output(job_id: str, name: str):
+        job = await _job_or_404(job_id)
+        output = next((o for o in job.outputs if o.name == name), None)
+        if output is None or not Path(output.path).is_file():
+            raise HTTPException(404, f"no output {name!r} for job {job_id}")
+        return FileResponse(output.path, filename=name)
+
     @app.get("/jobs/{job_id}/report")
     async def get_report(job_id: str) -> PlainTextResponse:
+        """The main deliverable, inline (shortcut over /outputs)."""
         job = await _job_or_404(job_id)
-        if not job.report_path:
+        if not job.report_path or not Path(job.report_path).is_file():
             raise HTTPException(404, "no report for this job (not DONE yet?)")
         return PlainTextResponse(
-            (manager.reports_dir / f"{job_id}.md").read_text(encoding="utf-8"),
-            media_type="text/markdown",
+            Path(job.report_path).read_text(encoding="utf-8"), media_type="text/markdown"
         )
 
     # ---------------- live events ----------------

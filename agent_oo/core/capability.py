@@ -10,6 +10,7 @@ Pattern (same OO idiom as the rest of the framework):
 """
 from __future__ import annotations
 
+import json
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -102,6 +103,18 @@ class Capability(ABC):
         """
         return None
 
+    def render_report(self, result: CapabilityResult) -> str | None:
+        """Format own result as markdown, for a human reading the job's report.
+
+        Twin of `render_context` (which targets the model). The default is a
+        readable rendering of the payload — override when a capability knows
+        better: a link to a file it produced, a table, an embedded image.
+        Return None to be left out of the report entirely.
+        """
+        if not result.get("ok"):
+            return f"_{result.get('error') or 'no detail'}_"
+        return default_result_markdown(result.get("data") or {})
+
     # ---- Emit helpers (used by terminal sub-graph nodes) ----
 
     def _emit_success(self, data: dict[str, Any], meta: dict[str, Any] | None = None) -> dict:
@@ -124,3 +137,28 @@ class Capability(ABC):
             "completed_capabilities": [self.spec.name],
             "errors": [err],
         }
+
+
+def default_result_markdown(data: dict[str, Any]) -> str:
+    """Best-effort markdown for a payload nobody described.
+
+    Deliberately dumb: prose stays prose, a list of strings becomes bullets,
+    and only genuinely structured values fall back to JSON. A capability that
+    cares about its presentation overrides `render_report` instead of growing
+    this function — the framework must not learn the shape of every payload.
+    """
+    if not data:
+        return "_(empty)_"
+    if len(data) == 1 and isinstance(next(iter(data.values())), str):
+        return next(iter(data.values()))
+    parts: list[str] = []
+    for key, value in data.items():
+        parts.append(f"**{key}**\n")
+        if isinstance(value, str):
+            parts.append(value)
+        elif isinstance(value, list) and all(isinstance(v, str) for v in value):
+            parts.append("\n".join(f"- {v}" for v in value))
+        else:
+            parts.append("```json\n" + json.dumps(value, indent=2, ensure_ascii=False) + "\n```")
+        parts.append("")
+    return "\n".join(parts).strip()

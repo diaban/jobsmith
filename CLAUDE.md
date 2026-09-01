@@ -89,7 +89,11 @@ Capability `build()` MUST use `self.state_graph(PrivateState)` (which sets `outp
 - **Graph nodes are job-agnostic**: `run_job` drives `graph.astream(stream_mode="updates")` and persists plan/artifacts/status as node updates arrive. `PostProcessor`/`Escalator` do NOT write to the store — if you add persistence, put it in the JobManager, not in nodes.
 - Store schema: `("jobs","index")/job_id` → summary; `("jobs",job_id,"meta")` → plan/errors; `("jobs",job_id,"artifacts")/cap_name` → per-capability result. Fine-grained state stays in the checkpointer under the same thread_id.
 - Cancellation is in-process (asyncio.Task cancel → CANCELLED persisted, checkpoint retained for future resume). Cross-process cancel is a best-effort tombstone — documented v1 limit.
-- On DONE the manager writes a **markdown report** to `reports_dir` (default `artifacts/`, gitignored): answer, plan table with per-step status/timestamps (`step_finished_at`, recorded as `cap_*` updates stream), mermaid DAG, artifact payloads. `Job` also carries `session_id` (chat session that launched it) and an `announced` flag (`list_finished_unannounced`/`mark_announced` drive chat notifications).
+- **Vocabulary (was ambiguous, now fixed)**: an **artifact/output** is what the job produces FOR THE HUMAN (`Job.outputs: list[JobOutput]` — path, format, title, role `main`|`annex`); a capability's intermediate payload is a **result** (state channel `results`, store namespace `("jobs",id,"results")`). `Job.report_path` is a property = the main output's path.
+- **Producing the deliverable is a Reporter's job**, not the manager's (`jobs/report.py`): `build_document(job, registry)` makes a format-independent `JobDocument`, `MarkdownReport.write()` serializes it and returns a `JobOutput`. Other formats (HTML/PDF/PPTX) = other Reporters over the same document; `JobManager(graph, store, reporter=...)` takes any of them. The composition root injects `MarkdownReport(registry)`.
+- **The report is a deliverable, not a trace**: title + answer first, then provenance (request, timings, plan table, mermaid DAG). Per-step material is NOT inlined — it lives in the store and is served by `GET /jobs/{id}` and `agent-oo job <id>`. `MarkdownReport(with_annexes=True)` re-adds it as collapsible `<details>` for a self-contained archive.
+- **Capabilities present their own results**: `Capability.render_report(result)` (twin of `render_context`, which targets the model) with `default_result_markdown` as the base implementation — prose stays prose, list[str] becomes bullets, only structured values fall back to JSON. Never grow that default to learn payload shapes: override `render_report` in the capability instead.
+- `Job` also carries `session_id` (chat session that launched it) and an `announced` flag (`list_finished_unannounced`/`mark_announced` drive chat notifications).
 
 ### Chat layer (`chat/`)
 
@@ -104,7 +108,8 @@ Capability `build()` MUST use `self.state_graph(PrivateState)` (which sets `outp
 `create_api(manager, session_factory) -> FastAPI` (extra `.[api]`; banking runner: `examples/banking/api.py`). Domain-agnostic — everything arrives via the injected manager/factory.
 
 - **Chat**: `POST /sessions` → id; `POST /sessions/{id}/messages` returns `{"type": "message"}` or `{"type": "proposal"}` (HITL interrupt surfaced over HTTP); client answers with `POST /sessions/{id}/approval {"approved": bool}`.
-- **Jobs**: `GET /jobs[?session_id&status]`, `GET /jobs/{id}` (plan/step_finished_at/results — the UI's DAG data), `POST /jobs` (direct launch), `POST /jobs/{id}/cancel`, `GET /jobs/{id}/report` (markdown).
+- **Jobs**: `GET /jobs[?session_id&status]`, `GET /jobs/{id}` (plan/step_finished_at/results — the UI's DAG data), `POST /jobs` (direct launch), `POST /jobs/{id}/cancel`.
+- **Outputs**: `GET /jobs/{id}/outputs` lists the produced files, `/outputs/{name}` downloads one, `/report` is the inline shortcut to the main deliverable.
 - **Live**: `GET /events` — SSE over `JobManager.subscribe()`: every `_persist_summary` emits `{job_id, status, steps_done, report_path, ...}` to subscriber queues (`put_nowait`, drops on full — never blocks a run; in-process only, same v1 scope as cancellation). SSE can't be exercised through httpx `ASGITransport` (it buffers the whole body) — the pub/sub is unit-tested in `test_jobs.py`, endpoints in `test_api.py`.
 
 ### Adding a capability

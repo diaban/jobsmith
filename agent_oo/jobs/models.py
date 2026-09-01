@@ -1,8 +1,9 @@
 """Job model: a persistent, trackable orchestration run."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from ..core.state import CapabilityResult, Plan
@@ -14,6 +15,27 @@ class JobStatus(StrEnum):
     DONE = "done"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+@dataclass
+class JobOutput:
+    """A file the job produced FOR THE HUMAN — the deliverable.
+
+    A job can have several: the main report plus annexes (a chart a
+    capability drew, an exported table), and later the same content in
+    other formats. `role` is "main" or "annex"; `format` is free-form
+    ("markdown", "html", "pdf", ...).
+    """
+
+    path: str
+    format: str = "markdown"
+    title: str = ""
+    role: str = "main"
+    produced_by: str | None = None      # capability name, when a step made it
+
+    @property
+    def name(self) -> str:
+        return Path(self.path).name
 
 
 @dataclass
@@ -32,8 +54,18 @@ class Job:
     final_answer: str | None = None
     terminal_kind: str | None = None
     error: str | None = None
-    report_path: str | None = None          # markdown report written on completion
+    outputs: list[JobOutput] = field(default_factory=list)   # the deliverables
     announced: bool = False                 # completion surfaced in its chat session
+
+    @property
+    def report_path(self) -> str | None:
+        """Path of the main deliverable (kept as the common shortcut)."""
+        main = next((o for o in self.outputs if o.role == "main"), None)
+        return main.path if main else None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Full view for API/CLI consumers (asdict would drop the properties)."""
+        return asdict(self) | {"status": self.status.value, "report_path": self.report_path}
 
     def summary(self) -> dict[str, Any]:
         """The record stored in the ("jobs", "index") namespace."""
@@ -48,6 +80,7 @@ class Job:
             "terminal_kind": self.terminal_kind,
             "final_answer": self.final_answer,
             "error": self.error,
-            "report_path": self.report_path,
+            "outputs": [asdict(o) for o in self.outputs],
+            "report_path": self.report_path,      # derived, for consumers
             "announced": self.announced,
         }

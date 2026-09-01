@@ -22,6 +22,7 @@ from ..core.builder import AgentBuilder
 from ..core.deps import Deps
 from ..core.registry import CapabilityRegistry
 from ..jobs.manager import JobManager
+from ..jobs.report import MarkdownReport
 from .capabilities import default_capabilities
 from .persistence import open_persistence, pick_db
 from .profile import DEFAULT_APP_PROFILE
@@ -65,7 +66,11 @@ async def build_app(
             Deps(llm=llm), registry,
             profile=DEFAULT_APP_PROFILE, checkpointer=checkpointer,
         ).build()
-        manager = JobManager(graph, store, reports_dir=reports_dir)
+        manager = JobManager(
+            graph, store,
+            reporter=MarkdownReport(registry),   # capabilities present their own results
+            reports_dir=reports_dir,
+        )
         # A previous process may have died mid-run: settle those jobs first.
         await manager.recover_interrupted()
     except BaseException:

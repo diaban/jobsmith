@@ -70,7 +70,13 @@ async def test_chat_flow_proposal_approval_report(store, checkpointer, tmp_path)
 
         report = await client.get(f"/jobs/{job['job_id']}/report")
         assert report.status_code == 200
-        assert report.text.startswith("# Job report")
+        assert report.text.startswith("# analyse the data")   # deliverable first
+
+        # the same file is listed as the job's main output, and downloadable
+        (output,) = (await client.get(f"/jobs/{job['job_id']}/outputs")).json()
+        assert (output["role"], output["format"]) == ("main", "markdown")
+        download = await client.get(f"/jobs/{job['job_id']}/outputs/{output['name']}")
+        assert download.status_code == 200
 
 
 async def test_chat_flow_decline_creates_no_job(store, checkpointer, tmp_path):

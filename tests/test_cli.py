@@ -64,7 +64,8 @@ async def test_daemon_client_full_chat_flow(store, checkpointer, tmp_path):
         (job,) = await client.list_jobs(session_id=sid)
         finished = await wait_done(client, job["job_id"])
         assert finished["status"] == "done"
-        assert (await client.get_report(job["job_id"])).startswith("# Job report")
+        assert (await client.get_report(job["job_id"])).startswith("# analyse it")
+        assert [o["role"] for o in finished["outputs"]] == ["main"]
         assert await client.get_job("nope") is None
     finally:
         await client.aclose()
@@ -78,7 +79,8 @@ async def test_embedded_client_same_shapes(tmp_path):
         job = await wait_done(client, launched["job_id"])
         assert job["status"] == "done"
         assert set(job["results"]) == {"research", "analysis", "critique"}
-        assert (await client.get_report(job["job_id"])).startswith("# Job report")
+        assert (await client.get_report(job["job_id"])).startswith("# research something")
+        assert [o["role"] for o in job["outputs"]] == ["main"]
 
         # a summary carries the keys the CLI prints
         (summary,) = await client.list_jobs()
