@@ -7,10 +7,10 @@ from __future__ import annotations
 
 from langchain_core.messages import HumanMessage
 
-from agent_oo.app import build_app
-from agent_oo.app.persistence import MEMORY, pick_db
-from agent_oo.app.providers import KeywordChatModel, KeywordLLM
-from agent_oo.jobs.models import JobStatus
+from jobsmith.app import build_app
+from jobsmith.app.persistence import MEMORY, pick_db
+from jobsmith.app.providers import KeywordChatModel, KeywordLLM
+from jobsmith.jobs.models import JobStatus
 
 
 async def open_app(tmp_path, db: str):
@@ -23,10 +23,10 @@ async def open_app(tmp_path, db: str):
 
 
 def test_pick_db_precedence(monkeypatch):
-    monkeypatch.delenv("AGENT_OO_DB", raising=False)
+    monkeypatch.delenv("JOBSMITH_DB", raising=False)
     monkeypatch.setattr("sys.argv", ["prog"])
     assert pick_db() == MEMORY
-    monkeypatch.setenv("AGENT_OO_DB", "from-env.db")
+    monkeypatch.setenv("JOBSMITH_DB", "from-env.db")
     assert pick_db() == "from-env.db"
     monkeypatch.setattr("sys.argv", ["prog", "--db=from-flag.db"])
     assert pick_db() == "from-flag.db"          # flag beats env

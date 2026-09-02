@@ -51,7 +51,7 @@ def pick_provider() -> str:
     if choice is None and "--real" in sys.argv:
         choice = "anthropic"
     if choice is None:
-        choice = os.environ.get("AGENT_OO_LLM") or None   # set by the CLI's --llm
+        choice = os.environ.get("JOBSMITH_LLM") or None   # set by the CLI's --llm
     if choice is None:
         if os.environ.get("ANTHROPIC_API_KEY"):
             choice = "anthropic"

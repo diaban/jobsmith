@@ -1,6 +1,6 @@
 """Persistence backends: where checkpoints and job records actually live.
 
-One spec string selects the backend (CLI `--db=`, env `AGENT_OO_DB`, or the
+One spec string selects the backend (CLI `--db=`, env `JOBSMITH_DB`, or the
 `db=` argument of `build_app`):
 
     memory                     in-process only (default) — nothing survives exit
@@ -29,11 +29,11 @@ _POSTGRES_SCHEMES = ("postgresql://", "postgres://", "postgresql+psycopg://")
 
 
 def pick_db(explicit: str | None = None) -> str:
-    """Resolve the backend spec: argument > --db= flag > AGENT_OO_DB > memory."""
+    """Resolve the backend spec: argument > --db= flag > JOBSMITH_DB > memory."""
     if explicit:
         return explicit
     flag = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--db=")), None)
-    return flag or os.environ.get("AGENT_OO_DB") or MEMORY
+    return flag or os.environ.get("JOBSMITH_DB") or MEMORY
 
 
 async def open_persistence(spec: str, stack: AsyncExitStack) -> tuple[Any, Any]:

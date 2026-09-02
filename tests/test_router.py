@@ -6,10 +6,10 @@ import json
 import pytest
 from conftest import FakeLLM
 
-from agent_oo.core.capability import Capability, CapabilitySpec
-from agent_oo.core.deps import Deps
-from agent_oo.core.registry import CapabilityRegistry
-from agent_oo.core.router import Router
+from jobsmith.core.capability import Capability, CapabilitySpec
+from jobsmith.core.deps import Deps
+from jobsmith.core.registry import CapabilityRegistry
+from jobsmith.core.router import Router
 
 
 class StubCap(Capability):

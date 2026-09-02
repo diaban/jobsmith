@@ -3,11 +3,11 @@ from __future__ import annotations
 
 from conftest import FakeLLM, plan_json
 
-from agent_oo.app.capabilities import default_capabilities
-from agent_oo.app.capabilities.research import ResearchCapability
-from agent_oo.core.builder import build_agent
-from agent_oo.core.deps import Deps
-from agent_oo.core.registry import CapabilityRegistry
+from jobsmith.app.capabilities import default_capabilities
+from jobsmith.app.capabilities.research import ResearchCapability
+from jobsmith.core.builder import build_agent
+from jobsmith.core.deps import Deps
+from jobsmith.core.registry import CapabilityRegistry
 
 PACK_SCRIPT = {
     "key aspects": '{"aspects": ["history", "impact"]}',

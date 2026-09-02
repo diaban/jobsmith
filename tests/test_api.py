@@ -14,8 +14,8 @@ from langgraph.checkpoint.memory import MemorySaver
 from test_chat import launch_call
 from test_jobs import make_manager
 
-from agent_oo.api import create_api
-from agent_oo.chat import ChatSession
+from jobsmith.api import create_api
+from jobsmith.chat import ChatSession
 
 
 def make_app(store, checkpointer, tmp_path, responses):
@@ -128,4 +128,4 @@ async def test_session_is_resumable_by_id(store, checkpointer, tmp_path):
 async def test_health(store, checkpointer, tmp_path):
     app, _ = make_app(store, checkpointer, tmp_path, [AIMessage(content="hi")])
     async with client_for(app) as client:
-        assert (await client.get("/health")).json()["service"] == "agent_oo"
+        assert (await client.get("/health")).json()["service"] == "jobsmith"

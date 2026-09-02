@@ -1,13 +1,13 @@
-"""agent-oo — the command line for the global agent.
+"""jobsmith — the command line for the global agent.
 
-    agent-oo serve [--port 8000]     run the daemon: it owns the job engine
-    agent-oo chat [--session ID]     converse (resume a conversation by id)
-    agent-oo run "<task>"            launch a job directly, without chatting
-    agent-oo jobs [--status done]    list jobs
-    agent-oo job <id-prefix>         plan, steps, artifacts, answer
-    agent-oo report <id-prefix>      print the markdown deliverable
-    agent-oo outputs <id-prefix>     list the files the job produced
-    agent-oo cancel <id-prefix>      cancel a running job
+    jobsmith serve [--port 8000]     run the daemon: it owns the job engine
+    jobsmith chat [--session ID]     converse (resume a conversation by id)
+    jobsmith run "<task>"            launch a job directly, without chatting
+    jobsmith jobs [--status done]    list jobs
+    jobsmith job <id-prefix>         plan, steps, artifacts, answer
+    jobsmith report <id-prefix>      print the markdown deliverable
+    jobsmith outputs <id-prefix>     list the files the job produced
+    jobsmith cancel <id-prefix>      cancel a running job
 
 Every command except `serve` is a CLIENT: it talks to a daemon when one is
 running (so jobs outlive the command that launched them, and any other
@@ -27,14 +27,14 @@ from .repl import run_repl, show_job
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="agent-oo",
+        prog="jobsmith",
         description="A conversational agent that runs complex tasks as background jobs.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--llm", choices=("anthropic", "openai", "fake"),
                         help="LLM provider (default: auto-detected from API keys)")
     parser.add_argument("--db", metavar="SPEC",
-                        help="memory | <file.db> | <postgres DSN>  (default: $AGENT_OO_DB)")
+                        help="memory | <file.db> | <postgres DSN>  (default: $JOBSMITH_DB)")
     parser.add_argument("--url", default=DEFAULT_URL, help=f"daemon URL (default: {DEFAULT_URL})")
     parser.add_argument("--local", action="store_true",
                         help="never use a daemon: run the agent in this process")
@@ -82,7 +82,7 @@ async def cmd_run(client: AgentClient, args) -> int:
     job_id = launched["job_id"]
     print(f"job {job_id[:8]} launched ({launched['status']})")
     if not wait:
-        print(f"follow it with:  agent-oo job {job_id[:8]}")
+        print(f"follow it with:  jobsmith job {job_id[:8]}")
         return 0
     while True:
         await asyncio.sleep(0.5)
@@ -188,8 +188,8 @@ def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     args = build_parser().parse_args(argv)
     if args.llm:
-        os.environ["AGENT_OO_LLM"] = args.llm   # read by pick_provider, both stacks
-    if args.command is None:            # bare `agent-oo` == `agent-oo chat`
+        os.environ["JOBSMITH_LLM"] = args.llm   # read by pick_provider, both stacks
+    if args.command is None:            # bare `jobsmith` == `jobsmith chat`
         args = build_parser().parse_args([*(argv or []), "chat"])
     try:
         return asyncio.run(serve(args) if args.command == "serve" else run_command(args))

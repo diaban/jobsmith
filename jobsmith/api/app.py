@@ -77,7 +77,7 @@ def _shape_reply(result: dict) -> dict:
 
 
 def create_api(manager: JobManager, session_factory: Callable[..., ChatSession]) -> FastAPI:
-    app = FastAPI(title="agent_oo", version="0.1.0")
+    app = FastAPI(title="jobsmith", version="0.1.0")
     sessions: dict[str, _SessionEntry] = {}
 
     def _entry(session_id: str) -> _SessionEntry:
@@ -101,7 +101,7 @@ def create_api(manager: JobManager, session_factory: Callable[..., ChatSession])
     @app.get("/health")
     async def health() -> dict:
         """Probe used by the CLI to decide between daemon and embedded mode."""
-        return {"status": "ok", "service": "agent_oo", "version": app.version}
+        return {"status": "ok", "service": "jobsmith", "version": app.version}
 
     @app.post("/sessions", status_code=201)
     async def create_session(body: SessionIn | None = None) -> dict:

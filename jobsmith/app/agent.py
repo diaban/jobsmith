@@ -4,7 +4,7 @@
 injected clients), the default LLM-only capability pack, neutral
 prompts/profile, and the persistence backend. Every piece can be overridden
 by argument — a domain agent is just a different composition (see
-agent_oo/examples/).
+jobsmith/examples/).
 
 It is a coroutine because real backends (SQLite/Postgres connections and
 pools) must be opened inside the event loop that will use them; `AgentApp`

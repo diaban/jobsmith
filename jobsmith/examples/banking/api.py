@@ -1,7 +1,7 @@
 """Run the banking agent as an HTTP API.
 
-    python -m agent_oo.examples.banking.api          # http://127.0.0.1:8000
-    python -m agent_oo.examples.banking.api 9000     # custom port
+    python -m jobsmith.examples.banking.api          # http://127.0.0.1:8000
+    python -m jobsmith.examples.banking.api 9000     # custom port
 
 Same provider auto-selection as the REPL (--llm=anthropic|openai|fake).
 Interactive docs at /docs; live job events at /events (SSE).

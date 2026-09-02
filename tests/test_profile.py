@@ -1,9 +1,9 @@
 """Profile-driven validators: rule folding + default/banking behaviors."""
 from __future__ import annotations
 
-from agent_oo.core.profile import AgentProfile
-from agent_oo.core.validate import InputValidator, OutputValidator
-from agent_oo.examples.banking.profile import BANKING_PROFILE, rule_citations_when_search
+from jobsmith.core.profile import AgentProfile
+from jobsmith.core.validate import InputValidator, OutputValidator
+from jobsmith.examples.banking.profile import BANKING_PROFILE, rule_citations_when_search
 
 
 async def test_default_profile_rejects_empty_query_in_english():

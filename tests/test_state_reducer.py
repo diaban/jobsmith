@@ -5,7 +5,7 @@ from langgraph.constants import END, START
 from langgraph.graph import StateGraph
 from langgraph.types import Send
 
-from agent_oo.core.state import AgentState, merge_results
+from jobsmith.core.state import AgentState, merge_results
 
 
 def test_union_semantics():

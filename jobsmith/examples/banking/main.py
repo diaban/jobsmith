@@ -1,6 +1,6 @@
 """Banking demo: wire the framework with fake clients and run a job lifecycle.
 
-Run with:  python -m agent_oo.examples.banking.main
+Run with:  python -m jobsmith.examples.banking.main
 """
 from __future__ import annotations
 

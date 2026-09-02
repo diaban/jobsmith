@@ -7,12 +7,12 @@ import pytest
 from conftest import FakeLLM, plan_json
 from langgraph.constants import END
 
-from agent_oo.core.builder import build_agent
-from agent_oo.core.capability import Capability, CapabilityBaseState, CapabilitySpec
-from agent_oo.core.deps import Deps
-from agent_oo.core.registry import CapabilityRegistry
-from agent_oo.jobs.manager import JobManager
-from agent_oo.jobs.models import JobStatus
+from jobsmith.core.builder import build_agent
+from jobsmith.core.capability import Capability, CapabilityBaseState, CapabilitySpec
+from jobsmith.core.deps import Deps
+from jobsmith.core.registry import CapabilityRegistry
+from jobsmith.jobs.manager import JobManager
+from jobsmith.jobs.models import JobStatus
 
 
 class SlowEcho(Capability):
@@ -274,8 +274,8 @@ async def test_annexes_are_opt_in_and_rendered_by_the_capability(store, checkpoi
         def render_context(self, result):
             return str(result["data"]["docs"])
 
-    from agent_oo.core.registry import CapabilityRegistry
-    from agent_oo.jobs.report import MarkdownReport
+    from jobsmith.core.registry import CapabilityRegistry
+    from jobsmith.jobs.report import MarkdownReport
 
     caps = [ProseCap("prose"), StructuredCap("structured")]
     registry = CapabilityRegistry(caps)
@@ -295,7 +295,7 @@ async def test_annexes_are_opt_in_and_rendered_by_the_capability(store, checkpoi
 def test_mermaid_draws_isolated_steps_once():
     """A root that feeds another step is drawn by its edge; a step wired to
     nothing at all still needs its own line or it vanishes from the DAG."""
-    from agent_oo.jobs.report import JobDocument, MarkdownReport, PlanRow
+    from jobsmith.jobs.report import JobDocument, MarkdownReport, PlanRow
 
     doc = JobDocument(
         title="t", request="t", job_id="j", created_at="", finished_at="", answer="a",

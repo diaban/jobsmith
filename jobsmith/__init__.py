@@ -1,4 +1,4 @@
-"""agent_oo — domain-agnostic agent planner/executor framework on LangGraph.
+"""jobsmith — domain-agnostic agent planner/executor framework on LangGraph.
 
 A user message comes in; a registry-driven planner emits a DAG of pluggable
 capabilities (self-describing agentic sub-graphs); a wave-based executor runs
@@ -14,7 +14,7 @@ Quick start:
     job = await jobs.create_job("do something", inputs={...})
     job = await jobs.run_job(job.job_id)
 
-See agent_oo/examples/banking for a complete domain profile.
+See jobsmith/examples/banking for a complete domain profile.
 """
 from .core.builder import AgentBuilder, build_agent
 from .core.capability import (

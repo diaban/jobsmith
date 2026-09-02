@@ -4,11 +4,11 @@ from __future__ import annotations
 from conftest import FakeLLM, plan_json
 from langgraph.constants import END
 
-from agent_oo.core.builder import AgentBuilder, build_agent
-from agent_oo.core.capability import Capability, CapabilityBaseState, CapabilitySpec
-from agent_oo.core.deps import Deps
-from agent_oo.core.registry import CapabilityRegistry
-from agent_oo.core.state import CapabilityResult
+from jobsmith.core.builder import AgentBuilder, build_agent
+from jobsmith.core.capability import Capability, CapabilityBaseState, CapabilitySpec
+from jobsmith.core.deps import Deps
+from jobsmith.core.registry import CapabilityRegistry
+from jobsmith.core.state import CapabilityResult
 
 
 class EchoCapability(Capability):

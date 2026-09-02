@@ -1,4 +1,4 @@
-# agent_oo
+# jobsmith
 
 A conversational agent that answers simple messages directly and turns complex
 ones into **background jobs** — with your approval — then keeps chatting while
@@ -26,7 +26,7 @@ No API key needed to try it — a deterministic fake provider ships in the box.
 
 ```bash
 make install                 # venv + dev/API deps
-make chat LLM=fake           # or: .venv/bin/python -m agent_oo --llm fake chat
+make chat LLM=fake           # or: .venv/bin/python -m jobsmith --llm fake chat
 ```
 
 With a real model, drop a key in `.env` (see `.env.example`) and the provider is
@@ -40,7 +40,7 @@ make chat
 A session looks like this:
 
 ```
-$ agent-oo chat
+$ jobsmith chat
 [jobs llm: Claude via AnthropicLLMClient — claude-opus-5]
 [chat llm: ChatAnthropic — claude-opus-5]
 [persistence: sqlite — agent.db]
@@ -71,7 +71,7 @@ agent> and which one does LangGraph itself use?
 
 ### Chat (the default)
 
-`agent-oo chat` is a conversation. The agent decides whether to answer or to
+`jobsmith chat` is a conversation. The agent decides whether to answer or to
 propose a job; you approve. In-REPL commands:
 
 | command | |
@@ -87,33 +87,33 @@ propose a job; you approve. In-REPL commands:
 ### CLI
 
 ```bash
-agent-oo serve [--port 8000]     # the daemon: it owns the job engine
-agent-oo run "<task>" [--wait]   # launch a job directly, no chat
-agent-oo jobs [--status running] # list
-agent-oo job <id-prefix>         # plan, steps, results, answer
-agent-oo report <id-prefix>      # print the markdown deliverable
-agent-oo outputs <id-prefix>     # list the files the job produced
-agent-oo cancel <id-prefix>
+jobsmith serve [--port 8000]     # the daemon: it owns the job engine
+jobsmith run "<task>" [--wait]   # launch a job directly, no chat
+jobsmith jobs [--status running] # list
+jobsmith job <id-prefix>         # plan, steps, results, answer
+jobsmith report <id-prefix>      # print the markdown deliverable
+jobsmith outputs <id-prefix>     # list the files the job produced
+jobsmith cancel <id-prefix>
 ```
 
 Ids can be given by prefix. All diagnostics go to **stderr**, so stdout stays
-pipeable: `agent-oo jobs | cut -d' ' -f1`.
+pipeable: `jobsmith jobs | cut -d' ' -f1`.
 
 ### Daemon or embedded — the one thing worth knowing
 
-**A job must outlive the command that launched it.** `agent-oo serve` is a
+**A job must outlive the command that launched it.** `jobsmith serve` is a
 long-lived process owning the job engine; every other command is a *client*
 that talks to it over HTTP. If no daemon is running, commands fall back to
 running the agent **embedded** in their own process — convenient, but jobs then
 die with the command (`run` compensates by waiting, and says so on stderr).
 
 ```bash
-agent-oo serve &                 # jobs now survive everything else
-agent-oo run "long analysis"     # returns immediately
-agent-oo jobs                    # another process sees it
+jobsmith serve &                 # jobs now survive everything else
+jobsmith run "long analysis"     # returns immediately
+jobsmith jobs                    # another process sees it
 ```
 
-Conversations are rebuildable by id: `agent-oo chat --session <id>` resumes
+Conversations are rebuildable by id: `jobsmith chat --session <id>` resumes
 across a daemon restart, and picks up the announcement of any job that finished
 while you were away.
 
@@ -152,7 +152,7 @@ flowchart LR
 ````
 
 Per-step material is deliberately **not** inlined — it lives in the store, and
-`agent-oo job <id>` or `GET /jobs/{id}` serves it. For a self-contained archive,
+`jobsmith job <id>` or `GET /jobs/{id}` serves it. For a self-contained archive,
 `MarkdownReport(with_annexes=True)` folds it back in as collapsible sections.
 
 A job carries a **list** of outputs (`role: main | annex`, a `format`, the
@@ -215,7 +215,7 @@ derive from the registry.
 ### Layout
 
 ```
-agent_oo/
+jobsmith/
   core/         the framework: router, planner, executor, generation, profile, registry
   jobs/         Job model, JobManager, JobDocument + Reporters
   chat/         conversational layer (LangChain create_agent) + job tools
@@ -229,13 +229,13 @@ agent_oo/
 
 Two LLM stacks, deliberately: the chat layer uses **LangChain** models (they
 handle per-provider tool formats), the job engine uses a dependency-light
-`LLMClient` protocol (`agent_oo/clients.py`).
+`LLMClient` protocol (`jobsmith/clients.py`).
 
 ---
 
 ## HTTP API
 
-`agent-oo serve` exposes the daemon (`.[api]`):
+`jobsmith serve` exposes the daemon (`.[api]`):
 
 | | |
 |---|---|
@@ -253,7 +253,7 @@ handle per-provider tool formats), the job engine uses a dependency-light
 | | |
 |---|---|
 | `--llm anthropic\|openai\|fake` | provider for **both** stacks (default: auto-detected from keys) |
-| `--db memory\|<file.db>\|<postgres DSN>` | persistence (default: `$AGENT_OO_DB`, else memory) |
+| `--db memory\|<file.db>\|<postgres DSN>` | persistence (default: `$JOBSMITH_DB`, else memory) |
 | `--url` / `--local` | point at another daemon / never use one |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | key auto-detection; Anthropic wins if both are set |
 | `ANTHROPIC_MODEL`, `OPENAI_MODEL`, `OPENAI_BASE_URL` | model override; the base URL points at Ollama, vLLM or a gateway |
@@ -261,8 +261,8 @@ handle per-provider tool formats), the job engine uses a dependency-light
 Persistence is opt-in and backs both jobs and conversations:
 
 ```bash
-uv pip install -e ".[sqlite]"    && agent-oo --db agent.db chat
-uv pip install -e ".[postgres]"  && agent-oo --db postgresql://user:pass@localhost/agent chat
+uv pip install -e ".[sqlite]"    && jobsmith --db agent.db chat
+uv pip install -e ".[postgres]"  && jobsmith --db postgresql://user:pass@localhost/agent chat
 ```
 
 Without a backend everything is in-memory: only the `.md` reports survive.

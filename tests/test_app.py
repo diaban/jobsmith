@@ -4,9 +4,9 @@ from __future__ import annotations
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
-from agent_oo.app import build_app
-from agent_oo.app.providers import KeywordChatModel, KeywordLLM
-from agent_oo.jobs.models import JobStatus
+from jobsmith.app import build_app
+from jobsmith.app.providers import KeywordChatModel, KeywordLLM
+from jobsmith.jobs.models import JobStatus
 
 
 async def make_app(tmp_path, *, db: str = "memory"):

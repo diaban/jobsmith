@@ -1,7 +1,7 @@
 """One client interface, two backings — this is what decouples the UX from
 where jobs actually run.
 
-    DaemonClient    talks HTTP to a running `agent-oo serve`
+    DaemonClient    talks HTTP to a running `jobsmith serve`
     EmbeddedClient  builds the agent in this process
 
 Both speak the same dict shapes as the HTTP API, so the REPL and every CLI
@@ -59,7 +59,7 @@ class AgentClient(ABC):
         return None
 
     async def resolve_job(self, prefix: str) -> dict | None:
-        """Accept a short job-id prefix, as printed by `agent-oo jobs`."""
+        """Accept a short job-id prefix, as printed by `jobsmith jobs`."""
         job = await self.get_job(prefix)
         if job is not None:
             return job

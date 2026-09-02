@@ -12,11 +12,11 @@ from langgraph.checkpoint.memory import MemorySaver
 from test_chat import launch_call
 from test_jobs import make_manager
 
-from agent_oo.api import create_api
-from agent_oo.app.providers import KeywordChatModel, KeywordLLM
-from agent_oo.chat import ChatSession
-from agent_oo.cli.client import DaemonClient, EmbeddedClient, open_client
-from agent_oo.cli.main import build_parser
+from jobsmith.api import create_api
+from jobsmith.app.providers import KeywordChatModel, KeywordLLM
+from jobsmith.chat import ChatSession
+from jobsmith.cli.client import DaemonClient, EmbeddedClient, open_client
+from jobsmith.cli.main import build_parser
 
 CLIENT_OPS = ("new_session", "send", "approve", "list_jobs", "get_job",
               "cancel_job", "launch_job", "get_report", "resolve_job")
@@ -139,7 +139,7 @@ async def test_embedded_run_actually_runs_the_job(tmp_path, capsys):
     before it finishes, or the job would die with the command."""
     from types import SimpleNamespace
 
-    from agent_oo.cli.main import cmd_run
+    from jobsmith.cli.main import cmd_run
 
     client = await embedded(tmp_path)
     try:

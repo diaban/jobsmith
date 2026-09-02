@@ -1,4 +1,4 @@
-# agent_oo — everyday commands.  `make` or `make help` lists everything.
+# jobsmith — everyday commands.  `make` or `make help` lists everything.
 #
 # Variables you can override:
 #   make chat LLM=openai        force a provider (anthropic|openai|fake)
@@ -48,28 +48,28 @@ fix: ## Lint and auto-fix what ruff can
 
 leak-check: ## Domain-leakage gate: framework + global agent must contain no banking-specific strings
 	@! grep -rin --include="*.py" "banking\|banquier\|votre\|analyste" \
-		agent_oo/core agent_oo/jobs agent_oo/chat agent_oo/api agent_oo/app agent_oo/cli \
+		jobsmith/core jobsmith/jobs jobsmith/chat jobsmith/api jobsmith/app jobsmith/cli \
 		&& echo "leak-check: OK (framework is domain-clean)"
 
 check: lint leak-check test ## Everything CI would run: lint + leakage gate + tests
 
 serve: ## Run the DAEMON: it owns the job engine, so jobs outlive their client
-	$(PY) -m agent_oo $(LLM_FLAG) $(DB_FLAG) serve --port $(PORT)
+	$(PY) -m jobsmith $(LLM_FLAG) $(DB_FLAG) serve --port $(PORT)
 
 chat: ## Chat with the agent (uses the daemon if one runs, else embedded)
-	$(PY) -m agent_oo $(LLM_FLAG) $(DB_FLAG) chat
+	$(PY) -m jobsmith $(LLM_FLAG) $(DB_FLAG) chat
 
 jobs: ## List jobs (add ARGS='--status running')
-	$(PY) -m agent_oo $(LLM_FLAG) $(DB_FLAG) jobs $(ARGS)
+	$(PY) -m jobsmith $(LLM_FLAG) $(DB_FLAG) jobs $(ARGS)
 
 chat-banking: ## Banking example REPL
-	$(PY) -m agent_oo.examples.banking.chat $(LLM_FLAG)
+	$(PY) -m jobsmith.examples.banking.chat $(LLM_FLAG)
 
 api-banking: ## Banking example HTTP API
-	$(PY) -m agent_oo.examples.banking.api $(PORT) $(LLM_FLAG)
+	$(PY) -m jobsmith.examples.banking.api $(PORT) $(LLM_FLAG)
 
 demo-banking: ## Scripted banking demo (fakes, no API key needed)
-	$(PY) -m agent_oo.examples.banking.main
+	$(PY) -m jobsmith.examples.banking.main
 
 clean: ## Remove caches, build junk, and generated job reports
 	rm -rf .pytest_cache .ruff_cache dist *.egg-info artifacts

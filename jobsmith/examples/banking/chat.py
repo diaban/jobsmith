@@ -1,9 +1,9 @@
 """Banking REPL: the generic chat shell wired to the banking domain.
 
-Run with:  python -m agent_oo.examples.banking.chat  [--llm=anthropic|openai|fake]
+Run with:  python -m jobsmith.examples.banking.chat  [--llm=anthropic|openai|fake]
 
 Everything generic (provider selection, fakes, REPL loop, HITL rendering)
-lives in agent_oo.app — this module only supplies the banking capabilities,
+lives in jobsmith.app — this module only supplies the banking capabilities,
 profile, and domain fakes (search/S3).
 """
 from __future__ import annotations

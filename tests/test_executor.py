@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from langgraph.types import Send
 
-from agent_oo.core.capability import Capability, CapabilitySpec
-from agent_oo.core.executor import Executor
-from agent_oo.core.registry import CapabilityRegistry
+from jobsmith.core.capability import Capability, CapabilitySpec
+from jobsmith.core.executor import Executor
+from jobsmith.core.registry import CapabilityRegistry
 
 
 class StubCap(Capability):

@@ -9,8 +9,8 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 from test_jobs import make_manager
 
-from agent_oo.chat import ChatSession
-from agent_oo.jobs.models import JobStatus
+from jobsmith.chat import ChatSession
+from jobsmith.jobs.models import JobStatus
 
 
 def launch_call(query: str, rationale: str) -> AIMessage:
