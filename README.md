@@ -311,8 +311,17 @@ Without a backend everything is in-memory: only the `.md` reports survive.
 make help          # every target
 make check         # lint + domain-leakage gate + tests
 make test T=router # one keyword's worth
+make coverage      # per-module coverage report
 make fix           # ruff --fix
 ```
+
+CI runs `make check` on every push and pull request, across Python 3.11 and
+3.12, and verifies that `uv.lock` still matches `pyproject.toml`.
+
+Contributions use one short-lived branch per issue (`feat/12-thing`,
+`fix/13-thing`) with a PR onto `main` — there is no `develop` branch, and
+releases will be tags. Dependency changes must include a regenerated
+`uv.lock` in the same commit.
 
 `make leak-check` is a gate, not a formality: the shared code and the default
 agent must contain no domain-specific vocabulary — `agents/banking/` is exempt,
