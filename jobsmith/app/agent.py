@@ -43,6 +43,12 @@ class AgentApp:
     def new_session(self, session_id: str | None = None) -> ChatSession:
         return self.session_factory(session_id) if session_id else self.session_factory()
 
+    def service(self) -> Any:
+        """The inbound port over this app — what every entrypoint talks to."""
+        from ..service import LocalAgentService
+
+        return LocalAgentService(self.manager, self.session_factory, on_close=self.aclose)
+
     async def aclose(self) -> None:
         """Release persistence resources (connections, pools)."""
         await self._stack.aclose()

@@ -16,6 +16,7 @@ from test_jobs import make_manager
 
 from jobsmith.api import create_api
 from jobsmith.chat import ChatSession
+from jobsmith.service import LocalAgentService
 
 
 def make_app(store, checkpointer, tmp_path, responses):
@@ -30,7 +31,7 @@ def make_app(store, checkpointer, tmp_path, responses):
             checkpointer=checkpointer_for_sessions,
         )
 
-    return create_api(manager, session_factory), manager
+    return create_api(LocalAgentService(manager, session_factory)), manager
 
 
 def client_for(app) -> AsyncClient:

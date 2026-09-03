@@ -30,11 +30,23 @@ The REPL is a CONVERSATION by default (chat agent; complex asks → job proposal
 
 Domain-leakage gate (`make leak-check`, must return nothing): `grep -ri --include="*.py" "banking\|banquier\|votre\|analyste" jobsmith/core jobsmith/jobs jobsmith/chat jobsmith/api jobsmith/app jobsmith/cli jobsmith/agents/default jobsmith/agents/base.py` — note it scans `agents/default` and `agents/base.py`, **not** `agents/banking`, which is allowed to be as domain-specific as it likes.
 
+### The inbound port (`service.py`)
+
+`AgentService` is **the** use-case surface of the application — sessions and jobs — and `LocalAgentService` is its in-process implementation over a composed `AgentApp`. Every entrypoint is an *adapter* over it, never a second implementation:
+
+| adapter | backing |
+|---|---|
+| `cli/repl.py`, `cli/main.py` | `AgentService` (either backing) |
+| `api/app.py` | `LocalAgentService` — each route is serialization + one call |
+| `cli/client.py` `DaemonClient` | the same port, backed by HTTP |
+
+`LocalAgentService` additionally exposes what only an in-process service can (`subscribe`/`unsubscribe`, `list_outputs`, `find_output`); the HTTP adapter re-exposes those as `/events` and `/jobs/{id}/outputs/...` so remote callers get them too. `tests/test_service.py` drives the same sequence through both backings and asserts **identical answers**, and greps the API module for leaked use-case code (`create_job(`, `ainvoke(`, `__interrupt__`, …). Adding a UI or a bot = one adapter, zero new use cases.
+
 ### CLI + daemon (`cli/`) — where jobs actually run
 
 The point of this layer: **a job must outlive the command that launched it**. `jobsmith serve` is a long-lived process owning the JobManager; every other command is a *client*.
 
-- `cli/client.py` — one `AgentClient` interface, two backings: `DaemonClient` (HTTP, `persistent=True`) and `EmbeddedClient` (in-process, `persistent=False`). Both return the API's dict shapes, so `cli/repl.py` and every command are written once. `open_client()` probes `GET /health` and falls back to embedded, **printing the trade-off on stderr**.
+- `cli/client.py` — two backings for that one port: `DaemonClient` (HTTP, `persistent=True`) and `EmbeddedClient` (`persistent=False`), the latter being *nothing but* `LocalAgentService` owning the app it composed. `open_client()` probes `GET /health` and falls back to embedded, **printing the trade-off on stderr**. `AgentClient` remains as the CLI's alias for `AgentService`.
 - **All diagnostics go to stderr** (provider/persistence/daemon banners) — stdout stays pipeable (`jobsmith jobs | cut -d' ' -f1`).
 - `cli/main.py` — argparse; `--llm` is exported as `$JOBSMITH_LLM` so `pick_provider` sees it from both stacks. Bare `jobsmith` == `jobsmith chat`.
 - Sessions are **rebuildable by id**: the API's registry is only a cache, the conversation lives in the checkpointer under `thread_id=session_id`, so `jobsmith chat --session <id>` resumes across a daemon restart (and gets the finished-job announcement). `session_factory` therefore takes an optional `session_id`.
@@ -136,7 +148,7 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 
 ### HTTP API (`api/`)
 
-`create_api(manager, session_factory) -> FastAPI` (extra `.[api]`; served by `jobsmith serve`, whichever agent is composed). Domain-agnostic — everything arrives via the injected manager/factory.
+`create_api(service) -> FastAPI` (extra `.[api]`; served by `jobsmith serve`, whichever agent is composed). A pure adapter: every route is serialization plus one `AgentService` call — if job or chat logic reappears here, it belongs in `service.py`.
 
 - **Chat**: `POST /sessions` → id; `POST /sessions/{id}/messages` returns `{"type": "message"}` or `{"type": "proposal"}` (HITL interrupt surfaced over HTTP); client answers with `POST /sessions/{id}/approval {"approved": bool}`.
 - **Jobs**: `GET /jobs[?session_id&status]`, `GET /jobs/{id}` (plan/step_finished_at/results — the UI's DAG data), `POST /jobs` (direct launch), `POST /jobs/{id}/cancel`.

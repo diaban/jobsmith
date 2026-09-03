@@ -17,6 +17,7 @@ from jobsmith.app.providers import KeywordChatModel, KeywordLLM
 from jobsmith.chat import ChatSession
 from jobsmith.cli.client import DaemonClient, EmbeddedClient, open_client
 from jobsmith.cli.main import build_parser
+from jobsmith.service import LocalAgentService
 
 CLIENT_OPS = ("new_session", "send", "approve", "list_jobs", "get_job",
               "cancel_job", "launch_job", "get_report", "resolve_job")
@@ -53,7 +54,7 @@ async def test_daemon_client_full_chat_flow(store, checkpointer, tmp_path):
         return ChatSession(manager, ScriptedChatModel(responses=list(responses)),
                            session_id=session_id, checkpointer=saver)
 
-    client = daemon_client_over(create_api(manager, session_factory))
+    client = daemon_client_over(create_api(LocalAgentService(manager, session_factory)))
     try:
         assert client.persistent is True          # jobs outlive the command
         sid = await client.new_session()

@@ -171,7 +171,7 @@ async def serve(args) -> int:
     app = await build_app(db=args.db, agent=args.agent)
     try:
         config = uvicorn.Config(
-            create_api(app.manager, app.session_factory), host="127.0.0.1", port=args.port
+            create_api(app.service()), host="127.0.0.1", port=args.port
         )
         await uvicorn.Server(config).serve()
     finally:
