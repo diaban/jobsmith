@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from conftest import FakeLLM, plan_json
 
+from jobsmith.agents.base import AgentContext
 from jobsmith.agents.default import default_capabilities
 from jobsmith.agents.default.research import ResearchCapability
 from jobsmith.core.builder import build_agent
@@ -43,7 +44,7 @@ async def test_pack_chain_end_to_end(checkpointer):
         "ONLY the provided": "A sufficiently long final answer built from the pack context.",
     })
     graph = build_agent(
-        Deps(llm=llm), CapabilityRegistry(default_capabilities(llm)), checkpointer=checkpointer
+        Deps(llm=llm), CapabilityRegistry(default_capabilities(AgentContext(llm))), checkpointer=checkpointer
     )
     out = await graph.ainvoke(
         {"query": "study X in depth", "job_id": "p1"},
@@ -76,7 +77,7 @@ async def test_pack_degrades_when_one_step_fails(checkpointer):
         "ONLY the provided": "A sufficiently long final answer from research alone.",
     })
     graph = build_agent(
-        Deps(llm=llm), CapabilityRegistry(default_capabilities(llm)), checkpointer=checkpointer
+        Deps(llm=llm), CapabilityRegistry(default_capabilities(AgentContext(llm))), checkpointer=checkpointer
     )
     out = await graph.ainvoke(
         {"query": "study X", "job_id": "p2"},

@@ -203,7 +203,15 @@ Adding one:
 
 1. Subclass `Capability`, define `spec`, write async node methods, and `build()`
    the sub-graph with `self.state_graph(...)`.
-2. Register it in the composition root before `.build()`.
+2. Return it from an agent's capability pack in `agents/`.
+
+**External dependencies** — a vector store, an HTTP API, an MCP server — are
+declared as Protocols next to the capability that consumes them, and opened by
+the agent's `open_resources(stack)` on the app's `AsyncExitStack`, so they are
+closed in reverse order when the app closes. When several capabilities need the
+same backend differently, share the *pool* and give each one its own adapter for
+the port it declared: capabilities run in parallel waves, so a raw shared
+connection is a bug waiting to happen.
 
 That is all — the planner prompt, the dispatch map and the merging step all
 derive from the registry.

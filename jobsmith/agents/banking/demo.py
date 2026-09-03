@@ -1,6 +1,10 @@
-"""Banking demo: wire the framework with fake clients and run a job lifecycle.
+"""Banking demo: a job lifecycle end to end, on fake clients.
 
 Run with:  python -m jobsmith.agents.banking.demo
+
+It composes the real product (`build_app`) and only substitutes the agent's
+resources — the same seam a production wiring would use to swap the fakes for
+a real search engine and object store.
 """
 from __future__ import annotations
 
@@ -8,17 +12,8 @@ import asyncio
 import json
 from typing import Any
 
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.store.memory import InMemoryStore
-
-from ...core.builder import AgentBuilder
-from ...core.deps import Deps
-from ...core.registry import CapabilityRegistry
-from ...jobs.manager import JobManager
-from .capabilities.refs import RefsCapability
-from .capabilities.search import SearchCapability
-from .capabilities.vision import VisionCapability
-from .profile import BANKING_PROFILE
+from ...app.agent import build_app
+from . import BankingResources
 
 # --- Fake clients (replace with real ones in production wiring) ---
 
@@ -63,32 +58,30 @@ class DemoS3:
 
 
 async def main() -> None:
-    llm, search, s3 = DemoLLM(), DemoSearch(), DemoS3()
-
-    registry = CapabilityRegistry([
-        SearchCapability(llm, search),
-        VisionCapability(llm, s3),
-        RefsCapability(search),
-    ])
-    builder = AgentBuilder(
-        Deps(llm=llm), registry,
-        profile=BANKING_PROFILE, checkpointer=MemorySaver(),
+    app = await build_app(
+        agent="banking",
+        llm=DemoLLM(),
+        chat_model=object(),                     # no chatting in this demo
+        resources=BankingResources(search=DemoSearch(), objects=DemoS3()),
     )
-    jobs = JobManager(builder.build(), InMemoryStore())
+    jobs = app.manager
+    try:
+        job = await jobs.create_job("What is our credit exposure to Acme Corp?")
+        print(f"created  {job.job_id}  status={job.status.value}")
 
-    job = await jobs.create_job("What is our credit exposure to Acme Corp?")
-    print(f"created  {job.job_id}  status={job.status.value}")
+        job = await jobs.run_job(job.job_id)
+        print(f"finished {job.job_id}  status={job.status.value}")
+        print(f"\nplan: {json.dumps(job.plan, indent=2)}")
+        print(f"\nresults: {sorted(job.results)}")
+        for name, result in job.results.items():
+            print(f"  - {name}: ok={result['ok']}")
+        print(f"\nanswer:\n{job.final_answer}")
+        print(f"\ndeliverable: {job.report_path}")
 
-    job = await jobs.run_job(job.job_id)
-    print(f"finished {job.job_id}  status={job.status.value}")
-    print(f"\nplan: {json.dumps(job.plan, indent=2)}")
-    print(f"\nartifacts: {sorted(job.results)}")
-    for name, result in job.results.items():
-        print(f"  - {name}: ok={result['ok']}")
-    print(f"\nanswer:\n{job.final_answer}")
-
-    listing = await jobs.list_jobs()
-    print(f"\njobs in store: {[(j.job_id[:8], j.status.value) for j in listing]}")
+        listing = await jobs.list_jobs()
+        print(f"\njobs in store: {[(j.job_id[:8], j.status.value) for j in listing]}")
+    finally:
+        await app.aclose()
 
 
 if __name__ == "__main__":

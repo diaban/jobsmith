@@ -5,15 +5,16 @@ jobs real substance with nothing but an API key (or the fakes). This is what
 `jobsmith chat` runs unless another agent is asked for.
 """
 from ...core.capability import Capability
-from ...core.deps import LLMClient
-from ..base import AgentDefinition
+from ..base import AgentContext, AgentDefinition
 from .analysis import AnalysisCapability
 from .critique import CritiqueCapability
 from .profile import DEFAULT_APP_PROFILE
 from .research import ResearchCapability
 
 
-def default_capabilities(llm: LLMClient) -> list[Capability]:
+def default_capabilities(ctx: AgentContext) -> list[Capability]:
+    # LLM-only: this agent opens no external resources at all.
+    llm = ctx.llm
     return [ResearchCapability(llm), AnalysisCapability(llm), CritiqueCapability(llm)]
 
 

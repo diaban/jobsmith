@@ -7,11 +7,13 @@ has been broken.
 """
 from __future__ import annotations
 
+from contextlib import AsyncExitStack
+
 import pytest
 from conftest import FakeLLM, plan_json
 
 from jobsmith.agents import AGENTS, agent_names, get_agent
-from jobsmith.agents.base import AgentDefinition
+from jobsmith.agents.base import AgentContext, AgentDefinition, open_agent_resources
 from jobsmith.app.agent import build_app
 from jobsmith.core.capability import Capability, CapabilityBaseState, CapabilitySpec
 from jobsmith.core.profile import AgentProfile
@@ -36,10 +38,14 @@ async def test_every_shipped_agent_composes_through_the_same_build_app(name):
         await app.aclose()
 
 
-def test_the_two_agents_contribute_different_capabilities():
-    llm = object()
-    names = {n: {c.spec.name for c in get_agent(n).capabilities(llm)}
-             for n in ("default", "banking")}
+async def test_the_two_agents_contribute_different_capabilities():
+    async with AsyncExitStack() as stack:
+        names = {}
+        for n in ("default", "banking"):
+            definition = get_agent(n)
+            resources = await open_agent_resources(definition, stack)
+            ctx = AgentContext(llm=object(), resources=resources)
+            names[n] = {c.spec.name for c in definition.capabilities(ctx)}
     assert names["default"] == {"research", "analysis", "critique"}
     assert names["banking"] == {"search", "vision", "refs"}
     assert not names["default"] & names["banking"]
@@ -71,7 +77,7 @@ async def test_a_third_party_agent_needs_no_shared_code(store, checkpointer, tmp
     mine = AgentDefinition(
         name="mine",
         description="a third-party agent",
-        capabilities=lambda llm: [Echo(llm)],
+        capabilities=lambda ctx: [Echo(ctx.llm)],
         profile=AgentProfile(),
         chat_prompt="You are terse.",
     )

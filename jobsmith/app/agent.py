@@ -5,9 +5,11 @@ injected clients), the default LLM-only capability pack, neutral
 prompts/profile, and the persistence backend. Every piece can be overridden
 by argument; which agent is composed comes from `jobsmith/agents/`.
 
-It is a coroutine because real backends (SQLite/Postgres connections and
-pools) must be opened inside the event loop that will use them; `AgentApp`
-owns their teardown via `aclose()`.
+It is a coroutine because real backends must be opened inside the event loop
+that will use them — the persistence layer, and whatever the chosen agent
+opens for its own capabilities (a vector-store pool, an HTTP session, an MCP
+connection). Everything lands on one `AsyncExitStack`, so `AgentApp.aclose()`
+tears it all down in reverse order, including when startup itself failed.
 """
 from __future__ import annotations
 
@@ -17,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..agents import get_agent
+from ..agents.base import AgentContext, open_agent_resources
 from ..chat import ChatSession
 from ..core.builder import AgentBuilder
 from ..core.deps import Deps
@@ -34,6 +37,7 @@ class AgentApp:
     manager: JobManager
     session_factory: Callable[..., ChatSession]   # optional session_id argument
     agent_name: str = "default"
+    resources: Any = None                         # whatever the agent opened
     _stack: AsyncExitStack = field(default_factory=AsyncExitStack)
 
     def new_session(self, session_id: str | None = None) -> ChatSession:
@@ -49,6 +53,7 @@ async def build_app(
     agent: str | None = None,
     llm: Any = None,
     chat_model: Any = None,
+    resources: Any = None,
     db: str | None = None,
     reports_dir: str = "artifacts",
 ) -> AgentApp:
@@ -63,8 +68,13 @@ async def build_app(
     stack = AsyncExitStack()
     try:
         checkpointer, store = await open_persistence(pick_db(db), stack)
+        # The agent opens what it needs on OUR stack: it knows what its
+        # backends are, we own their lifetime and the loop they live in.
+        # An injected `resources` belongs to the caller — we do not close it.
+        if resources is None:
+            resources = await open_agent_resources(definition, stack)
 
-        registry = CapabilityRegistry(definition.capabilities(llm))
+        registry = CapabilityRegistry(definition.capabilities(AgentContext(llm, resources)))
         graph = AgentBuilder(
             Deps(llm=llm), registry,
             profile=definition.profile, checkpointer=checkpointer,
@@ -87,4 +97,4 @@ async def build_app(
         return ChatSession(manager, chat_model, session_id=session_id,
                            checkpointer=checkpointer, **prompt)
 
-    return AgentApp(manager, session_factory, definition.name, stack)
+    return AgentApp(manager, session_factory, definition.name, resources, stack)

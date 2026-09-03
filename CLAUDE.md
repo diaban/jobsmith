@@ -42,17 +42,29 @@ The point of this layer: **a job must outlive the command that launched it**. `j
 
 ### Agents (`agents/`) — what an agent *is*
 
-An agent is **a capability pack + a profile (+ an optional chat persona)**, and nothing else — `AgentDefinition` in `agents/base.py`. The runtime, job engine, chat, CLI and API are shared by all of them, so **adding an agent touches no shared code**: define the capabilities, register the definition in `agents/__init__.py`, done. `tests/test_agents.py` pins that property (it composes a third-party agent from scratch).
+An agent is **a capability pack + a profile (+ an optional chat persona, + whatever it needs open)**, and nothing else — `AgentDefinition` in `agents/base.py`. The runtime, job engine, chat, CLI and API are shared by all of them, so **adding an agent touches no shared code**: define the capabilities, register the definition in `agents/__init__.py`, done. `tests/test_agents.py` pins that property (it composes a third-party agent from scratch).
+
+```python
+AgentDefinition(
+    open_resources=...,   # async (stack) -> anything: pools, sessions, clients
+    capabilities=...,     # (AgentContext) -> list[Capability]   ctx.llm / ctx.resources
+    profile=..., chat_prompt=...,
+)
+```
+
+**Resources — who opens, who closes.** The agent knows *what* to open (which backend, which collection); the composition root owns the *lifetime* and the event loop. So `open_resources` is handed `build_app`'s own `AsyncExitStack` and returns whatever it built: teardown happens in reverse order on `AgentApp.aclose()`, **including when startup itself failed** (`tests/test_resources.py` pins that). `build_app(resources=...)` injects them instead (the demo and tests use it; the caller then owns them).
+
+**Several capabilities on one backend**: share the *connection*, give each capability **its own adapter** for the port it declared — never one fat client exposing both sets of methods. Capabilities run in parallel waves, so the shared thing must be a **pool**, not a raw connection. `tests/test_resources.py` demonstrates the exact shape (two capabilities, two adapters, one pool).
 
 - `agents/default/`: the LLM-only pack — `research` (decompose into aspects, lenient JSON, then structured notes) → `analysis` → `critique`. The latter two subclass `SingleStepCapability` (`_step.py`): one LLM node reading the best upstream `results` entry, degrading to the bare request when the upstream failed/was skipped.
-- `agents/banking/`: the domain example — capabilities, its **own ports** (`deps.py`: `SearchEngine`/`VisionClient`/`S3Client` Protocols) and **its own adapters** (`fakes.py`), plus a French profile. The ports live next to the capabilities that consume them, never in a central `ports/` package: that is what keeps them scaling with their consumers.
+- `agents/banking/`: the domain example — capabilities, its **own ports** (`deps.py`: `SearchEngine`/`VisionClient`/`S3Client` Protocols), **its own adapters** (`fakes.py`, assembled in `open_banking_resources`), and a French profile. The ports live next to the capabilities that consume them, never in a central `ports/` package: that is what keeps them scaling with their consumers, and a port is shaped by the *need*, not by the vendor's API. `demo.py` runs the whole product with richer fakes injected through `build_app(resources=...)`.
 - Selection: `--agent NAME` (CLI, applies to whichever process owns the engine — so pass it to `serve`), `build_app(agent=...)`, `make chat AGENT=banking`.
 
 ### The composition root (`app/`)
 
 Wiring only, no content — everything here is domain-neutral:
 - `providers.py`: `pick_provider` (one `--llm=` flag / key auto-detect shared by both LLM stacks), `make_llm` (job engine, `clients.py` adapters), `make_chat_model` (LangChain), `load_dotenv`, and the keyless fakes — `KeywordLLM` plans by **parsing capability names out of the rendered planner prompt** (works with any registry), `KeywordChatModel` proposes a job on analysis-ish keywords.
-- `agent.py`: `await build_app(agent=..., **overrides) -> AgentApp(manager, session_factory, agent_name, aclose)`. It composes ONE agent definition into a running product; the REPL and entrypoints live in `cli/`.
+- `agent.py`: `await build_app(agent=..., **overrides) -> AgentApp(manager, session_factory, agent_name, resources, aclose)`. It composes ONE agent definition into a running product: providers, persistence, the agent's resources, registry, graph, JobManager, chat-session factory — all on one `AsyncExitStack`. The REPL and entrypoints live in `cli/`.
 - `persistence.py`: `pick_db()` (arg > `--db=` > `$JOBSMITH_DB` > `memory`) + `open_persistence(spec, stack)` → `(checkpointer, store)`, teardown on the caller's `AsyncExitStack`. Backends: `memory` (default), a SQLite path (`.[sqlite]`), or a Postgres DSN (`.[postgres]`, one shared `AsyncConnectionPool` for saver + store, `autocommit/prepare_threshold=0/dict_row` as those backends require). Chat sessions share the job graph's checkpointer, so conversations persist too (namespaced by `thread_id`: `session_id` vs `job_id`).
 
 **Why `build_app` is async**: real backends must be opened in the event loop that will use them. `python -m jobsmith api` therefore serves with `await uvicorn.Server(config).serve()` inside that same loop — `uvicorn.run()` would start its own loop and strand the pool. **SQLite gotcha** (cost an hour): the *store* needs `isolation_level=None` (it drives its own `BEGIN`/`COMMIT`; under implicit transactions its first write leaves one open and the next `BEGIN` raises "cannot start a transaction within a transaction"), the *saver* keeps the default; never run a stray `PRAGMA` on those live connections (it opens a transaction and deadlocks the other connection) — WAL is set once on a throwaway connection, and the busy timeout via `connect(timeout=...)`.
