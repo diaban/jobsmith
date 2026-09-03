@@ -87,13 +87,23 @@ Capability `build()` MUST use `self.state_graph(PrivateState)` (which sets `outp
 
 ### Jobs layer (`jobs/`)
 
-`JobManager(graph, store)` — `create_job` / `run_job` (awaitable) / `start_job` (background task) / `get_job` / `list_jobs` / `cancel_job`. `job_id` doubles as the LangGraph `thread_id`.
+`JobManager` holds **only the use cases** — `create_job` / `run_job` (awaitable) / `start_job` (background task) / `get_job` / `list_jobs` / `cancel_job` / `recover_interrupted`. Everything else is a collaborator behind a port, so each changes for its own reason:
 
-- **Graph nodes are job-agnostic**: `run_job` drives `graph.astream(stream_mode="updates")` and persists plan/artifacts/status as node updates arrive. `PostProcessor`/`Escalator` do NOT write to the store — if you add persistence, put it in the JobManager, not in nodes.
-- Store schema: `("jobs","index")/job_id` → summary; `("jobs",job_id,"meta")` → plan/errors; `("jobs",job_id,"artifacts")/cap_name` → per-capability result. Fine-grained state stays in the checkpointer under the same thread_id.
+| collaborator | responsibility | file |
+|---|---|---|
+| `JobRepository` | where records live + **the store schema** | `jobs/repository.py` |
+| `GraphRunner` | drives the run, translates it to domain updates | `jobs/runner.py` |
+| `JobEvents` | broadcasts progress | `jobs/events.py` |
+| `Reporter` | produces the deliverable | `jobs/report.py` |
+
+Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `repository=`/`runner=`/`events=` to swap one. `tests/test_job_seams.py` drives the whole lifecycle with **no graph and no store** — if that stops being possible, a responsibility has leaked back in.
+
+- **Only `runner.py` knows LangGraph's stream shape** (`{node: update}`, `cap_<name>` nodes, terminal node names). It yields `PlanReady` / `StepFinished` / `NodeErrors` / `Terminal`; the manager folds those into the Job. Graph nodes stay job-agnostic — `PostProcessor`/`Escalator` do NOT write to the store; new persistence goes in the manager or the repository, never in a node.
+- **Only `repository.py` knows the schema**: `("jobs","index")/job_id` → summary; `("jobs",job_id,"meta")` → plan/errors; `("jobs",job_id,"results")/cap_name` → per-capability result. Fine-grained state stays in the checkpointer under `thread_id == job_id`. Moving job records to SQL is another implementation of this port.
+- Cross-process progress (Postgres LISTEN/NOTIFY, Redis) is another `JobEvents`, not a manager change; the same goes for `resume_job()`, which belongs on the manager.
 - Cancellation is in-process (asyncio.Task cancel → CANCELLED persisted, checkpoint retained for future resume). Cross-process cancel is a best-effort tombstone — documented v1 limit.
 - **Vocabulary (was ambiguous, now fixed)**: an **artifact/output** is what the job produces FOR THE HUMAN (`Job.outputs: list[JobOutput]` — path, format, title, role `main`|`annex`); a capability's intermediate payload is a **result** (state channel `results`, store namespace `("jobs",id,"results")`). `Job.report_path` is a property = the main output's path.
-- **Producing the deliverable is a Reporter's job**, not the manager's (`jobs/report.py`): `build_document(job, registry)` makes a format-independent `JobDocument`, `MarkdownReport.write()` serializes it and returns a `JobOutput`. Other formats (HTML/PDF/PPTX) = other Reporters over the same document; `JobManager(graph, store, reporter=...)` takes any of them. The composition root injects `MarkdownReport(registry)`.
+- **Producing the deliverable is a Reporter's job**, not the manager's (`jobs/report.py`): `build_document(job, registry)` makes a format-independent `JobDocument`, `MarkdownReport.write()` serializes it and returns a `JobOutput`. Other formats (HTML/PDF/PPTX) = other Reporters over the same document; `JobManager(..., reporter=...)` takes any of them. The composition root injects `MarkdownReport(registry)`.
 - **The report is a deliverable, not a trace**: title + answer first, then provenance (request, timings, plan table, mermaid DAG). Per-step material is NOT inlined — it lives in the store and is served by `GET /jobs/{id}` and `jobsmith job <id>`. `MarkdownReport(with_annexes=True)` re-adds it as collapsible `<details>` for a self-contained archive.
 - **Capabilities present their own results**: `Capability.render_report(result)` (twin of `render_context`, which targets the model) with `default_result_markdown` as the base implementation — prose stays prose, list[str] becomes bullets, only structured values fall back to JSON. Never grow that default to learn payload shapes: override `render_report` in the capability instead.
 - `Job` also carries `session_id` (chat session that launched it) and an `announced` flag (`list_finished_unannounced`/`mark_announced` drive chat notifications).

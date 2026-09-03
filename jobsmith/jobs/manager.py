@@ -1,82 +1,72 @@
-"""JobManager: persistent, trackable, cancellable orchestration runs.
+"""JobManager: the job use cases.
 
-Store schema (LangGraph BaseStore namespaces):
+Everything the product can *do* with a job lives here — create, run, track,
+cancel, recover, announce. Everything else is delegated to a collaborator, so
+each of them can change (or be swapped) for its own reasons:
 
-| namespace                     | key        | value                                  |
-|-------------------------------|------------|----------------------------------------|
-| ("jobs", "index")             | job_id     | summary record (status, query, ...)    |
-| ("jobs", job_id, "meta")      | "plan"     | validated plan + rationale             |
-| ("jobs", job_id, "meta")      | "errors"   | accumulated NodeError list             |
-| ("jobs", job_id, "results")   | cap name   | that capability's CapabilityResult     |
+    JobRepository   where records live and what the schema is  (repository.py)
+    GraphRunner     how a run is driven and read back          (runner.py)
+    JobEvents       how progress is broadcast                  (events.py)
+    Reporter        how the deliverable is produced            (report.py)
 
-Fine-grained execution state additionally lives in the *checkpointer* under
-thread_id == job_id, so a paused/cancelled job can later be resumed on the
-same thread.
-
-Status updates happen via streaming, not node instrumentation: `run_job`
-drives `graph.astream(stream_mode="updates")` and persists as node updates
-arrive — the graph nodes stay job-agnostic.
+The defaults wire the v1 stack (LangGraph store, LangGraph graph, in-process
+events, markdown report), so `JobManager(graph, store)` still works.
 
 Cancellation semantics: `cancel_job` cancels the in-process asyncio.Task;
-cancellation propagates into the running LangGraph invocation, the
-checkpointer retains the last completed superstep, and the job is marked
-CANCELLED. If no task is registered in this process (other process, or
-already finished), a CANCELLED tombstone is written best-effort — true
-cross-process preemption is out of scope for v1.
+cancellation propagates into the running invocation, the checkpointer retains
+the last completed superstep, and the job is marked CANCELLED. With no task
+registered in this process (another process, or already finished), a CANCELLED
+tombstone is written best-effort — true cross-process preemption is out of
+scope for v1.
 """
 from __future__ import annotations
 
 import asyncio
 import sys
 import uuid
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from ..core.state import NodeError
-from .models import Job, JobOutput, JobStatus
+from .events import InProcessEvents, JobEvents, job_event
+from .models import Job, JobStatus, now_iso
 from .report import MarkdownReport
-
-_TERMINAL_NODES = ("post_process", "escalate", "user_error")
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
+from .repository import JobRepository, StoreJobRepository
+from .runner import GraphRunner, JobUpdate, NodeErrors, PlanReady, StepFinished, Terminal
 
 
 class JobManager:
     def __init__(
         self,
-        graph: Any,
-        store: Any,
+        graph: Any = None,
+        store: Any = None,
         *,
         reporter: Any = None,
         reports_dir: str | Path = "artifacts",
+        repository: JobRepository | None = None,
+        runner: GraphRunner | None = None,
+        events: JobEvents | None = None,
     ):
+        if repository is None and store is None:
+            raise ValueError("JobManager needs a store or an explicit repository")
+        if runner is None and graph is None:
+            raise ValueError("JobManager needs a graph or an explicit runner")
         self.graph = graph
-        self.store = store
+        self.repo: JobRepository = repository or StoreJobRepository(store)
+        self.runner: GraphRunner = runner or GraphRunner(graph)
+        self.events: JobEvents = events or InProcessEvents()
         # Producing the deliverable is a rendering concern, not the manager's:
         # swap the Reporter for another format without touching this class.
         self.reporter = reporter if reporter is not None else MarkdownReport()
         self.reports_dir = Path(reports_dir)  # where deliverables are written
         self._tasks: dict[str, asyncio.Task] = {}  # in-process cancellation handles
-        self._subscribers: set[asyncio.Queue] = set()  # live job-event queues (SSE, UI)
-
-    # ---------------- Persistence helpers ----------------
 
     async def _persist_summary(self, job: Job) -> None:
-        job.updated_at = _now()
-        await self.store.aput(("jobs", "index"), job.job_id, job.summary())
-        self._emit(job)
+        job.updated_at = now_iso()
+        await self.repo.save_summary(job)
+        self.events.publish(job_event(job))
 
-    async def _persist_meta(self, job_id: str, key: str, value: Any) -> None:
-        await self.store.aput(("jobs", job_id, "meta"), key, value)
-
-    async def _persist_result(self, job_id: str, cap_name: str, result: dict) -> None:
-        """A capability's own output — intermediate material, not a deliverable."""
-        await self.store.aput(("jobs", job_id, "results"), cap_name, result)
-
-    # ---------------- API ----------------
+    # ---------------- Lifecycle ----------------
 
     async def create_job(
         self,
@@ -91,7 +81,7 @@ class JobManager:
             query=query,
             inputs=inputs or {},
             session_id=session_id,
-            created_at=_now(),
+            created_at=now_iso(),
         )
         await self._persist_summary(job)
         return job
@@ -109,12 +99,8 @@ class JobManager:
 
         errors: list[NodeError] = []
         try:
-            async for update in self.graph.astream(
-                {"query": job.query, "inputs": job.inputs, "job_id": job.job_id},
-                config={"configurable": {"thread_id": job.job_id}},
-                stream_mode="updates",
-            ):
-                await self._apply_update(job, update, errors)
+            async for update in self.runner.stream(job.job_id, job.query, job.inputs):
+                await self._apply(job, update, errors)
         except asyncio.CancelledError:
             job.status = JobStatus.CANCELLED
             await self._persist_summary(job)
@@ -126,12 +112,31 @@ class JobManager:
             return job
 
         if errors:
-            await self._persist_meta(job.job_id, "errors", list(errors))
+            await self.repo.save_errors(job.job_id, errors)
         job.status = JobStatus.DONE if job.terminal_kind == "answer" else JobStatus.FAILED
         if job.status is JobStatus.DONE:
             job.outputs = [self.reporter.write(job, self.reports_dir)]
         await self._persist_summary(job)
         return job
+
+    async def _apply(self, job: Job, update: JobUpdate, errors: list[NodeError]) -> None:
+        """Fold one domain update from the runner into the job."""
+        match update:
+            case NodeErrors(node_errors):
+                errors.extend(node_errors)
+            case PlanReady(plan):
+                job.plan = plan
+                await self.repo.save_plan(job.job_id, plan)
+            case StepFinished(capability, result):
+                job.results[capability] = result
+                job.step_finished_at[capability] = now_iso()
+                await self.repo.save_result(job.job_id, capability, result)
+                await self._persist_summary(job)   # touch updated_at for progress
+            case Terminal(terminal_kind, final_answer, user_error_message):
+                job.terminal_kind = terminal_kind
+                job.final_answer = final_answer
+                if terminal_kind != "answer":
+                    job.error = user_error_message
 
     def start_job(self, job_id: str) -> asyncio.Task:
         """Fire-and-forget: run the job in a background task (cancellable)."""
@@ -140,35 +145,26 @@ class JobManager:
         task.add_done_callback(lambda _: self._tasks.pop(job_id, None))
         return task
 
-    @staticmethod
-    def _job_from_summary(job_id: str, s: dict[str, Any]) -> Job:
-        return Job(
-            job_id=job_id,
-            status=JobStatus(s["status"]),
-            query=s["query"],
-            inputs=s.get("inputs") or {},
-            session_id=s.get("session_id"),
-            created_at=s.get("created_at", ""),
-            updated_at=s.get("updated_at", ""),
-            step_finished_at=s.get("step_finished_at") or {},
-            terminal_kind=s.get("terminal_kind"),
-            final_answer=s.get("final_answer"),
-            error=s.get("error"),
-            outputs=[JobOutput(**o) for o in (s.get("outputs") or [])],
-            announced=bool(s.get("announced")),
-        )
+    async def cancel_job(self, job_id: str) -> Job | None:
+        task = self._tasks.get(job_id)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            return await self.get_job(job_id)
+        # No in-process task: best-effort tombstone (see module docstring).
+        job = await self.get_job(job_id)
+        if job is not None and job.status in (JobStatus.QUEUED, JobStatus.RUNNING):
+            job.status = JobStatus.CANCELLED
+            await self._persist_summary(job)
+        return job
+
+    # ---------------- Queries ----------------
 
     async def get_job(self, job_id: str) -> Job | None:
-        item = await self.store.aget(("jobs", "index"), job_id)
-        if item is None:
-            return None
-        job = self._job_from_summary(job_id, item.value)
-        plan_item = await self.store.aget(("jobs", job_id, "meta"), "plan")
-        if plan_item is not None:
-            job.plan = plan_item.value
-        for item in await self.store.asearch(("jobs", job_id, "results"), limit=100):
-            job.results[item.key] = item.value
-        return job
+        return await self.repo.load(job_id)
 
     async def list_jobs(
         self,
@@ -177,8 +173,7 @@ class JobManager:
         session_id: str | None = None,
         limit: int = 50,
     ) -> list[Job]:
-        items = await self.store.asearch(("jobs", "index"), limit=limit)
-        jobs = [self._job_from_summary(item.key, item.value) for item in items]
+        jobs = await self.repo.load_all(limit=limit)
         if status is not None:
             jobs = [j for j in jobs if j.status is status]
         if session_id is not None:
@@ -200,36 +195,18 @@ class JobManager:
             job.error = "interrupted: the process running this job stopped"
             await self._persist_summary(job)
         if stale:
-            print(f"[jobs: {len(stale)} interrupted job(s) marked failed on startup]", file=sys.stderr)
+            print(f"[jobs: {len(stale)} interrupted job(s) marked failed on startup]",
+                  file=sys.stderr)
         return stale
 
-    # ---------------- Live events (in-process pub/sub) ----------------
+    # ---------------- Live events ----------------
 
     def subscribe(self, *, max_queue: int = 256) -> asyncio.Queue:
-        """Get a queue of job-progress events (every summary persist emits one).
-        In-process only — same v1 scope as task cancellation."""
-        queue: asyncio.Queue = asyncio.Queue(maxsize=max_queue)
-        self._subscribers.add(queue)
-        return queue
+        """Get a queue of job-progress events (every summary persist emits one)."""
+        return self.events.subscribe(max_queue=max_queue)
 
     def unsubscribe(self, queue: asyncio.Queue) -> None:
-        self._subscribers.discard(queue)
-
-    def _emit(self, job: Job) -> None:
-        event = {
-            "job_id": job.job_id,
-            "status": job.status.value,
-            "session_id": job.session_id,
-            "query": job.query[:80],
-            "steps_done": sorted(job.step_finished_at),
-            "report_path": job.report_path,
-            "updated_at": job.updated_at,
-        }
-        for queue in list(self._subscribers):
-            try:
-                queue.put_nowait(event)
-            except asyncio.QueueFull:  # slow consumer: drop rather than block a run
-                pass
+        self.events.unsubscribe(queue)
 
     # ---------------- Chat-session support ----------------
 
@@ -247,44 +224,3 @@ class JobManager:
         if job is not None and not job.announced:
             job.announced = True
             await self._persist_summary(job)
-
-    async def cancel_job(self, job_id: str) -> Job | None:
-        task = self._tasks.get(job_id)
-        if task is not None and not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            return await self.get_job(job_id)
-        # No in-process task: best-effort tombstone (see module docstring).
-        job = await self.get_job(job_id)
-        if job is not None and job.status in (JobStatus.QUEUED, JobStatus.RUNNING):
-            job.status = JobStatus.CANCELLED
-            await self._persist_summary(job)
-        return job
-
-    # ---------------- Streaming updates ----------------
-
-    async def _apply_update(
-        self, job: Job, update: dict[str, Any], errors: list[NodeError]
-    ) -> None:
-        """React to one astream(stream_mode='updates') event: {node: update}."""
-        for node, val in update.items():
-            if not isinstance(val, dict):
-                continue
-            errors.extend(val.get("errors") or [])
-            if node == "planner" and val.get("plan"):
-                job.plan = val["plan"]
-                await self._persist_meta(job.job_id, "plan", job.plan)
-            elif node.startswith("cap_"):
-                for cap_name, result in (val.get("results") or {}).items():
-                    job.results[cap_name] = result
-                    job.step_finished_at[cap_name] = _now()
-                    await self._persist_result(job.job_id, cap_name, result)
-                await self._persist_summary(job)  # touch updated_at for progress
-            elif node in _TERMINAL_NODES:
-                job.terminal_kind = val.get("terminal_kind")
-                job.final_answer = val.get("final_answer")
-                if job.terminal_kind != "answer":
-                    job.error = val.get("user_error_message")
