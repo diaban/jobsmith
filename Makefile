@@ -21,6 +21,8 @@ PORT ?= 8000
 T    ?=
 
 LLM_FLAG   := $(if $(LLM),--llm=$(LLM),)
+# `make eval` must cost nothing by default: the fakes unless a provider is named.
+EVAL_LLM   := $(if $(LLM),--llm=$(LLM),--llm=fake)
 AGENT_FLAG := $(if $(AGENT),--agent=$(AGENT),)
 DB_FLAG    := $(if $(DB),--db=$(DB),)
 TEST_ARGS := $(if $(T),-k $(T),)
@@ -28,7 +30,8 @@ WT_DIR    := $(subst /,-,$(B))
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install install-all test coverage lint fix check leak-check worktree worktree-rm \
+.PHONY: help install install-all test coverage lint fix check leak-check eval eval-llm \
+        worktree worktree-rm \
         serve chat jobs \
         chat-banking serve-banking demo-banking clean
 
@@ -56,13 +59,19 @@ lint: ## Lint with ruff
 fix: ## Lint and auto-fix what ruff can
 	$(RUFF) check . --fix
 
-leak-check: ## Domain-leakage gate: shared code + the default agent must contain no banking-specific strings
+leak-check: ## Domain-leakage gate: shared code, the default agent and the eval set must contain no banking-specific strings
 	@! grep -rin --include="*.py" "banking\|banquier\|votre\|analyste" \
 		jobsmith/core jobsmith/jobs jobsmith/chat jobsmith/api jobsmith/app jobsmith/cli \
-		jobsmith/agents/default jobsmith/agents/base.py \
+		jobsmith/agents/default jobsmith/agents/base.py evals \
 		&& echo "leak-check: OK (shared code is domain-clean)"
 
 check: lint leak-check test ## Everything CI would run: lint + leakage gate + tests
+
+eval: ## Score the prompts on the golden set — deterministic tier, no API key (ARGS='--repeat 3')
+	$(PY) -m evals $(EVAL_LLM) $(AGENT_FLAG) $(ARGS)
+
+eval-llm: ## Same golden set against a REAL provider: opt-in, costs tokens, never gates CI
+	$(PY) -m evals $(LLM_FLAG) $(AGENT_FLAG) $(ARGS)
 
 serve: ## Run the DAEMON: it owns the job engine, so jobs outlive their client
 	$(PY) -m jobsmith $(LLM_FLAG) $(AGENT_FLAG) $(DB_FLAG) serve --port $(PORT)

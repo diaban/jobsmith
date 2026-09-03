@@ -11,7 +11,7 @@ CLI/API surface, limits. Keep it in sync when a command or a limit changes.
 
 ## Commands
 
-A Makefile wraps the common ones: `make help` lists them (`install`, `install-all`, `test [T=kw]`, `lint`, `fix`, `check` = lint+leak-gate+tests, `serve`/`chat`/`jobs` = the global agent, `chat-banking`/`api-banking`/`demo-banking` = the example, `clean`). Raw equivalents:
+A Makefile wraps the common ones: `make help` lists them (`install`, `install-all`, `test [T=kw]`, `lint`, `fix`, `check` = lint+leak-gate+tests, `eval`/`eval-llm` = score the prompts on the golden set, `serve`/`chat`/`jobs` = the global agent, `chat-banking`/`api-banking`/`demo-banking` = the example, `clean`). Raw equivalents:
 
 ```bash
 uv venv --python 3.12 .venv && uv pip install -e ".[dev,api,anthropic]"  # setup
@@ -185,3 +185,43 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 - `tests/conftest.py` — `FakeLLM` scripts responses by **substring of the system prompt** (`{"planner": ..., "ONLY the provided": ...}`); `plan_json()` builds planner responses. Fixtures: `checkpointer` (MemorySaver), `store` (InMemoryStore).
 - `tests/test_banking_example.py` is the behavior-parity suite for the pre-refactor agent (French rejection messages, citation rule, vision-dropped-without-image).
 - Tests import capabilities/stubs directly and assert on the final state dict (`terminal_kind`, `results`, `completed_capabilities`).
+
+## Evaluating prompts (`evals/`)
+
+A prompt change (router, planner, generator, a capability's own instructions) is
+not judged by eye here: `make eval` scores it on a golden set of requests and
+prints a table comparable with the previous run.
+
+- **Properties, not expected text.** Nothing asserts an answer. The checks are
+  structural: the plan names only registered capabilities, is duplicate-free,
+  acyclic and has satisfiable dependencies; an obviously simple message is
+  triaged `direct` and a compound one `plan`; the run reaches the expected
+  terminal; every planned step ran and reported ok; the deliverable has a title,
+  the answer and its provenance (job id + request). `scoring.py` holds one
+  function per property, each returning pass / fail / **skip** — skipped checks
+  leave the denominator, so a direct-route case never dilutes the plan checks.
+- **Two tiers.** `structural` runs on `KeywordLLM` — no key, no variance — and
+  is expected to be 100%: `tests/test_evals.py` asserts exactly that, so a
+  prompt edit that breaks the machinery fails `make check`. `llm` needs a real
+  provider, tolerates variance and **never gates CI** (`python -m evals` exits
+  non-zero only on the deterministic fakes — the provider is the condition, not
+  the tier label — or with an explicit `--fail-under`).
+  A case declares which tiers it is meaningful in: one a keyword fake would pass
+  or fail *by accident* is llm-only, otherwise the fake is what gets measured.
+- **The harness runs the real product path** (`harness.py`): `build_app` →
+  `create_job` → `run_job`, persistence forced to `memory`, reports into a
+  scratch dir, a `KeywordChatModel` injected only so composition does not go
+  looking for chat extras. The triage decision is read back from the
+  checkpointer (`graph.aget_state`), because a planner rescuing a message the
+  router should have sent direct is invisible from the outside.
+- **Runs are stored, not just printed** — `evals/results/*.json` (gitignored),
+  tagged with agent, provider, tier, case set and git rev; the next run matching
+  the first four is picked up as a baseline automatically and rendered as a Δ
+  column. A `--case` slice is therefore never a baseline for the full set.
+- Adding a case is one `EvalCase` in `cases.py`; adding a property is one
+  function in `scoring.py` plus its name in `CHECK_NAMES` (a test pins the two
+  together). Cases stay **domain-neutral** — `make leak-check` scans `evals/`
+  too; an agent-specific golden set would live with that agent.
+- **Say what it is worth.** Eleven cases sampled once from a stochastic model is
+  a smoke signal, not a benchmark; the structural tier is the only part that is
+  actually reliable, and it only proves the machinery holds.
