@@ -170,3 +170,36 @@ class DocumentsCapability(Capability):
         g.add_edge("emit_success", END)
         g.add_edge("emit_failure", END)
         return g.compile()
+
+
+class WebSearchCapability(DocumentsCapability):
+    """The same retrieval, pointed at the web.
+
+    Subclassed rather than parameterised because the ONLY thing that differs
+    is the spec — and the spec is what the planner reads to choose between
+    "the user's own files" and "what the web says today". Blurring the two
+    into one description would take that choice away from it.
+    """
+
+    spec = CapabilitySpec(
+        name="web_search",
+        description=(
+            "search the public web for current, external information — use it "
+            "for recent events, third-party facts, prices, versions or anything "
+            "the local documents cannot contain; prefer `documents` when the "
+            "request concerns the user's own material"
+        ),
+        output_schema=DocumentsCapability.spec.output_schema,
+    )
+
+    def render_report(self, result: CapabilityResult) -> str | None:
+        """Web ids are URLs, so a link reads better than `id` — source."""
+        if not result.get("ok"):
+            return f"_{result.get('error') or 'no detail'}_"
+        found = result.get("data", {}).get("documents") or []
+        if not found:
+            return "_no source retrieved_"
+        return "\n".join(f"- [{d['title']}]({d['source']})" for d in found)
+
+    async def emit_failure(self, state: DocumentsState) -> dict:
+        return self._emit_failure("the web search returned nothing usable")

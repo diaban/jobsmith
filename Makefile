@@ -45,7 +45,7 @@ install: $(VENV) ## Create the venv and install dev + API deps (fake LLMs work o
 	uv pip install -p $(PY) -e ".[dev,api]"
 
 install-all: $(VENV) ## Same + every provider and persistence backend
-	uv pip install -p $(PY) -e ".[dev,api,anthropic,openai,chat-anthropic,chat-openai,sqlite,postgres]"
+	uv pip install -p $(PY) -e ".[dev,api,web,anthropic,openai,chat-anthropic,chat-openai,sqlite,postgres]"
 
 test: ## Run the test suite (T=<keyword> to filter, e.g. make test T=router)
 	$(PY) -m pytest tests/ -q $(TEST_ARGS)
