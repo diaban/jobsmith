@@ -13,6 +13,7 @@ tears it all down in reverse order, including when startup itself failed.
 """
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
@@ -25,7 +26,7 @@ from ..core.builder import AgentBuilder
 from ..core.deps import Deps
 from ..core.registry import CapabilityRegistry
 from ..jobs.manager import JobManager
-from ..jobs.report import MarkdownReport
+from ..jobs.report import make_reporter
 from .persistence import open_persistence, pick_db
 from .providers import make_chat_model, make_llm, pick_provider
 
@@ -54,6 +55,16 @@ class AgentApp:
         await self._stack.aclose()
 
 
+def pick_report_format(flag: str | None = None) -> str:
+    """Which format a finished job hands back: argument > env > markdown.
+
+    Same precedence shape as `pick_db`. There is no CLI flag yet — the
+    entrypoints belong to another seam — so `$JOBSMITH_REPORT_FORMAT=html`
+    is how an operator switches the deliverable today.
+    """
+    return flag or os.environ.get("JOBSMITH_REPORT_FORMAT") or "markdown"
+
+
 async def build_app(
     *,
     agent: str | None = None,
@@ -62,6 +73,7 @@ async def build_app(
     resources: Any = None,
     db: str | None = None,
     reports_dir: str = "artifacts",
+    report_format: str | None = None,
 ) -> AgentApp:
     # An agent is a capability pack + a profile (+ a chat persona): everything
     # else below is shared, whichever one is asked for.
@@ -87,7 +99,9 @@ async def build_app(
         ).build()
         manager = JobManager(
             graph, store,
-            reporter=MarkdownReport(registry),   # capabilities present their own results
+            # The registry is passed so capabilities present their own results;
+            # the format is a choice — one job still produces one deliverable.
+            reporter=make_reporter(pick_report_format(report_format), registry),
             reports_dir=reports_dir,
         )
         # A previous process may have died mid-run: settle those jobs first.
