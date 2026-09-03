@@ -3,29 +3,38 @@ from __future__ import annotations
 
 import asyncio
 
-from conftest import ScriptedChatModel
+from conftest import FakeLLM, ScriptedChatModel, plan_json
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 from test_jobs import make_manager
 
 from jobsmith.chat import ChatSession
+from jobsmith.chat.tools import (
+    MAX_CONTEXT_CHARS,
+    MAX_CONTEXT_TURNS,
+    MAX_TURN_CHARS,
+    recent_conversation,
+)
+from jobsmith.core.state import CONVERSATION_INPUT_KEY
 from jobsmith.jobs.models import JobStatus
 
 
-def launch_call(query: str, rationale: str) -> AIMessage:
+def launch_call(query: str, rationale: str, **args) -> AIMessage:
     return AIMessage(
         content="",
         tool_calls=[{
             "name": "launch_job",
-            "args": {"query": query, "rationale": rationale},
+            "args": {"query": query, "rationale": rationale, **args},
             "id": "call_1",
         }],
     )
 
 
-def make_session(store, checkpointer, tmp_path, responses) -> tuple[ChatSession, ScriptedChatModel]:
-    manager = make_manager(store, checkpointer, tmp_path)
+def make_session(
+    store, checkpointer, tmp_path, responses, *, llm=None
+) -> tuple[ChatSession, ScriptedChatModel]:
+    manager = make_manager(store, checkpointer, tmp_path, llm=llm)
     model = ScriptedChatModel(responses=responses)
     session = ChatSession(manager, model, checkpointer=MemorySaver())
     return session, model
@@ -119,3 +128,153 @@ async def test_job_tools_are_session_scoped(store, checkpointer, tmp_path):
     tool_msg = next(m for m in out["messages"] if isinstance(m, ToolMessage))
     assert "No unique job" in tool_msg.content
     assert foreign.job_id[:8] not in tool_msg.content
+
+
+# ---------------- Carrying the conversation's referent into the job ----------
+
+async def poll_until_settled(manager, job_id):
+    for _ in range(200):
+        await asyncio.sleep(0.01)
+        job = await manager.get_job(job_id)
+        if job.status in (JobStatus.DONE, JobStatus.FAILED):
+            return job
+    raise AssertionError("job never settled")
+
+
+async def test_launch_carries_referent_from_an_earlier_turn(store, checkpointer, tmp_path):
+    """The bug: after a few turns the model writes "analyse that", and the job
+    engine — which never sees the thread — plans against a request whose
+    referent is gone. The recent turns must travel in `inputs`."""
+    session, _ = make_session(store, checkpointer, tmp_path, [
+        AIMessage(content="Right — the Q3 churn spike in the alpha cohort."),
+        launch_call("analyse that", "several capability steps"),
+        AIMessage(content="Launched."),
+    ])
+    agent = session.build()
+
+    await agent.ainvoke(
+        {"messages": [HumanMessage("we saw a Q3 churn spike in the alpha cohort")]}, CFG
+    )
+    await agent.ainvoke({"messages": [HumanMessage("analyse that")]}, CFG)
+    await agent.ainvoke(Command(resume={"approved": True}), CFG)
+
+    (job,) = await session.manager.list_jobs(session_id=session.session_id)
+    assert job.query == "analyse that"          # the model's wording is untouched
+    excerpt = job.inputs[CONVERSATION_INPUT_KEY]
+    assert "Q3 churn spike in the alpha cohort" in excerpt   # the referent travelled
+    assert "user: analyse that" in excerpt
+    assert "assistant: Right" in excerpt
+
+
+async def test_planner_prompt_receives_the_conversation(store, checkpointer, tmp_path):
+    """End to end: what the chat tool attaches reaches the planner's prompt."""
+    llm = FakeLLM(
+        {"planner": plan_json("alpha")},
+        default="A sufficiently long final answer for the job test.",
+    )
+    session, _ = make_session(store, checkpointer, tmp_path, [
+        AIMessage(content="Noted: the beta migration rollback."),
+        launch_call("analyse it", "multi-step"),
+        AIMessage(content="Launched."),
+    ], llm=llm)
+    agent = session.build()
+
+    await agent.ainvoke({"messages": [HumanMessage("the beta migration rollback")]}, CFG)
+    await agent.ainvoke({"messages": [HumanMessage("analyse it")]}, CFG)
+    await agent.ainvoke(Command(resume={"approved": True}), CFG)
+
+    (job,) = await session.manager.list_jobs(session_id=session.session_id)
+    await poll_until_settled(session.manager, job.job_id)
+
+    planner_call = next(
+        c for c in llm.calls
+        if any("planner" in (m.get("content") or "")
+               for m in c["messages"] if m["role"] == "system")
+    )
+    user_msg = next(m["content"] for m in planner_call["messages"] if m["role"] == "user")
+    assert "beta migration rollback" in user_msg
+    assert "Request to plan for:\nanalyse it" in user_msg
+
+
+async def test_proposal_shows_the_context_that_will_travel(store, checkpointer, tmp_path):
+    """What the user approves must include what is being attached."""
+    session, _ = make_session(store, checkpointer, tmp_path, [
+        launch_call("analyse that", "multi-step"),
+        AIMessage(content="Launched."),
+    ])
+    agent = session.build()
+
+    out = await agent.ainvoke({"messages": [HumanMessage("look into the alpha data")]}, CFG)
+    (intr,) = out["__interrupt__"]
+    assert intr.value["query"] == "analyse that"        # unchanged HITL shape
+    assert intr.value["rationale"] == "multi-step"
+    assert "look into the alpha data" in intr.value["context"]
+
+
+async def test_model_supplied_inputs_survive_the_attachment(store, checkpointer, tmp_path):
+    session, _ = make_session(store, checkpointer, tmp_path, [
+        launch_call("analyse the deck", "multi-step", inputs={"image_s3_keys": ["k1"]}),
+        AIMessage(content="Launched."),
+    ])
+    agent = session.build()
+
+    await agent.ainvoke({"messages": [HumanMessage("the deck I uploaded")]}, CFG)
+    await agent.ainvoke(Command(resume={"approved": True}), CFG)
+
+    (job,) = await session.manager.list_jobs(session_id=session.session_id)
+    assert job.inputs["image_s3_keys"] == ["k1"]
+    assert "the deck I uploaded" in job.inputs[CONVERSATION_INPUT_KEY]
+
+
+# ---------------- The excerpt is bounded and noise-free ----------------------
+
+def test_excerpt_keeps_only_the_last_turns():
+    messages = []
+    for i in range(20):
+        messages.append(HumanMessage(f"question {i}"))
+        messages.append(AIMessage(content=f"answer {i}"))
+
+    excerpt = recent_conversation(messages)
+    assert len(excerpt.splitlines()) == MAX_CONTEXT_TURNS
+    assert "answer 19" in excerpt
+    assert "question 0" not in excerpt
+    # chronological, not reversed
+    assert excerpt.index("question 17") < excerpt.index("answer 19")
+
+
+def test_excerpt_is_char_bounded_per_turn_and_overall():
+    messages = [HumanMessage("x" * 5000) for _ in range(MAX_CONTEXT_TURNS)]
+    excerpt = recent_conversation(messages)
+    assert len(excerpt) <= MAX_CONTEXT_CHARS
+    for line in excerpt.splitlines():
+        assert len(line) <= MAX_TURN_CHARS + len("user: ") + 1
+        assert line.endswith("…")
+
+
+def test_excerpt_drops_machinery_not_prose():
+    messages = [
+        SystemMessage("[job update] background jobs finished: job 1234"),
+        HumanMessage("the alpha cohort churn"),
+        launch_call("previous task", "why"),
+        ToolMessage(content="Job abcd1234 launched in the background", tool_call_id="call_1"),
+        AIMessage(content="I launched it."),
+    ]
+    excerpt = recent_conversation(messages)
+    assert excerpt == "user: the alpha cohort churn\nassistant: I launched it."
+
+
+def test_excerpt_flattens_content_blocks_and_skips_empty_turns():
+    messages = [
+        HumanMessage(content=[
+            {"type": "text", "text": "look at this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]),
+        AIMessage(content=""),
+        AIMessage(content="Sure."),
+    ]
+    assert recent_conversation(messages) == "user: look at this\nassistant: Sure."
+
+
+def test_empty_conversation_yields_nothing_to_attach():
+    """A job launched outside a chat carries nothing extra."""
+    assert recent_conversation([]) == ""

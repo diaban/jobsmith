@@ -56,6 +56,8 @@ Rules:
 - Include only capabilities that are actually needed.
 - depends_on values must refer to other steps in the same plan.
 - The DAG must be acyclic.
+- The request may be preceded by an excerpt of the conversation it came from.
+  Use it only to resolve what the request refers to; plan for the request.
 - Return ONLY the JSON object, no prose, no markdown fences."""
 
 DEFAULT_GENERATOR_PROMPT = (

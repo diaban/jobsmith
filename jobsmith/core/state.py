@@ -56,6 +56,16 @@ def merge_results(
     return {**(left or {}), **(right or {})}
 
 
+# ---------- Reserved `inputs` keys ----------
+
+# `inputs` is an open dict of domain material (image keys, file refs, ...), but
+# one key is a framework convention: the excerpt of the conversation a job was
+# launched from. The chat layer fills it (chat/tools.py), the planner reads it
+# to resolve what a request refers to ("analyse that"). It is background, never
+# the request itself — `query` stays authoritative.
+CONVERSATION_INPUT_KEY = "conversation"
+
+
 # ---------- Errors ----------
 
 class NodeError(TypedDict):
@@ -71,6 +81,7 @@ class AgentState(TypedDict, total=False):
     # --- Input ---
     query: str
     inputs: dict[str, Any]      # arbitrary domain inputs (image keys, file refs, ...)
+                                # plus CONVERSATION_INPUT_KEY when chat-launched
     job_id: str
 
     # --- Validation ---
