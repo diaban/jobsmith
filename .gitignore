@@ -12,3 +12,4 @@ dist/
 *.db-wal
 .coverage
 htmlcov/
+.claude/worktrees/

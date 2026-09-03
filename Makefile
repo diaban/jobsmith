@@ -6,6 +6,7 @@
 #   make serve PORT=9000        daemon port (default 8000)
 #   make chat DB=agent.db       persist to SQLite (or a postgres:// DSN)
 #   make test T=router          only tests matching a keyword (pytest -k)
+#   make worktree B=feat/1-x     isolated checkout + venv for one issue
 
 VENV := .venv
 PY   := $(VENV)/bin/python
@@ -14,6 +15,7 @@ RUFF := $(VENV)/bin/ruff
 LLM   ?=
 AGENT ?=
 DB    ?=
+B     ?=
 ARGS ?=
 PORT ?= 8000
 T    ?=
@@ -22,10 +24,12 @@ LLM_FLAG   := $(if $(LLM),--llm=$(LLM),)
 AGENT_FLAG := $(if $(AGENT),--agent=$(AGENT),)
 DB_FLAG    := $(if $(DB),--db=$(DB),)
 TEST_ARGS := $(if $(T),-k $(T),)
+WT_DIR    := $(subst /,-,$(B))
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install install-all test coverage lint fix check leak-check serve chat jobs \
+.PHONY: help install install-all test coverage lint fix check leak-check worktree worktree-rm \
+        serve chat jobs \
         chat-banking serve-banking demo-banking clean
 
 help: ## List available commands
@@ -77,6 +81,21 @@ serve-banking: ## Banking agent daemon (HTTP API + SSE)
 
 demo-banking: ## Scripted banking demo (fakes, no API key needed)
 	$(PY) -m jobsmith.agents.banking.demo
+
+worktree: ## Isolated checkout + ready venv for one issue: make worktree B=feat/1-grounding
+	@test -n "$(B)" || { echo "usage: make worktree B=feat/1-grounding"; exit 1; }
+	@git worktree add .claude/worktrees/$(WT_DIR) -b $(B)
+	@cd .claude/worktrees/$(WT_DIR) \
+		&& uv venv --python 3.12 .venv \
+		&& uv pip install -p .venv/bin/python -q -e ".[dev,api]"
+	@test -f .env && cp .env .claude/worktrees/$(WT_DIR)/.env \
+		&& echo "  .env copied (a fresh worktree has no API key otherwise)" || true
+	@echo "  ready: .claude/worktrees/$(WT_DIR)  (branch $(B))"
+
+worktree-rm: ## Remove a worktree and its branch: make worktree-rm B=feat/1-grounding
+	@test -n "$(B)" || { echo "usage: make worktree-rm B=feat/1-grounding"; exit 1; }
+	git worktree remove .claude/worktrees/$(WT_DIR)
+	-git branch -d $(B)
 
 clean: ## Remove caches, build junk, and generated job reports
 	rm -rf .pytest_cache .ruff_cache .coverage htmlcov dist *.egg-info artifacts

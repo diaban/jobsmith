@@ -33,6 +33,16 @@ The REPL is a CONVERSATION by default (chat agent; complex asks → job proposal
 - **One short-lived branch per issue**, off `main`: `feat/<n>-<slug>`, `fix/<n>-<slug>`, `chore/<slug>` (`gh issue develop <n>` creates one already linked). Open a PR, let CI run, merge, delete. **No `develop` branch**: there are no releases yet, so it would only add a merge — the PR + CI is the integration point it used to provide. Releases, when they come, are tags.
 - `main` stays green. CI (`.github/workflows/ci.yml`) runs `make check` on push and PR across Python 3.11 and 3.12, plus `uv lock --check` so the lockfile cannot silently drift from pyproject.
 - **`uv.lock` is committed** and must be regenerated (`uv lock`) in the same commit as any dependency change. This project has already been bitten by version drift (`create_react_agent` deprecation, the removed `llm_input_messages` channel, checkpoint-sqlite's `isolation_level`), which is exactly what the lockfile prevents across sessions.
+- **Parallel sessions use git worktrees**, one per issue — separate checkouts of the same repo, so two sessions never fight over the working tree or the current branch:
+
+  ```bash
+  make worktree B=feat/1-grounding      # checkout + venv + .env, ~1s (uv cache)
+  cd .claude/worktrees/feat-1-grounding
+  make check                            # each worktree has its OWN .venv
+  make worktree-rm B=feat/1-grounding   # after the PR is merged
+  ```
+
+  Gotchas, both verified: a venv is **path-specific** (its shebangs are absolute), so a worktree needs its own — never symlink or copy one; and `.env`, `agent.db`, `artifacts/` are gitignored, so a fresh worktree has **no API key** until it is copied (the `make worktree` target does it). `.claude/worktrees/` is gitignored, which is also where Claude Code's own `EnterWorktree` puts them.
 - `make coverage` reports per-module coverage (84% overall; `jobs/` and most of `core/` at 100%). The thin areas are the interactive layers — `cli/repl.py` 29%, `cli/main.py` 42%, `chat/tools.py` 61% — so a change landing there needs its tests written *with* it, not after.
 
 Domain-leakage gate (`make leak-check`, must return nothing): `grep -ri --include="*.py" "banking\|banquier\|votre\|analyste" jobsmith/core jobsmith/jobs jobsmith/chat jobsmith/api jobsmith/app jobsmith/cli jobsmith/agents/default jobsmith/agents/base.py` — note it scans `agents/default` and `agents/base.py`, **not** `agents/banking`, which is allowed to be as domain-specific as it likes.
