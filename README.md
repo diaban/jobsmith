@@ -131,9 +131,21 @@ jobsmith --docs . run "how does the job engine persist state?" --wait
 The `documents` capability then joins the plan, retrieves the relevant
 passages and hands them to the rest of the DAG with a quotable id each
 (`path#chunk`), so the report can point at where something came from. Ranking
-is keyword overlap, not semantics — honest and dependency-free. Without
-`--docs` the capability stays out of the registry entirely and the agent runs
-on its own knowledge.
+is keyword overlap, not semantics — honest and dependency-free.
+
+For material the model cannot have — recent events, third-party facts, current
+versions — set a Tavily key and a `web_search` step joins the same plan, citing
+URLs a reader can open:
+
+```bash
+uv pip install -e ".[web]"
+export TAVILY_API_KEY=tvly-...
+jobsmith run "compare the current LangGraph and LlamaIndex agent APIs" --wait
+```
+
+Both are the same port with different adapters, so the capability consuming
+them is identical — and each stays out of the registry entirely when nothing
+backs it, rather than being planned and failing.
 
 ### Which agent
 
@@ -316,6 +328,7 @@ handle per-provider tool formats), the job engine uses a dependency-light
 | `--llm anthropic\|openai\|fake` | provider for **both** stacks (default: auto-detected from keys) |
 | `--agent NAME` | which agent to run — `default` or `banking` (applies to whichever process owns the engine, so pass it to `serve`) |
 | `--docs DIR` | ground jobs in the files under `DIR` (default: `$JOBSMITH_DOCS`); without it the agent runs on the model's own knowledge |
+| `TAVILY_API_KEY` | enables the `web_search` step (extra `.[web]`); absent, the capability is not registered |
 | `--db memory\|<file.db>\|<postgres DSN>` | persistence (default: `$JOBSMITH_DB`, else memory) |
 | `$JOBSMITH_PRICES` | per-model prices for the cost estimate, as inline JSON or a path to a JSON file (USD per million tokens) |
 | `--url` / `--local` | point at another daemon / never use one |

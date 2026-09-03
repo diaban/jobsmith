@@ -40,7 +40,7 @@ jobs:
         run: |
           uv venv --python ${{ matrix.python-version }} .venv
           uv pip install -p .venv/bin/python -e \
-            ".[dev,api,anthropic,openai,chat-anthropic,chat-openai,sqlite,postgres]"
+            ".[dev,api,web,anthropic,openai,chat-anthropic,chat-openai,sqlite,postgres]"
 
       - name: Lint
         run: .venv/bin/ruff check .
