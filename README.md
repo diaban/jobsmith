@@ -227,13 +227,20 @@ jobsmith/
   core/         the engine: router, planner, executor, generation, registry
   jobs/         the job use cases + their ports (repository, runner, events, reporter)
   chat/         conversational layer (LangChain create_agent) + job tools
-  api/          FastAPI: sessions, jobs, outputs, SSE
-  cli/          daemon, clients, REPL, argparse entrypoint
+  service.py    ★ the inbound port: what any front-end can ask of a running app
+  api/          adapter — FastAPI: sessions, jobs, outputs, SSE
+  cli/          adapter — daemon, clients, REPL, argparse entrypoint
   agents/       ★ what each agent IS — a capability pack + a profile
     default/      research → analysis → critique (LLM-only)
     banking/      a domain agent: its own capabilities, ports and adapters
   app/          composition: providers, persistence, build_app(agent=...)
 ```
+
+Two boundaries carry the design. **`agents/`** is the only place a domain
+lives: adding an agent touches no shared code. **`service.py`** is the only
+place the use cases live: the HTTP API and the CLI are adapters over it, and
+the CLI cannot tell whether the work runs in this process or in a daemon —
+which is what makes a UI or a bot one more adapter rather than a rewrite.
 
 Everything but `agents/` is shared. **Adding an agent touches no shared code**:
 write its capabilities, register an `AgentDefinition`, and the planner, job
