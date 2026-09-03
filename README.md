@@ -277,6 +277,7 @@ jobsmith/
     default/      research → analysis → critique (LLM-only)
     banking/      a domain agent: its own capabilities, ports and adapters
   app/          composition: providers, persistence, build_app(agent=...)
+evals/          the golden set + the property checks that score a prompt change
 ```
 
 Two boundaries carry the design. **`agents/`** is the only place a domain
@@ -341,6 +342,43 @@ make test T=router # one keyword's worth
 make coverage      # per-module coverage report
 make fix           # ruff --fix
 ```
+
+### Judging a prompt change
+
+The router, the planner and the generator are prompts, and a prompt change used
+to be judged by eye on one example. `evals/` turns that into a number.
+
+```bash
+make eval                     # deterministic tier — fakes, no API key, runs in CI
+make eval-llm                 # the same golden set against a real provider (opt-in)
+make eval ARGS='--repeat 3'   # sample the same cases repeatedly to see the variance
+python -m evals --list        # what the golden set contains
+```
+
+It scores **properties, never expected text**: the plan only names registered
+capabilities, its DAG is acyclic with satisfiable dependencies, an obviously
+simple message is triaged `direct` and a compound one `plan`, the run reaches
+the terminal it should, every planned step ran and reported success, and the
+deliverable carries a title, the answer and its provenance. Wording may vary
+freely; structure may not.
+
+Two tiers, because only one of them can be trusted to gate anything:
+
+| | provider | variance | gates CI |
+|---|---|---|---|
+| `structural` | the deterministic fakes | none | **yes** — `tests/test_evals.py` requires 100% |
+| `llm` | a real model | real | never |
+
+Every run is written to `evals/results/` (gitignored) tagged with agent,
+provider, tier and git revision, and the next comparable run prints the delta
+per check — that is how you tell whether an edit to a prompt helped.
+
+**What it is not.** Eleven hand-written cases sampled once against a stochastic
+model is a smoke signal, not a benchmark. A few points of movement in the LLM
+tier is noise — use `--repeat` before believing a delta — and the golden set
+only covers failure modes somebody thought of. The structural tier is the part
+that is genuinely reliable, and it only proves the machinery still holds
+together, not that the answers got better.
 
 CI runs `make check` on every push and pull request, across Python 3.11 and
 3.12, and verifies that `uv.lock` still matches `pyproject.toml`.
