@@ -22,12 +22,21 @@ Protocol impedance notes (LLMClient was shaped after an OpenAI-style API):
   they flow through the framework's NodeError/escalation path. Server-side
   fallbacks are enabled by default (`fallbacks: "default"`), so a refusal is
   only surfaced after the fallback chain also declined.
+
+Both adapters book every response into the ambient usage ledger
+(`core.usage.record_usage`) instead of dropping the `usage` object the SDK
+already returns. `chat` keeps returning `str`: what a call cost belongs to the
+run, not to the call's signature — see `core/usage.py` for that argument. The
+model is taken from the RESPONSE, so a server-side fallback is priced as the
+model that actually served it.
 """
 from __future__ import annotations
 
 import base64
 import os
 from typing import Any
+
+from .core.usage import record_usage
 
 DEFAULT_MODEL = "claude-opus-5"
 DEFAULT_MAX_TOKENS = 16000
@@ -83,14 +92,32 @@ class AnthropicLLMClient:
             raise RuntimeError(f"model refused the request (category={category})")
         return "".join(b.text for b in response.content if b.type == "text")
 
+    def _record(self, response: Any) -> None:
+        """Book the call's tokens. Tolerant: a stub/older SDK may report none."""
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        # Cache WRITES are billed slightly above the base input rate; folding
+        # them into input_tokens keeps the tally to three numbers and errs low.
+        written = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+        record_usage(
+            getattr(response, "model", None) or self.model,   # a fallback may have served it
+            input_tokens=int(getattr(usage, "input_tokens", 0) or 0) + written,
+            output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+            cached_input_tokens=int(getattr(usage, "cache_read_input_tokens", 0) or 0),
+        )
+
     async def _create(self, **kwargs: Any) -> Any:
         if self.enable_fallbacks:
-            return await self._client.beta.messages.create(
+            response = await self._client.beta.messages.create(
                 betas=["server-side-fallback-2026-07-01"],
                 extra_body={"fallbacks": "default"},
                 **kwargs,
             )
-        return await self._client.messages.create(**kwargs)
+        else:
+            response = await self._client.messages.create(**kwargs)
+        self._record(response)
+        return response
 
     # -------------------- LLMClient protocol --------------------
 
@@ -197,6 +224,27 @@ class OpenAILLMClient:
             raise RuntimeError(f"model refused the request: {refusal}")
         return message.content or ""
 
+    def _record(self, response: Any) -> None:
+        """Book the call's tokens. `prompt_tokens` INCLUDES the cached ones —
+        the ledger keeps them disjoint, so subtract before recording."""
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        details = getattr(usage, "prompt_tokens_details", None)
+        cached = int(getattr(details, "cached_tokens", 0) or 0) if details else 0
+        prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
+        record_usage(
+            getattr(response, "model", None) or self.model,
+            input_tokens=max(prompt - cached, 0),
+            output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+            cached_input_tokens=cached,
+        )
+
+    async def _create(self, **kwargs: Any) -> Any:
+        response = await self._client.chat.completions.create(**kwargs)
+        self._record(response)
+        return response
+
     # -------------------- LLMClient protocol --------------------
 
     async def chat(
@@ -213,7 +261,7 @@ class OpenAILLMClient:
             kwargs["response_format"] = response_format  # json_object maps 1:1
         if not self._is_reasoning_model:
             kwargs["temperature"] = temperature
-        response = await self._client.chat.completions.create(**kwargs)
+        response = await self._create(**kwargs)
         return self._text_of(response)
 
     # -------------------- VisionClient protocol --------------------
@@ -237,5 +285,5 @@ class OpenAILLMClient:
                 {"type": "text", "text": prompt},
             ],
         }]
-        response = await self._client.chat.completions.create(**kwargs)
+        response = await self._create(**kwargs)
         return self._text_of(response)

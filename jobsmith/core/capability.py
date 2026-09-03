@@ -20,6 +20,7 @@ from typing import Annotated, Any, TypedDict
 from langgraph.graph import StateGraph
 
 from .state import AgentState, CapabilityResult, NodeError, merge_results
+from .usage import current_ledger
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -117,8 +118,26 @@ class Capability(ABC):
 
     # ---- Emit helpers (used by terminal sub-graph nodes) ----
 
+    def _usage_meta(self, meta: dict[str, Any] | None) -> dict[str, Any]:
+        """Stamp what this capability spent onto its own result metadata.
+
+        Read from the ambient ledger (see `core/usage.py`), which the
+        JobManager installs for the run: every LLM call made by any node of
+        this sub-graph is already booked under the capability's name. Absent
+        when nothing was spent — a key of zeroes says less than no key.
+        An explicit `meta["usage"]` from the capability always wins.
+        """
+        meta = dict(meta or {})
+        ledger = current_ledger()
+        if ledger is None or "usage" in meta:
+            return meta
+        usage = ledger.get(self.spec.name)
+        if usage:
+            meta["usage"] = usage.to_dict()
+        return meta
+
     def _emit_success(self, data: dict[str, Any], meta: dict[str, Any] | None = None) -> dict:
-        result: CapabilityResult = {"ok": True, "data": data, "meta": meta or {}}
+        result: CapabilityResult = {"ok": True, "data": data, "meta": self._usage_meta(meta)}
         return {
             "results": {self.spec.name: result},
             "completed_capabilities": [self.spec.name],
@@ -131,7 +150,9 @@ class Capability(ABC):
             "detail": detail,
             "recoverable": recoverable,
         }
-        result: CapabilityResult = {"ok": False, "error": detail}
+        # A failed step still burned tokens — that is exactly when the number
+        # is worth having.
+        result: CapabilityResult = {"ok": False, "error": detail, "meta": self._usage_meta(None)}
         return {
             "results": {self.spec.name: result},
             "completed_capabilities": [self.spec.name],

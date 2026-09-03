@@ -93,6 +93,7 @@ class StoreJobRepository:
             error=s.get("error"),
             outputs=[JobOutput(**o) for o in (s.get("outputs") or [])],
             announced=bool(s.get("announced")),
+            usage=s.get("usage") or {},      # absent on records written before #2
         )
 
 

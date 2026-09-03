@@ -61,12 +61,21 @@ class Job:
     error: str | None = None
     outputs: list[JobOutput] = field(default_factory=list)   # the deliverables
     announced: bool = False                 # completion surfaced in its chat session
+    # What the run spent, all steps together (core.usage.Usage.to_dict()).
+    # Kept as a plain dict: it is persisted, served over HTTP and rendered as
+    # is, and the per-step breakdown lives in each result's `meta["usage"]`.
+    usage: dict[str, Any] = field(default_factory=dict)
 
     @property
     def report_path(self) -> str | None:
         """Path of the main deliverable (kept as the common shortcut)."""
         main = next((o for o in self.outputs if o.role == "main"), None)
         return main.path if main else None
+
+    def step_usage(self, capability: str) -> dict[str, Any]:
+        """What one step spent — empty when it made no LLM call, or predates
+        usage tracking."""
+        return ((self.results.get(capability) or {}).get("meta") or {}).get("usage") or {}
 
     def to_dict(self) -> dict[str, Any]:
         """Full view for API/CLI consumers (asdict would drop the properties)."""
@@ -88,4 +97,5 @@ class Job:
             "outputs": [asdict(o) for o in self.outputs],
             "report_path": self.report_path,      # derived, for consumers
             "announced": self.announced,
+            "usage": self.usage,
         }
