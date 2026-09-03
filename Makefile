@@ -25,7 +25,7 @@ TEST_ARGS := $(if $(T),-k $(T),)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install install-all test lint fix check leak-check serve chat jobs \
+.PHONY: help install install-all test coverage lint fix check leak-check serve chat jobs \
         chat-banking serve-banking demo-banking clean
 
 help: ## List available commands
@@ -42,6 +42,9 @@ install-all: $(VENV) ## Same + every provider and persistence backend
 
 test: ## Run the test suite (T=<keyword> to filter, e.g. make test T=router)
 	$(PY) -m pytest tests/ -q $(TEST_ARGS)
+
+coverage: ## Test suite with a per-module coverage report
+	$(PY) -m pytest tests/ -q --cov=jobsmith --cov-report=term-missing $(TEST_ARGS)
 
 lint: ## Lint with ruff
 	$(RUFF) check .
@@ -76,5 +79,5 @@ demo-banking: ## Scripted banking demo (fakes, no API key needed)
 	$(PY) -m jobsmith.agents.banking.demo
 
 clean: ## Remove caches, build junk, and generated job reports
-	rm -rf .pytest_cache .ruff_cache dist *.egg-info artifacts
+	rm -rf .pytest_cache .ruff_cache .coverage htmlcov dist *.egg-info artifacts
 	find . -type d -name __pycache__ -not -path "./$(VENV)/*" -exec rm -rf {} +

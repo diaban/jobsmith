@@ -1,0 +1,63 @@
+# What `make check` does locally, enforced on every push and pull request.
+#
+# The matrix is not decoration: pyproject declares requires-python >=3.11 and
+# this project has already been bitten by version-specific behaviour in
+# langgraph/langchain, so both supported versions are exercised.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:                      # a new push supersedes an in-flight run
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false            # report both versions, not just the first failure
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install the project and every extra
+        # Same set as `make install-all`: providers and persistence backends
+        # included, so their imports are type-checked and exercised by tests.
+        run: |
+          uv venv --python ${{ matrix.python-version }} .venv
+          uv pip install -p .venv/bin/python -e \
+            ".[dev,api,anthropic,openai,chat-anthropic,chat-openai,sqlite,postgres]"
+
+      - name: Lint
+        run: .venv/bin/ruff check .
+
+      - name: Domain-leakage gate
+        run: make leak-check
+
+      - name: Tests
+        # No API key is available here: the deterministic fakes are what make
+        # the suite runnable in CI at all.
+        run: .venv/bin/python -m pytest tests/ -q
+
+  lockfile:
+    # A stale lockfile is worse than none: it silently stops matching pyproject.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: uv.lock is up to date with pyproject.toml
+        run: uv lock --check
