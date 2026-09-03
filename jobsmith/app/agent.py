@@ -3,8 +3,7 @@
 `build_app()` assembles the whole product: provider auto-selection (or
 injected clients), the default LLM-only capability pack, neutral
 prompts/profile, and the persistence backend. Every piece can be overridden
-by argument — a domain agent is just a different composition (see
-jobsmith/examples/).
+by argument; which agent is composed comes from `jobsmith/agents/`.
 
 It is a coroutine because real backends (SQLite/Postgres connections and
 pools) must be opened inside the event loop that will use them; `AgentApp`
@@ -17,15 +16,14 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..agents import get_agent
 from ..chat import ChatSession
 from ..core.builder import AgentBuilder
 from ..core.deps import Deps
 from ..core.registry import CapabilityRegistry
 from ..jobs.manager import JobManager
 from ..jobs.report import MarkdownReport
-from .capabilities import default_capabilities
 from .persistence import open_persistence, pick_db
-from .profile import DEFAULT_APP_PROFILE
 from .providers import make_chat_model, make_llm, pick_provider
 
 
@@ -35,6 +33,7 @@ class AgentApp:
 
     manager: JobManager
     session_factory: Callable[..., ChatSession]   # optional session_id argument
+    agent_name: str = "default"
     _stack: AsyncExitStack = field(default_factory=AsyncExitStack)
 
     def new_session(self, session_id: str | None = None) -> ChatSession:
@@ -47,11 +46,15 @@ class AgentApp:
 
 async def build_app(
     *,
+    agent: str | None = None,
     llm: Any = None,
     chat_model: Any = None,
     db: str | None = None,
     reports_dir: str = "artifacts",
 ) -> AgentApp:
+    # An agent is a capability pack + a profile (+ a chat persona): everything
+    # else below is shared, whichever one is asked for.
+    definition = get_agent(agent)
     if llm is None or chat_model is None:
         choice = pick_provider()
         llm = llm if llm is not None else make_llm(choice)
@@ -61,10 +64,10 @@ async def build_app(
     try:
         checkpointer, store = await open_persistence(pick_db(db), stack)
 
-        registry = CapabilityRegistry(default_capabilities(llm))
+        registry = CapabilityRegistry(definition.capabilities(llm))
         graph = AgentBuilder(
             Deps(llm=llm), registry,
-            profile=DEFAULT_APP_PROFILE, checkpointer=checkpointer,
+            profile=definition.profile, checkpointer=checkpointer,
         ).build()
         manager = JobManager(
             graph, store,
@@ -80,6 +83,8 @@ async def build_app(
     def session_factory(session_id: str | None = None) -> ChatSession:
         # Same checkpointer as the job graph: thread_id namespaces conversations
         # (session_id) apart from job runs (job_id), so both survive a restart.
-        return ChatSession(manager, chat_model, session_id=session_id, checkpointer=checkpointer)
+        prompt = {"system_prompt": definition.chat_prompt} if definition.chat_prompt else {}
+        return ChatSession(manager, chat_model, session_id=session_id,
+                           checkpointer=checkpointer, **prompt)
 
-    return AgentApp(manager, session_factory, stack)
+    return AgentApp(manager, session_factory, definition.name, stack)

@@ -2,6 +2,7 @@
 #
 # Variables you can override:
 #   make chat LLM=openai        force a provider (anthropic|openai|fake)
+#   make chat AGENT=banking     run another agent (see jobsmith/agents/)
 #   make serve PORT=9000        daemon port (default 8000)
 #   make chat DB=agent.db       persist to SQLite (or a postgres:// DSN)
 #   make test T=router          only tests matching a keyword (pytest -k)
@@ -10,20 +11,22 @@ VENV := .venv
 PY   := $(VENV)/bin/python
 RUFF := $(VENV)/bin/ruff
 
-LLM  ?=
-DB   ?=
+LLM   ?=
+AGENT ?=
+DB    ?=
 ARGS ?=
 PORT ?= 8000
 T    ?=
 
-LLM_FLAG  := $(if $(LLM),--llm=$(LLM),)
-DB_FLAG   := $(if $(DB),--db=$(DB),)
+LLM_FLAG   := $(if $(LLM),--llm=$(LLM),)
+AGENT_FLAG := $(if $(AGENT),--agent=$(AGENT),)
+DB_FLAG    := $(if $(DB),--db=$(DB),)
 TEST_ARGS := $(if $(T),-k $(T),)
 
 .DEFAULT_GOAL := help
 
 .PHONY: help install install-all test lint fix check leak-check serve chat jobs \
-        chat-banking api-banking demo-banking clean
+        chat-banking serve-banking demo-banking clean
 
 help: ## List available commands
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -46,30 +49,31 @@ lint: ## Lint with ruff
 fix: ## Lint and auto-fix what ruff can
 	$(RUFF) check . --fix
 
-leak-check: ## Domain-leakage gate: framework + global agent must contain no banking-specific strings
+leak-check: ## Domain-leakage gate: shared code + the default agent must contain no banking-specific strings
 	@! grep -rin --include="*.py" "banking\|banquier\|votre\|analyste" \
 		jobsmith/core jobsmith/jobs jobsmith/chat jobsmith/api jobsmith/app jobsmith/cli \
-		&& echo "leak-check: OK (framework is domain-clean)"
+		jobsmith/agents/default jobsmith/agents/base.py \
+		&& echo "leak-check: OK (shared code is domain-clean)"
 
 check: lint leak-check test ## Everything CI would run: lint + leakage gate + tests
 
 serve: ## Run the DAEMON: it owns the job engine, so jobs outlive their client
-	$(PY) -m jobsmith $(LLM_FLAG) $(DB_FLAG) serve --port $(PORT)
+	$(PY) -m jobsmith $(LLM_FLAG) $(AGENT_FLAG) $(DB_FLAG) serve --port $(PORT)
 
 chat: ## Chat with the agent (uses the daemon if one runs, else embedded)
-	$(PY) -m jobsmith $(LLM_FLAG) $(DB_FLAG) chat
+	$(PY) -m jobsmith $(LLM_FLAG) $(AGENT_FLAG) $(DB_FLAG) chat
 
 jobs: ## List jobs (add ARGS='--status running')
-	$(PY) -m jobsmith $(LLM_FLAG) $(DB_FLAG) jobs $(ARGS)
+	$(PY) -m jobsmith $(LLM_FLAG) $(AGENT_FLAG) $(DB_FLAG) jobs $(ARGS)
 
-chat-banking: ## Banking example REPL
-	$(PY) -m jobsmith.examples.banking.chat $(LLM_FLAG)
+chat-banking: ## Banking agent REPL (same shell, different agent)
+	$(PY) -m jobsmith $(LLM_FLAG) $(DB_FLAG) --agent banking chat
 
-api-banking: ## Banking example HTTP API
-	$(PY) -m jobsmith.examples.banking.api $(PORT) $(LLM_FLAG)
+serve-banking: ## Banking agent daemon (HTTP API + SSE)
+	$(PY) -m jobsmith $(LLM_FLAG) $(DB_FLAG) --agent banking serve --port $(PORT)
 
 demo-banking: ## Scripted banking demo (fakes, no API key needed)
-	$(PY) -m jobsmith.examples.banking.main
+	$(PY) -m jobsmith.agents.banking.demo
 
 clean: ## Remove caches, build junk, and generated job reports
 	rm -rf .pytest_cache .ruff_cache dist *.egg-info artifacts

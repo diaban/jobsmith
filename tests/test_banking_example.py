@@ -5,13 +5,13 @@ from __future__ import annotations
 
 from conftest import FakeLLM, FakeS3, FakeSearch, plan_json
 
+from jobsmith.agents.banking.capabilities.refs import RefsCapability
+from jobsmith.agents.banking.capabilities.search import SearchCapability
+from jobsmith.agents.banking.capabilities.vision import VisionCapability
+from jobsmith.agents.banking.profile import BANKING_PROFILE
 from jobsmith.core.builder import AgentBuilder
 from jobsmith.core.deps import Deps
 from jobsmith.core.registry import CapabilityRegistry
-from jobsmith.examples.banking.capabilities.refs import RefsCapability
-from jobsmith.examples.banking.capabilities.search import SearchCapability
-from jobsmith.examples.banking.capabilities.vision import VisionCapability
-from jobsmith.examples.banking.profile import BANKING_PROFILE
 
 
 def banking_builder(llm: FakeLLM, checkpointer, store, *, search=None) -> AgentBuilder:

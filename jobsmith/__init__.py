@@ -14,7 +14,7 @@ Quick start:
     job = await jobs.create_job("do something", inputs={...})
     job = await jobs.run_job(job.job_id)
 
-See jobsmith/examples/banking for a complete domain profile.
+See jobsmith/agents/banking for a complete domain agent.
 """
 from .core.builder import AgentBuilder, build_agent
 from .core.capability import (

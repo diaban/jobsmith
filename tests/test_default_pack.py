@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from conftest import FakeLLM, plan_json
 
-from jobsmith.app.capabilities import default_capabilities
-from jobsmith.app.capabilities.research import ResearchCapability
+from jobsmith.agents.default import default_capabilities
+from jobsmith.agents.default.research import ResearchCapability
 from jobsmith.core.builder import build_agent
 from jobsmith.core.deps import Deps
 from jobsmith.core.registry import CapabilityRegistry

@@ -216,16 +216,20 @@ derive from the registry.
 
 ```
 jobsmith/
-  core/         the framework: router, planner, executor, generation, profile, registry
-  jobs/         Job model, JobManager, JobDocument + Reporters
+  core/         the engine: router, planner, executor, generation, registry
+  jobs/         the job use cases + their ports (repository, runner, events, reporter)
   chat/         conversational layer (LangChain create_agent) + job tools
   api/          FastAPI: sessions, jobs, outputs, SSE
   cli/          daemon, clients, REPL, argparse entrypoint
-  app/          ★ the product's composition root: providers, default capability
-                pack (research → analysis → critique), persistence, build_app()
-  examples/
-    banking/    a domain agent: same shells, its own capabilities and profile
+  agents/       ★ what each agent IS — a capability pack + a profile
+    default/      research → analysis → critique (LLM-only)
+    banking/      a domain agent: its own capabilities, ports and adapters
+  app/          composition: providers, persistence, build_app(agent=...)
 ```
+
+Everything but `agents/` is shared. **Adding an agent touches no shared code**:
+write its capabilities, register an `AgentDefinition`, and the planner, job
+engine, chat, CLI and API all serve it — `jobsmith --agent <name> chat`.
 
 Two LLM stacks, deliberately: the chat layer uses **LangChain** models (they
 handle per-provider tool formats), the job engine uses a dependency-light
@@ -253,6 +257,7 @@ handle per-provider tool formats), the job engine uses a dependency-light
 | | |
 |---|---|
 | `--llm anthropic\|openai\|fake` | provider for **both** stacks (default: auto-detected from keys) |
+| `--agent NAME` | which agent to run — `default` or `banking` (applies to whichever process owns the engine, so pass it to `serve`) |
 | `--db memory\|<file.db>\|<postgres DSN>` | persistence (default: `$JOBSMITH_DB`, else memory) |
 | `--url` / `--local` | point at another daemon / never use one |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | key auto-detection; Anthropic wins if both are set |
@@ -278,11 +283,12 @@ make test T=router # one keyword's worth
 make fix           # ruff --fix
 ```
 
-`make leak-check` is a gate, not a formality: the framework and the global agent
-must contain no domain-specific vocabulary. The banking example proves the
-framework can carry a domain (French user messages, a citation rule, a
-vision capability dropped when no image is supplied) without any of it leaking
-upward — `make demo-banking` runs it on fakes.
+`make leak-check` is a gate, not a formality: the shared code and the default
+agent must contain no domain-specific vocabulary — `agents/banking/` is exempt,
+and is meant to be as domain-specific as it likes. It proves a domain can be
+carried (French user messages, a citation rule, a vision capability dropped when
+no image is supplied) without any of it leaking upward. `make demo-banking` runs
+it on fakes; `make chat AGENT=banking` opens it in the normal REPL.
 
 ---
 

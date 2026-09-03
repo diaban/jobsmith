@@ -8,7 +8,7 @@ written deliverable rather than a chat turn.
 """
 from __future__ import annotations
 
-from ..core.profile import AgentProfile
+from ...core.profile import AgentProfile
 
 GLOBAL_GENERATOR_PROMPT = (
     "You are writing the final deliverable of a background job. Use ONLY the "

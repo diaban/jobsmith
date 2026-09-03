@@ -14,6 +14,10 @@ running (so jobs outlive the command that launched them, and any other
 command can list or cancel them), and otherwise runs the agent embedded in
 the process — convenient for a quick try, but jobs then stop when it exits.
 `--local` forces embedded mode, `--url` points at another daemon.
+
+`--agent NAME` picks which agent to run (see jobsmith/agents/); it applies
+to the process that owns the engine, so pass it to `serve` when a daemon is
+running, not to the client commands talking to it.
 """
 from __future__ import annotations
 
@@ -21,6 +25,7 @@ import argparse
 import asyncio
 import sys
 
+from ..agents import agent_names
 from .client import DEFAULT_URL, AgentClient, open_client
 from .repl import run_repl, show_job
 
@@ -35,6 +40,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="LLM provider (default: auto-detected from API keys)")
     parser.add_argument("--db", metavar="SPEC",
                         help="memory | <file.db> | <postgres DSN>  (default: $JOBSMITH_DB)")
+    parser.add_argument("--agent", metavar="NAME", choices=agent_names(),
+                        help=f"which agent to run: {', '.join(agent_names())} (default: default)")
     parser.add_argument("--url", default=DEFAULT_URL, help=f"daemon URL (default: {DEFAULT_URL})")
     parser.add_argument("--local", action="store_true",
                         help="never use a daemon: run the agent in this process")
@@ -161,7 +168,7 @@ async def serve(args) -> int:
     from ..api import create_api
     from ..app.agent import build_app
 
-    app = await build_app(db=args.db)
+    app = await build_app(db=args.db, agent=args.agent)
     try:
         config = uvicorn.Config(
             create_api(app.manager, app.session_factory), host="127.0.0.1", port=args.port
@@ -173,7 +180,8 @@ async def serve(args) -> int:
 
 
 async def run_command(args) -> int:
-    client = await open_client(url=args.url, force_local=args.local, db=args.db)
+    client = await open_client(url=args.url, force_local=args.local,
+                               db=args.db, agent=args.agent)
     try:
         return await COMMANDS[args.command](client, args)
     finally:

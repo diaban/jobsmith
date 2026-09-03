@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-`jobsmith` is both a **product** — a general-purpose conversational agent (`python -m jobsmith`) that answers simple messages directly and launches complex tasks as **background jobs** (human-in-the-loop approval), keeps chatting while they run, then surfaces finished-job markdown reports back into the conversation — and the **domain-agnostic framework** it is built on (LangGraph, object-oriented node pattern): a registry-driven planner emits a DAG of pluggable capabilities (self-describing agentic sub-graphs); a wave-based executor fans them out in parallel; a generation pipeline merges their results; each run is a persistent, trackable, cancellable **Job**; a chat layer (`jobsmith/chat/`, LangGraph prebuilt ReAct agent) sits on top. **`jobsmith/app/` is the product's composition root** (provider selection, default LLM-only capability pack research→analysis→critique, generic REPL shell, entrypoints); `jobsmith/examples/banking/` is a domain example that reuses those shells and only supplies its own capabilities/profile.
+`jobsmith` is both a **product** — a general-purpose conversational agent (`python -m jobsmith`) that answers simple messages directly and launches complex tasks as **background jobs** (human-in-the-loop approval), keeps chatting while they run, then surfaces finished-job markdown reports back into the conversation — and the **domain-agnostic framework** it is built on (LangGraph, object-oriented node pattern): a registry-driven planner emits a DAG of pluggable capabilities (self-describing agentic sub-graphs); a wave-based executor fans them out in parallel; a generation pipeline merges their results; each run is a persistent, trackable, cancellable **Job**; a chat layer (`jobsmith/chat/`, LangGraph prebuilt ReAct agent) sits on top. **`jobsmith/agents/` holds the agent definitions** (a capability pack + a profile: `default` = research→analysis→critique, `banking` = the domain example) and **`jobsmith/app/` is the composition root that runs any of them** (provider selection, persistence, `build_app(agent=...)`).
 
 `README.md` is the human-facing counterpart of this file: product pitch, quickstart,
 CLI/API surface, limits. Keep it in sync when a command or a limit changes.
@@ -22,14 +22,13 @@ jobsmith serve [--port 8000]                                # ★ the daemon: it
 jobsmith chat [--session ID]                                # ★ converse (daemon if up, else embedded)
 jobsmith run "<task>" [--wait] | jobs | job <id> | report <id> | cancel <id>
 # `python -m jobsmith …` is the same entrypoint when the venv's bin isn't on PATH
-.venv/bin/python -m jobsmith.examples.banking.main          # banking demo (fakes)
-.venv/bin/python -m jobsmith.examples.banking.chat          # banking REPL
-.venv/bin/python -m jobsmith.examples.banking.api [port]    # banking API
+jobsmith --agent banking chat | serve                       # any agent, same shell
+.venv/bin/python -m jobsmith.agents.banking.demo            # scripted banking demo (fakes)
 ```
 
 The REPL is a CONVERSATION by default (chat agent; complex asks → job proposal → y/N approval → background job → synthesis + report path on a later turn); `/bg <text>` bypasses the chat and runs a job directly. It auto-selects the provider for BOTH stacks (`--llm=anthropic|openai|fake` overrides): the job engine uses `jobsmith/clients.py` adapters, the chat agent uses LangChain models (`langchain-anthropic`/`langchain-openai`, extras `chat-anthropic`/`chat-openai`; fake mode needs neither). Job-engine LLM selection: `AnthropicLLMClient` (`claude-opus-5`) when `ANTHROPIC_API_KEY` is set, else `OpenAILLMClient` (`gpt-5.1`; honors `OPENAI_BASE_URL` for Ollama/vLLM/gateways) when `OPENAI_API_KEY` is set, else the deterministic `KeywordLLM` fake. Both real adapters live in `jobsmith/clients.py`, implement chat+vision, take an injectable `client` for tests, and raise `RuntimeError` on refusals so they flow through the framework's NodeError path. Provider quirks handled there: the Anthropic adapter drops `temperature` (removed on Claude Opus 5 — sending it 400s), hoists `system` messages to the top-level param, and enables server-side refusal fallbacks; the OpenAI adapter drops `temperature` and uses `max_completion_tokens` for reasoning models (gpt-5*/o*).
 
-Domain-leakage gate (`make leak-check`, must return nothing): `grep -ri --include="*.py" "banking\|banquier\|votre\|analyste" jobsmith/core jobsmith/jobs jobsmith/chat jobsmith/api jobsmith/app jobsmith/cli`
+Domain-leakage gate (`make leak-check`, must return nothing): `grep -ri --include="*.py" "banking\|banquier\|votre\|analyste" jobsmith/core jobsmith/jobs jobsmith/chat jobsmith/api jobsmith/app jobsmith/cli jobsmith/agents/default jobsmith/agents/base.py` — note it scans `agents/default` and `agents/base.py`, **not** `agents/banking`, which is allowed to be as domain-specific as it likes.
 
 ### CLI + daemon (`cli/`) — where jobs actually run
 
@@ -41,12 +40,19 @@ The point of this layer: **a job must outlive the command that launched it**. `j
 - Sessions are **rebuildable by id**: the API's registry is only a cache, the conversation lives in the checkpointer under `thread_id=session_id`, so `jobsmith chat --session <id>` resumes across a daemon restart (and gets the finished-job announcement). `session_factory` therefore takes an optional `session_id`.
 - Embedded mode is honest about its limit: jobs stop when the process exits (`recover_interrupted` settles them on the next start).
 
-### The global agent (`app/`)
+### Agents (`agents/`) — what an agent *is*
 
-The product's composition root — everything here is domain-neutral:
+An agent is **a capability pack + a profile (+ an optional chat persona)**, and nothing else — `AgentDefinition` in `agents/base.py`. The runtime, job engine, chat, CLI and API are shared by all of them, so **adding an agent touches no shared code**: define the capabilities, register the definition in `agents/__init__.py`, done. `tests/test_agents.py` pins that property (it composes a third-party agent from scratch).
+
+- `agents/default/`: the LLM-only pack — `research` (decompose into aspects, lenient JSON, then structured notes) → `analysis` → `critique`. The latter two subclass `SingleStepCapability` (`_step.py`): one LLM node reading the best upstream `results` entry, degrading to the bare request when the upstream failed/was skipped.
+- `agents/banking/`: the domain example — capabilities, its **own ports** (`deps.py`: `SearchEngine`/`VisionClient`/`S3Client` Protocols) and **its own adapters** (`fakes.py`), plus a French profile. The ports live next to the capabilities that consume them, never in a central `ports/` package: that is what keeps them scaling with their consumers.
+- Selection: `--agent NAME` (CLI, applies to whichever process owns the engine — so pass it to `serve`), `build_app(agent=...)`, `make chat AGENT=banking`.
+
+### The composition root (`app/`)
+
+Wiring only, no content — everything here is domain-neutral:
 - `providers.py`: `pick_provider` (one `--llm=` flag / key auto-detect shared by both LLM stacks), `make_llm` (job engine, `clients.py` adapters), `make_chat_model` (LangChain), `load_dotenv`, and the keyless fakes — `KeywordLLM` plans by **parsing capability names out of the rendered planner prompt** (works with any registry), `KeywordChatModel` proposes a job on analysis-ish keywords.
-- `capabilities/`: the default LLM-only pack — `research` (decompose into aspects, lenient JSON, then structured notes) → `analysis` → `critique`. The latter two subclass `SingleStepCapability` (`_step.py`): one LLM node reading the best upstream `results` entry, degrading to the bare request when the upstream failed/was skipped. `default_capabilities(llm)` builds the pack.
-- `agent.py`: `await build_app(**overrides) -> AgentApp(manager, session_factory, aclose)`. The REPL and the entrypoints now live in `cli/` (see below); the banking example reuses them through an `EmbeddedClient(AgentApp(...))`.
+- `agent.py`: `await build_app(agent=..., **overrides) -> AgentApp(manager, session_factory, agent_name, aclose)`. It composes ONE agent definition into a running product; the REPL and entrypoints live in `cli/`.
 - `persistence.py`: `pick_db()` (arg > `--db=` > `$JOBSMITH_DB` > `memory`) + `open_persistence(spec, stack)` → `(checkpointer, store)`, teardown on the caller's `AsyncExitStack`. Backends: `memory` (default), a SQLite path (`.[sqlite]`), or a Postgres DSN (`.[postgres]`, one shared `AsyncConnectionPool` for saver + store, `autocommit/prepare_threshold=0/dict_row` as those backends require). Chat sessions share the job graph's checkpointer, so conversations persist too (namespaced by `thread_id`: `session_id` vs `job_id`).
 
 **Why `build_app` is async**: real backends must be opened in the event loop that will use them. `python -m jobsmith api` therefore serves with `await uvicorn.Server(config).serve()` inside that same loop — `uvicorn.run()` would start its own loop and strand the pool. **SQLite gotcha** (cost an hour): the *store* needs `isolation_level=None` (it drives its own `BEGIN`/`COMMIT`; under implicit transactions its first write leaves one open and the next `BEGIN` raises "cannot start a transaction within a transaction"), the *saver* keeps the default; never run a stray `PRAGMA` on those live connections (it opens a transaction and deadlocks the other connection) — WAL is set once on a throwaway connection, and the busy timeout via `connect(timeout=...)`.
@@ -63,7 +69,7 @@ Every graph step is a class instance owning its deps and config. Node logic is *
 - **`core/capability.py`** — `Capability` ABC + `CapabilitySpec` (name, description, JSON-schema dicts, `requires_inputs`). Capabilities take *exactly the clients they need* in their constructors; the framework never introspects them. Terminal sub-graph nodes call `_emit_success`/`_emit_failure` so every capability reports uniformly.
 - **`core/registry.py`** — `CapabilityRegistry`: single source of truth for what the agent can do. The planner prompt, executor Send targets, and builder node map all derive from it. **Frozen at `build()`** — a compiled graph's capability set is fixed; new capability ⇒ new `AgentBuilder` (compilation is milliseconds).
 - **`core/state.py`** — capability results live in one `results: dict[str, CapabilityResult]` with a dict-union reducer. Fan-in safety: each capability writes only its own key; registry-unique names + no-duplicate plan steps ⇒ disjoint keys. **Determinism caveat:** consumers must iterate in *plan order*, never dict order (ContextMerger does).
-- **`core/profile.py`** — `AgentProfile` is the entire domain surface: prompt templates, user-facing messages, input/output validation rules (plain callables), `max_refine`. Core defaults are neutral English; the banking example overrides them (French messages live *only* in `examples/banking/profile.py`).
+- **`core/profile.py`** — `AgentProfile` is the entire domain surface: prompt templates, user-facing messages, input/output validation rules (plain callables), `max_refine`. Core defaults are neutral English; the banking example overrides them (French messages live *only* in `agents/banking/profile.py`).
 
 ### Graph flow
 
@@ -118,7 +124,7 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 
 ### HTTP API (`api/`)
 
-`create_api(manager, session_factory) -> FastAPI` (extra `.[api]`; banking runner: `examples/banking/api.py`). Domain-agnostic — everything arrives via the injected manager/factory.
+`create_api(manager, session_factory) -> FastAPI` (extra `.[api]`; served by `jobsmith serve`, whichever agent is composed). Domain-agnostic — everything arrives via the injected manager/factory.
 
 - **Chat**: `POST /sessions` → id; `POST /sessions/{id}/messages` returns `{"type": "message"}` or `{"type": "proposal"}` (HITL interrupt surfaced over HTTP); client answers with `POST /sessions/{id}/approval {"approved": bool}`.
 - **Jobs**: `GET /jobs[?session_id&status]`, `GET /jobs/{id}` (plan/step_finished_at/results — the UI's DAG data), `POST /jobs` (direct launch), `POST /jobs/{id}/cancel`.

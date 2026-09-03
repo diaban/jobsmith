@@ -1,11 +1,13 @@
-"""The global agent — jobsmith as a product, not just a framework.
+"""Composition — wiring only, no content.
 
-This package is the default composition root: provider selection, a
-domain-neutral capability pack (LLM-only), the generic chat REPL, and the
-`python -m jobsmith` entrypoints. Domain examples (see jobsmith/examples/)
-reuse these pieces and only supply their own capabilities/profile.
+This package assembles a running product out of pieces defined elsewhere:
+it picks the providers (`providers.py`), opens the persistence backend
+(`persistence.py`), and composes an agent definition into a job engine plus
+a chat-session factory (`agent.py`).
+
+What each agent can *do* and how it speaks lives in `jobsmith/agents/`, not
+here: adding an agent never means touching this package.
 """
 from .agent import AgentApp, build_app
-from .capabilities import default_capabilities
 
-__all__ = ["AgentApp", "build_app", "default_capabilities"]
+__all__ = ["AgentApp", "build_app"]

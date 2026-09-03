@@ -7,7 +7,7 @@
 - `KeywordLLM` / `KeywordChatModel` are generic fakes: everything runs with no
   API key. KeywordLLM plans by READING the capability names out of the
   rendered planner prompt (a chain in listed order), so it works with any
-  registry — the default pack and the domain examples alike.
+  registry — every registered agent alike.
 """
 from __future__ import annotations
 
