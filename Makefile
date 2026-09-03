@@ -94,8 +94,11 @@ worktree: ## Isolated checkout + ready venv for one issue: make worktree B=feat/
 
 worktree-rm: ## Remove a worktree and its branch: make worktree-rm B=feat/1-grounding
 	@test -n "$(B)" || { echo "usage: make worktree-rm B=feat/1-grounding"; exit 1; }
-	git worktree remove .claude/worktrees/$(WT_DIR)
-	-git branch -d $(B)
+	@# `gh pr merge --delete-branch` already removes both, so every step is a no-op-safe
+	@git worktree remove .claude/worktrees/$(WT_DIR) 2>/dev/null || true
+	@git worktree prune
+	@git branch -d $(B) 2>/dev/null || true
+	@echo "  gone: $(B)"
 
 clean: ## Remove caches, build junk, and generated job reports
 	rm -rf .pytest_cache .ruff_cache .coverage htmlcov dist *.egg-info artifacts
