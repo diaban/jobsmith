@@ -161,9 +161,27 @@ async def test_resources_are_released_when_startup_fails(tmp_path):
     assert log == ["open", "close"]
 
 
-async def test_an_agent_without_resources_gets_none(tmp_path):
+async def test_an_agent_that_declares_no_resources_gets_none(tmp_path):
+    bare = AgentDefinition(
+        name="bare", description="declares no open_resources",
+        capabilities=lambda ctx: [], profile=AgentProfile(),
+    )
+    async with registered(bare):
+        app = await build_app(agent="bare", llm=object(), chat_model=object())
+        try:
+            assert app.resources is None
+        finally:
+            await app.aclose()
+
+
+async def test_the_default_agent_has_no_document_source_unless_configured(monkeypatch):
+    """`documents` must stay out of the registry when nothing backs it —
+    otherwise the planner plans a step that can only fail."""
+    monkeypatch.delenv("JOBSMITH_DOCS", raising=False)
+    monkeypatch.setattr("sys.argv", ["pytest"])
     app = await build_app(agent="default", llm=object(), chat_model=object())
     try:
-        assert app.resources is None
+        assert app.resources.documents is None
+        assert not [n for n in app.manager.graph.nodes if n == "cap_documents"]
     finally:
         await app.aclose()
