@@ -118,6 +118,23 @@ Conversations are rebuildable by id: `jobsmith chat --session <id>` resumes
 across a daemon restart, and picks up the announcement of any job that finished
 while you were away.
 
+### Grounding jobs in real material
+
+Point the agent at a directory and its jobs start from **your** files rather
+than from the model's recollection:
+
+```bash
+jobsmith --docs ./docs chat
+jobsmith --docs . run "how does the job engine persist state?" --wait
+```
+
+The `documents` capability then joins the plan, retrieves the relevant
+passages and hands them to the rest of the DAG with a quotable id each
+(`path#chunk`), so the report can point at where something came from. Ranking
+is keyword overlap, not semantics — honest and dependency-free. Without
+`--docs` the capability stays out of the registry entirely and the agent runs
+on its own knowledge.
+
 ### Which agent
 
 An **agent** is a pack of capabilities plus a profile — what the thing can do
@@ -289,6 +306,7 @@ handle per-provider tool formats), the job engine uses a dependency-light
 |---|---|
 | `--llm anthropic\|openai\|fake` | provider for **both** stacks (default: auto-detected from keys) |
 | `--agent NAME` | which agent to run — `default` or `banking` (applies to whichever process owns the engine, so pass it to `serve`) |
+| `--docs DIR` | ground jobs in the files under `DIR` (default: `$JOBSMITH_DOCS`); without it the agent runs on the model's own knowledge |
 | `--db memory\|<file.db>\|<postgres DSN>` | persistence (default: `$JOBSMITH_DB`, else memory) |
 | `--url` / `--local` | point at another daemon / never use one |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | key auto-detection; Anthropic wins if both are set |

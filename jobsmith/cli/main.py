@@ -42,6 +42,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="memory | <file.db> | <postgres DSN>  (default: $JOBSMITH_DB)")
     parser.add_argument("--agent", metavar="NAME", choices=agent_names(),
                         help=f"which agent to run: {', '.join(agent_names())} (default: default)")
+    parser.add_argument("--docs", metavar="DIR",
+                        help="ground jobs in the files under DIR (default: $JOBSMITH_DOCS)")
     parser.add_argument("--url", default=DEFAULT_URL, help=f"daemon URL (default: {DEFAULT_URL})")
     parser.add_argument("--local", action="store_true",
                         help="never use a daemon: run the agent in this process")
@@ -195,8 +197,13 @@ def main(argv: list[str] | None = None) -> int:
 
     load_dotenv()
     args = build_parser().parse_args(argv)
+    # Exported so the pieces that read configuration for themselves see the
+    # flag whatever the entrypoint: pick_provider (both LLM stacks) and the
+    # agent's own open_resources.
     if args.llm:
-        os.environ["JOBSMITH_LLM"] = args.llm   # read by pick_provider, both stacks
+        os.environ["JOBSMITH_LLM"] = args.llm
+    if args.docs:
+        os.environ["JOBSMITH_DOCS"] = args.docs
     if args.command is None:            # bare `jobsmith` == `jobsmith chat`
         args = build_parser().parse_args([*(argv or []), "chat"])
     try:
