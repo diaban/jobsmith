@@ -170,14 +170,15 @@ The deliverable is a markdown file — **the answer first**, provenance after:
 - **Request**: …
 - **Job**: `a803205bea59412bae2e376a8555ee62`
 - **Started** / **Finished**: …
+- **Usage**: 7 LLM calls — 21,430 in / 5,120 out tokens — ~$0.2352 est. — claude-opus-5
 
 ### Steps
 
-| step | depends on | status | finished at |
-|---|---|---|---|
-| research | — | ok | … |
-| analysis | research | ok | … |
-| critique | analysis | ok | … |
+| step | depends on | status | usage | finished at |
+|---|---|---|---|---|
+| research | — | ok | 12.4k tok · ~$0.1120 | … |
+| analysis | research | ok | 8.1k tok · ~$0.0790 | … |
+| critique | analysis | ok | 4.9k tok · ~$0.0442 | … |
 
 ```mermaid
 flowchart LR
@@ -185,6 +186,13 @@ flowchart LR
   analysis --> critique
 ```
 ````
+
+**What it cost is part of the deliverable.** Every LLM call is booked to the
+step that made it, so the report (and `jobsmith job <id>`, and the `/events`
+stream, live while it runs) answers both *what did this cost* and *which step
+spent it*. Prices are a dated snapshot — override them with `$JOBSMITH_PRICES`
+(inline JSON or a path: `{"gpt-5.1": {"input": 1.25, "output": 10.0}}`); a model
+with no price is reported in tokens rather than in an invented dollar figure.
 
 Per-step material is deliberately **not** inlined — it lives in the store, and
 `jobsmith job <id>` or `GET /jobs/{id}` serves it. For a self-contained archive,
@@ -308,6 +316,7 @@ handle per-provider tool formats), the job engine uses a dependency-light
 | `--agent NAME` | which agent to run — `default` or `banking` (applies to whichever process owns the engine, so pass it to `serve`) |
 | `--docs DIR` | ground jobs in the files under `DIR` (default: `$JOBSMITH_DOCS`); without it the agent runs on the model's own knowledge |
 | `--db memory\|<file.db>\|<postgres DSN>` | persistence (default: `$JOBSMITH_DB`, else memory) |
+| `$JOBSMITH_PRICES` | per-model prices for the cost estimate, as inline JSON or a path to a JSON file (USD per million tokens) |
 | `--url` / `--local` | point at another daemon / never use one |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | key auto-detection; Anthropic wins if both are set |
 | `ANTHROPIC_MODEL`, `OPENAI_MODEL`, `OPENAI_BASE_URL` | model override; the base URL points at Ollama, vLLM or a gateway |
@@ -363,6 +372,10 @@ Honest v1 boundaries:
 - **No `resume_job()` yet.** A job interrupted by a dead process is marked
   failed on the next start — its checkpoint is retained, so resuming is a
   feature away, not a redesign.
+- **Cost accounting covers jobs, not conversations.** The job engine books
+  every LLM call; the chat layer talks to LangChain models on the other side of
+  the two-stack split and is not counted yet. Dollar figures are estimates from
+  a local price table, never a bill.
 - **Markdown is the only Reporter.** HTML/PDF/PPTX are additional Reporters over
   the same `JobDocument`.
 - **No web UI.** Everything is terminal or HTTP for now; the API already serves

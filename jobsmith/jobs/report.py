@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from ..core.usage import Usage
 from .models import Job, JobOutput
 
 
@@ -29,6 +30,7 @@ class PlanRow:
     depends_on: list[str]
     status: str
     finished_at: str
+    usage: Usage = field(default_factory=Usage)   # what this step spent
 
 
 @dataclass
@@ -44,6 +46,7 @@ class JobDocument:
     session_id: str | None = None
     plan_rationale: str = ""
     plan: list[PlanRow] = field(default_factory=list)
+    usage: Usage = field(default_factory=Usage)   # the whole run's spend
     annexes: list[tuple[str, str]] = field(default_factory=list)  # (heading, markdown)
 
     @property
@@ -62,6 +65,7 @@ def build_document(job: Job, registry: Any = None, *, with_annexes: bool = False
         finished_at=datetime.now(UTC).isoformat(),
         answer=job.final_answer or "_(no answer)_",
         plan_rationale=(job.plan or {}).get("rationale", "") if job.plan else "",
+        usage=Usage.from_dict(job.usage),
     )
     for step in (job.plan or {}).get("steps", []) if job.plan else []:
         name = step["capability"]
@@ -73,6 +77,7 @@ def build_document(job: Job, registry: Any = None, *, with_annexes: bool = False
                 f"failed ({result.get('error')})" if result else "not run"
             ),
             finished_at=job.step_finished_at.get(name, "—"),
+            usage=Usage.from_dict(job.step_usage(name)),
         ))
     if with_annexes:
         doc.annexes = _annexes(job, registry)
@@ -94,6 +99,40 @@ def _annexes(job: Job, registry: Any) -> list[tuple[str, str]]:
         if body:
             sections.append((name, body))
     return sections
+
+
+def format_cost(usage: Usage) -> str:
+    """`~$0.4212`, or an empty string when no model in the tally has a price."""
+    if usage.cost_usd is None:
+        return ""
+    return f"~${usage.cost_usd:.4f}" if usage.cost_usd < 1 else f"~${usage.cost_usd:.2f}"
+
+
+def format_usage(usage: Usage) -> str:
+    """One line a human can act on: how many calls, how many tokens, how much."""
+    if not usage:
+        return "not recorded"
+    cached = f" (+{usage.cached_input_tokens:,} cached)" if usage.cached_input_tokens else ""
+    parts = [
+        f"{usage.calls} LLM call{'s' if usage.calls != 1 else ''}",
+        f"{usage.input_tokens:,} in{cached} / {usage.output_tokens:,} out tokens",
+    ]
+    cost = format_cost(usage)
+    if cost:
+        parts.append(f"{cost} est.")
+    if usage.models:
+        parts.append(", ".join(usage.models))
+    return " — ".join(parts)
+
+
+def format_step_usage(usage: Usage) -> str:
+    """Compact cell for the plan table — enough to spot the expensive step."""
+    if not usage:
+        return "—"
+    tokens = usage.total_tokens
+    size = f"{tokens / 1000:.1f}k" if tokens >= 1000 else str(tokens)
+    cost = format_cost(usage)
+    return f"{size} tok · {cost}" if cost else f"{size} tok"
 
 
 class Reporter(Protocol):
@@ -136,15 +175,19 @@ class MarkdownReport:
                   f"- **Finished**: {doc.finished_at}"]
         if doc.session_id:
             lines.append(f"- **Session**: `{doc.session_id}`")
+        # Cost belongs with the provenance: whoever reads the report is the
+        # one paying for it. Estimated from a price table, never a bill.
+        lines.append(f"- **Usage**: {format_usage(doc.usage)}")
 
         if doc.plan:
             lines += ["", "### Steps", ""]
             if doc.plan_rationale:
                 lines += [f"_{doc.plan_rationale}_", ""]
-            lines += ["| step | depends on | status | finished at |", "|---|---|---|---|"]
+            lines += ["| step | depends on | status | usage | finished at |",
+                      "|---|---|---|---|---|"]
             lines += [
                 f"| {row.capability} | {', '.join(row.depends_on) or '—'} "
-                f"| {row.status} | {row.finished_at} |"
+                f"| {row.status} | {format_step_usage(row.usage)} | {row.finished_at} |"
                 for row in doc.plan
             ]
             lines += ["", "```mermaid", "flowchart LR"]

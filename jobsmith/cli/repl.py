@@ -18,6 +18,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from ..core.usage import Usage
+from ..jobs.report import format_step_usage, format_usage
 from .client import AgentClient
 
 BANNER = "\n".join(
@@ -40,7 +42,11 @@ def show_job(job: dict, *, verbose: bool = True) -> None:
         print(f"  rationale: {plan['rationale']}")
     for name, res in (job.get("results") or {}).items():
         status = "ok" if res.get("ok") else f"FAILED ({res.get('error')})"
-        print(f"  artifact:  {name}: {status}")
+        spent = format_step_usage(Usage.from_dict((res.get("meta") or {}).get("usage")))
+        print(f"  artifact:  {name}: {status}" + (f"  [{spent}]" if spent != "—" else ""))
+    if job.get("usage"):
+        # what the run cost, right where its steps are listed
+        print(f"  usage:     {format_usage(Usage.from_dict(job['usage']))}")
     if job.get("report_path"):
         print(f"  report:    {job['report_path']}")
     if job.get("final_answer"):

@@ -28,6 +28,8 @@ from langchain_core.messages import (
 )
 from langchain_core.outputs import ChatGeneration, ChatResult
 
+from ..core.usage import record_usage
+
 # ---------------------------------------------------------------- env / choice
 
 def load_dotenv(path: str = ".env") -> None:
@@ -110,12 +112,31 @@ class KeywordLLM:
     Registry-agnostic: the plan is built from the capability names found in
     the planner's own rendered prompt (chained in listed order — inapplicable
     steps are dropped by plan validation as usual).
+
+    It also reports *plausible* token usage (~4 chars per token) under a
+    priced fake model, so the whole cost path — ledger, per-step meta, the
+    report's "About this job" line — is exercised by CI and by anyone trying
+    the product without an API key. Estimated, obviously: no tokenizer runs.
     """
 
     _CAP_LINE = re.compile(r'^- "([a-z][a-z0-9_]*)"', re.MULTILINE)
     DIRECT_WORDS = ("what can you do", "who are you", "hello", "bonjour", "capabilit", "aide")
+    MODEL = "fake-keyword-llm"
+
+    @staticmethod
+    def _tokens(text: str) -> int:
+        return max(1, len(text) // 4)
 
     async def chat(self, messages: list[dict[str, Any]], **kwargs: Any) -> str:
+        reply = await self._answer(messages)
+        record_usage(
+            self.MODEL,
+            input_tokens=sum(self._tokens(str(m.get("content", ""))) for m in messages),
+            output_tokens=self._tokens(reply),
+        )
+        return reply
+
+    async def _answer(self, messages: list[dict[str, Any]]) -> str:
         system = messages[0]["content"]
         user = messages[-1]["content"]
 
@@ -148,7 +169,13 @@ class KeywordLLM:
         return f"Based on the produced context [doc_0]:\n{ctx[:400]}"
 
     async def vision(self, image_bytes: bytes, prompt: str, **kwargs: Any) -> str:
-        return f"(fake analysis of {len(image_bytes)} bytes for: {prompt[:60]})"
+        reply = f"(fake analysis of {len(image_bytes)} bytes for: {prompt[:60]})"
+        record_usage(
+            self.MODEL,
+            input_tokens=self._tokens(prompt) + len(image_bytes) // 750,   # ~image tokens
+            output_tokens=self._tokens(reply),
+        )
+        return reply
 
 
 class KeywordChatModel(BaseChatModel):

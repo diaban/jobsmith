@@ -26,6 +26,7 @@ def job_event(job: Job) -> dict[str, Any]:
         "steps_done": sorted(job.step_finished_at),
         "report_path": job.report_path,
         "updated_at": job.updated_at,
+        "usage": job.usage,          # spend so far: live, not only at the end
     }
 
 

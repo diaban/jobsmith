@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.state import NodeError
+from ..core.usage import current_ledger, usage_ledger
 from .events import InProcessEvents, JobEvents, job_event
 from .models import Job, JobStatus, now_iso
 from .report import MarkdownReport
@@ -63,6 +64,12 @@ class JobManager:
 
     async def _persist_summary(self, job: Job) -> None:
         job.updated_at = now_iso()
+        # Inside `run_job` a usage ledger is installed for this run, so every
+        # persist (each finished step, and the terminal one) carries the spend
+        # so far — a job that is still running already shows what it has cost.
+        ledger = current_ledger()
+        if ledger is not None:
+            job.usage = ledger.total().to_dict()
         await self.repo.save_summary(job)
         self.events.publish(job_event(job))
 
@@ -98,25 +105,31 @@ class JobManager:
         await self._persist_summary(job)
 
         errors: list[NodeError] = []
-        try:
-            async for update in self.runner.stream(job.job_id, job.query, job.inputs):
-                await self._apply(job, update, errors)
-        except asyncio.CancelledError:
-            job.status = JobStatus.CANCELLED
-            await self._persist_summary(job)
-            raise
-        except Exception as e:
-            job.status = JobStatus.FAILED
-            job.error = str(e)
-            await self._persist_summary(job)
-            return job
+        # One ledger per run — a fresh one, so a job launched from inside
+        # another run can never bill its parent. Every LLM call underneath
+        # books into it, attributed to the graph step that made it.
+        with usage_ledger() as ledger:
+            try:
+                async for update in self.runner.stream(job.job_id, job.query, job.inputs):
+                    await self._apply(job, update, errors)
+            except asyncio.CancelledError:
+                job.status = JobStatus.CANCELLED
+                await self._persist_summary(job)   # cancelled work was still paid for
+                raise
+            except Exception as e:
+                job.status = JobStatus.FAILED
+                job.error = str(e)
+                await self._persist_summary(job)
+                return job
 
-        if errors:
-            await self.repo.save_errors(job.job_id, errors)
-        job.status = JobStatus.DONE if job.terminal_kind == "answer" else JobStatus.FAILED
-        if job.status is JobStatus.DONE:
-            job.outputs = [self.reporter.write(job, self.reports_dir)]
-        await self._persist_summary(job)
+            if errors:
+                await self.repo.save_errors(job.job_id, errors)
+            job.status = JobStatus.DONE if job.terminal_kind == "answer" else JobStatus.FAILED
+            if job.status is JobStatus.DONE:
+                # The reporter reads job.usage, so settle it before writing.
+                job.usage = ledger.total().to_dict()
+                job.outputs = [self.reporter.write(job, self.reports_dir)]
+            await self._persist_summary(job)
         return job
 
     async def _apply(self, job: Job, update: JobUpdate, errors: list[NodeError]) -> None:
