@@ -433,3 +433,60 @@ async def test_the_keyless_fake_reports_plausible_usage():
     assert total.output_tokens > 0
     assert total.cost_usd > 0               # the fake is priced, so the maths runs
     assert total.models == (KeywordLLM.MODEL,)
+
+
+async def test_two_jobs_running_at_once_never_bill_each_other(store, checkpointer, tmp_path):
+    """The failure mode a ContextVar ledger invites, and the one that would be
+    silent: two jobs in the same process crediting their tokens to each other.
+
+    The capabilities sleep around their booking so the two runs genuinely
+    interleave — without that, the tasks would serialise and the test would
+    pass whatever the design.
+    """
+    import asyncio
+
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from jobsmith.jobs.manager import JobManager
+
+    class Burner(Capability):
+        def __init__(self, name: str, tokens: int):
+            self.spec = CapabilitySpec(name=name, description=name)
+            self.tokens = tokens
+
+        async def work(self, state):
+            await asyncio.sleep(0.02)          # let the sibling run interleave
+            record_usage("test-model", input_tokens=self.tokens)
+            await asyncio.sleep(0.02)
+            return self._emit_success({"burned": self.tokens})
+
+        def render_context(self, result):
+            return str(result["data"]["burned"])
+
+        def build(self):
+            g = self.state_graph(CapabilityBaseState)
+            g.add_node("work", self.work)
+            g.set_entry_point("work")
+            g.add_edge("work", END)
+            return g.compile()
+
+    def manager_for(name: str, tokens: int) -> JobManager:
+        capability = Burner(name, tokens)
+        llm = FakeLLM({"planner": plan_json(name)},
+                      default="A sufficiently long final answer for this run.")
+        graph = build_agent(Deps(llm=llm), CapabilityRegistry([capability]),
+                            checkpointer=MemorySaver())
+        return JobManager(graph, store, reports_dir=tmp_path / "artifacts")
+
+    alpha, beta = manager_for("alpha", 100), manager_for("beta", 7)
+    job_a = await alpha.create_job("A")
+    job_b = await beta.create_job("B")
+    done_a, done_b = await asyncio.gather(
+        alpha.run_job(job_a.job_id), beta.run_job(job_b.job_id)
+    )
+
+    assert done_a.results["alpha"]["meta"]["usage"]["input_tokens"] == 100
+    assert done_b.results["beta"]["meta"]["usage"]["input_tokens"] == 7
+    # and the job totals stay disjoint too
+    assert done_a.usage["input_tokens"] == 100
+    assert done_b.usage["input_tokens"] == 7
