@@ -10,6 +10,7 @@ from jobsmith.core.capability import Capability, CapabilitySpec
 from jobsmith.core.deps import Deps
 from jobsmith.core.planner import Planner
 from jobsmith.core.registry import CapabilityRegistry
+from jobsmith.core.state import CONVERSATION_INPUT_KEY
 
 
 class StubCap(Capability):
@@ -110,3 +111,32 @@ async def test_dep_on_step_absent_from_plan_rejected(registry):
     planner = make_planner(registry, plan_json("beta", deps={"beta": ["alpha"]}))
     out = await planner.run({"query": "q"})
     assert "unknown step" in out["errors"][0]["detail"]
+
+
+# ---------------- Conversational context in `inputs` -------------------------
+
+def test_user_message_is_the_bare_query_without_conversation(registry):
+    planner = make_planner(registry)
+    assert planner.user_message({"query": "q", "inputs": {}}) == "q"
+
+
+async def test_conversation_context_reaches_the_prompt(registry):
+    """A chat-launched job carries the turns its request refers to; the planner
+    must see them, and must still be told which part is the request."""
+    llm = FakeLLM({"planner": plan_json("alpha")})
+    planner = Planner(Deps(llm=llm), registry)
+
+    out = await planner.run({
+        "query": "analyse that",
+        "inputs": {CONVERSATION_INPUT_KEY: "user: the Q3 churn spike\nassistant: noted"},
+    })
+
+    assert out["plan"]["steps"] == [{"capability": "alpha", "depends_on": []}]
+    user_msg = next(m["content"] for m in llm.calls[0]["messages"] if m["role"] == "user")
+    assert "the Q3 churn spike" in user_msg
+    assert user_msg.endswith("Request to plan for:\nanalyse that")
+
+
+def test_planner_prompt_tells_the_model_what_the_excerpt_is_for(registry):
+    prompt = make_planner(registry).system_prompt()
+    assert "excerpt of the conversation" in prompt

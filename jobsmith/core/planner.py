@@ -15,7 +15,7 @@ from typing import Any
 from .deps import Deps
 from .profile import DEFAULT_PLANNER_TEMPLATE
 from .registry import CapabilityRegistry
-from .state import AgentState, NodeError, Plan
+from .state import CONVERSATION_INPUT_KEY, AgentState, NodeError, Plan
 
 
 class Planner:
@@ -48,6 +48,25 @@ class Planner:
 
     def system_prompt(self) -> str:
         return self.prompt_template.format(capabilities=self._render_capabilities())
+
+    @staticmethod
+    def user_message(state: AgentState) -> str:
+        """The request, prefixed by the conversation it came from when there is one.
+
+        Chat-launched jobs carry a bounded excerpt of the recent turns in
+        `inputs[CONVERSATION_INPUT_KEY]` (see chat/tools.py). It is background
+        material only — it exists so a request like "analyse that" still has a
+        referent — so the request itself stays clearly marked as the thing to
+        plan for.
+        """
+        conversation = (state.get("inputs") or {}).get(CONVERSATION_INPUT_KEY)
+        if not conversation:
+            return state["query"]
+        return (
+            "Conversation this request came from (background, do not plan for it):\n"
+            f"{conversation}\n\n"
+            f"Request to plan for:\n{state['query']}"
+        )
 
     # -------- Validation --------
 
@@ -118,7 +137,7 @@ class Planner:
             raw_response = await self.deps.llm.chat(
                 messages=[
                     {"role": "system", "content": self.system_prompt()},
-                    {"role": "user", "content": state["query"]},
+                    {"role": "user", "content": self.user_message(state)},
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.0,
