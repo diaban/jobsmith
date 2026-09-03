@@ -6,8 +6,14 @@ Two layers, so a new format never re-implements the layout:
                   provenance, optional annexes), built once from a Job
     Reporter      serializes that document to a file and returns a JobOutput
 
-`MarkdownReport` is the built-in one. HTML/PDF/PPTX would be other Reporters
-over the same document — that is the whole point of the split.
+`MarkdownReport` and `HtmlReport` (report_html.py) are the built-in ones:
+same document, same `build_document`, two serializers. PDF/PPTX would be more
+of them — that is the whole point of the split.
+
+One job, one deliverable: `Reporter.write` returns a single `JobOutput`, so a
+format is a *choice* (`make_reporter("html")`), not an addition. Handing back
+markdown *and* HTML for the same run is a protocol change
+(`write() -> list[JobOutput]`), not a new Reporter.
 
 Per-step material is asked of the capabilities themselves
 (`Capability.render_report`), never introspected here: the registry is
@@ -138,19 +144,27 @@ def format_step_usage(usage: Usage) -> str:
 class Reporter(Protocol):
     """Produces one output file for a job."""
 
+    format: str
+    extension: str
+
     def write(self, job: Job, directory: Path) -> JobOutput: ...
 
 
-class MarkdownReport:
-    """The default deliverable: one markdown file per job.
+class FileReporter:
+    """Everything the built-in Reporters share: build the document, write one
+    file for it, describe that file as a `JobOutput`.
+
+    A subclass supplies `format`, `extension` and `render(document)` — which
+    is genuinely all that differs between two formats of the same deliverable.
 
     `with_annexes` is a policy, not a structure: per-step material lives in
     the store and is served by the API/CLI, so the document stays a
     deliverable by default. Turn it on for a self-contained archive.
     """
 
-    format = "markdown"
-    extension = "md"
+    format = "text"
+    extension = "txt"
+    title = "Job report"
 
     def __init__(self, registry: Any = None, *, with_annexes: bool = False):
         self.registry = registry
@@ -162,8 +176,18 @@ class MarkdownReport:
         document = build_document(job, self.registry, with_annexes=self.with_annexes)
         path.write_text(self.render(document), encoding="utf-8")
         return JobOutput(
-            path=str(path), format=self.format, title="Job report", role="main"
+            path=str(path), format=self.format, title=self.title, role="main"
         )
+
+    def render(self, doc: JobDocument) -> str:
+        raise NotImplementedError
+
+
+class MarkdownReport(FileReporter):
+    """The default deliverable: one markdown file per job."""
+
+    format = "markdown"
+    extension = "md"
 
     def render(self, doc: JobDocument) -> str:
         lines = [f"# {doc.title}", "", doc.answer, ""]
@@ -203,3 +227,29 @@ class MarkdownReport:
             lines += ["", "<details>", f"<summary>Step output — {heading}</summary>", "",
                       body, "", "</details>"]
         return "\n".join(lines) + "\n"
+
+
+def make_reporter(
+    report_format: str = "markdown",
+    registry: Any = None,
+    *,
+    with_annexes: bool = False,
+) -> Reporter:
+    """Pick a Reporter by format name — the seam a composition root uses to
+    choose what a job hands back. Unknown names fail loudly: silently writing
+    markdown for someone who asked for HTML is worse than a traceback.
+    """
+    # Local import: report_html builds on this module, so importing it at the
+    # top would be a cycle. Selecting a format is not a hot path.
+    from .report_html import HtmlReport
+
+    reporters: dict[str, type[FileReporter]] = {
+        "markdown": MarkdownReport, "md": MarkdownReport,
+        "html": HtmlReport, "htm": HtmlReport,
+    }
+    cls = reporters.get((report_format or "").strip().lower())
+    if cls is None:
+        raise ValueError(
+            f"unknown report format {report_format!r} (known: markdown, html)"
+        )
+    return cls(registry, with_annexes=with_annexes)
