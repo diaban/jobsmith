@@ -6,7 +6,8 @@ they run and hands you a written report when they finish.
 
 Underneath, it is a domain-agnostic framework: a planner emits a DAG of
 pluggable **capabilities**, an executor fans them out in parallel, and every run
-is a persistent, trackable, cancellable **Job**.
+is a persistent, trackable, cancellable **Job**. One runtime serves any number
+of agents — a new one supplies only its capabilities and its voice.
 
 ```
 you> what can you do?
@@ -67,7 +68,7 @@ agent> and which one does LangGraph itself use?
 
 ---
 
-## Two ways to drive it
+## Driving it
 
 ### Chat (the default)
 
@@ -116,6 +117,23 @@ jobsmith jobs                    # another process sees it
 Conversations are rebuildable by id: `jobsmith chat --session <id>` resumes
 across a daemon restart, and picks up the announcement of any job that finished
 while you were away.
+
+### Which agent
+
+An **agent** is a pack of capabilities plus a profile — what the thing can do
+and how it speaks. Two ship: `default` (research → analysis → critique, needs
+nothing but a key) and `banking` (a domain example: document search, slide
+vision, French). Everything else — job engine, chat, CLI, API, persistence — is
+shared, so they run on exactly the same commands:
+
+```bash
+jobsmith --agent banking chat    # or: make chat AGENT=banking
+jobsmith --agent banking serve
+```
+
+`--agent` applies to whichever process owns the engine, so pass it to `serve`
+when a daemon is running. Writing your own is covered under
+[Capabilities](#capabilities).
 
 ---
 
@@ -205,6 +223,9 @@ Adding one:
    the sub-graph with `self.state_graph(...)`.
 2. Return it from an agent's capability pack in `agents/`.
 
+That is all — the planner prompt, the dispatch map and the merging step all
+derive from the registry.
+
 **External dependencies** — a vector store, an HTTP API, an MCP server — are
 declared as Protocols next to the capability that consumes them, and opened by
 the agent's `open_resources(stack)` on the app's `AsyncExitStack`, so they are
@@ -212,9 +233,6 @@ closed in reverse order when the app closes. When several capabilities need the
 same backend differently, share the *pool* and give each one its own adapter for
 the port it declared: capabilities run in parallel waves, so a raw shared
 connection is a bug waiting to happen.
-
-That is all — the planner prompt, the dispatch map and the merging step all
-derive from the registry.
 
 > **Invariant:** `build()` must use `self.state_graph(...)`, which pins the
 > sub-graph's `output_schema`. Without it, two capabilities finishing in the
@@ -237,14 +255,12 @@ jobsmith/
 ```
 
 Two boundaries carry the design. **`agents/`** is the only place a domain
-lives: adding an agent touches no shared code. **`service.py`** is the only
-place the use cases live: the HTTP API and the CLI are adapters over it, and
-the CLI cannot tell whether the work runs in this process or in a daemon —
-which is what makes a UI or a bot one more adapter rather than a rewrite.
-
-Everything but `agents/` is shared. **Adding an agent touches no shared code**:
-write its capabilities, register an `AgentDefinition`, and the planner, job
-engine, chat, CLI and API all serve it — `jobsmith --agent <name> chat`.
+lives: adding one means writing its capabilities and registering an
+`AgentDefinition` — the planner, job engine, chat, CLI and API all serve it
+with no shared code touched. **`service.py`** is the only place the use cases
+live: the HTTP API and the CLI are adapters over it, and the CLI cannot tell
+whether the work runs in this process or in a daemon — which is what makes a
+UI or a bot one more adapter rather than a rewrite.
 
 Two LLM stacks, deliberately: the chat layer uses **LangChain** models (they
 handle per-provider tool formats), the job engine uses a dependency-light
