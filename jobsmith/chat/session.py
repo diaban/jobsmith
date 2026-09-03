@@ -7,11 +7,11 @@ Composition (all prebuilt LangChain/LangGraph, no homemade tool plumbing):
 - "Complexity detection" IS the function calling: the system prompt tells the
   model to answer simple things directly and call `launch_job` for complex
   tasks. The tool interrupt()s for human approval (see chat/tools.py).
-- Job completions are surfaced by `JobNotificationMiddleware`, which wraps the
-  model call and appends a transient system notice (final answer + report
-  path) for finished, unannounced jobs of this session. Wrapping the *request*
-  keeps the notice out of the persisted thread: what stays in the conversation
-  is the agent's own synthesis reply.
+- Job completions AND in-flight progress are surfaced by
+  `JobNotificationMiddleware`, which wraps the model call and injects transient
+  system notices for this session's jobs. Wrapping the *request* keeps them out
+  of the persisted thread: what stays in the conversation is the agent's own
+  reply.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from langchain_core.messages import SystemMessage
 
 from ..jobs.manager import JobManager
 from ..jobs.models import Job, JobStatus
-from .tools import make_job_tools
+from .tools import make_job_tools, progress_line, progress_signature
 
 DEFAULT_CHAT_SYSTEM_PROMPT = """You are an assistant that can launch background jobs for complex tasks.
 
@@ -35,19 +35,47 @@ DEFAULT_CHAT_SYSTEM_PROMPT = """You are an assistant that can launch background 
 - Jobs run in the background — after launching one, keep chatting normally.
 - When a [job update] notice appears, give the user a short synthesis
   (2-3 sentences) of the result and the path to the markdown report file.
+- A [job progress] notice means a job is STILL RUNNING: there is no result yet.
+  Use it to answer "how is it going?", or to add one short clause when it is
+  genuinely useful ("(the research step is done, analysis is running)"). Never
+  present it as an answer, and never make the whole reply about it.
 - Use job_status / list_my_jobs / cancel_job to manage jobs when asked."""
 
 NOTICE_MARKER = "background jobs finished"
+PROGRESS_MARKER = "background jobs still running"
+
+IN_FLIGHT = (JobStatus.QUEUED, JobStatus.RUNNING)
+MAX_PROGRESS_JOBS = 5   # jobs detailed in one progress notice; the rest are counted
 
 
 class JobNotificationMiddleware(AgentMiddleware):
-    """Injects finished-job notices into the model request, then marks them
-    announced — only once the model has actually seen them."""
+    """Injects job notices into the model request, then records them as seen —
+    only once the model has actually received them.
+
+    Two notices, for two different needs:
+
+    - **completion** must never be missed, so it is pushed and marked announced
+      exactly once, persisted on the job itself;
+    - **progress** is pushed too, but only on the turns where it *changed*
+      (`progress_signature`), and remembered in memory only. Pushing it every
+      turn would spend tokens to repeat yesterday's news; leaving it to a tool
+      call would mean the model only knows when the user thinks to ask — and
+      the whole point is that the wait is opaque. So: push the one-line digest
+      when something moved, and keep `job_status` as the pull path for detail.
+
+    Both ride on `request.override(...)` rather than state, so nothing
+    accumulates in the persisted thread: a job reporting progress on five
+    consecutive turns leaves zero notices behind it.
+    """
 
     def __init__(self, manager: JobManager, session_id: str):
         super().__init__()
         self.manager = manager
         self.session_id = session_id
+        # job_id → last progress signature the model was shown. In memory
+        # because it is a conversational nicety, not a guarantee: after a
+        # daemon restart the worst case is one repeated progress line.
+        self._reported: dict[str, str] = {}
 
     @staticmethod
     def _notice_for(job: Job) -> str:
@@ -59,19 +87,72 @@ class JobNotificationMiddleware(AgentMiddleware):
             )
         return f"Job {job.job_id[:8]} ({job.query[:60]!r}) FAILED: {job.error}"
 
-    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+    async def _finished_notice(self) -> tuple[SystemMessage | None, list[Job]]:
         finished = await self.manager.list_finished_unannounced(self.session_id)
         if not finished:
-            return await handler(request)
-
-        notice = SystemMessage(
+            return None, []
+        return SystemMessage(
             f"[job update] The following {NOTICE_MARKER}. Announce each to the "
             "user now: a short synthesis plus the report file path.\n\n"
             + "\n\n".join(self._notice_for(job) for job in finished)
-        )
-        response = await handler(request.override(messages=[*request.messages, notice]))
+        ), finished
+
+    async def _in_flight(self) -> tuple[list[Job], int]:
+        """The session's running/queued jobs, newest first, loaded in full.
+
+        `list_jobs` returns index summaries, which carry the status and the
+        finished steps but not the plan — so the few newest in-flight jobs are
+        re-read in full, which is what lets the notice say "2/4 steps done"
+        instead of just "running". The cap bounds both the store reads and the
+        tokens: beyond it the notice only counts.
+        """
+        summaries = await self.manager.list_jobs(session_id=self.session_id, limit=100)
+        in_flight = [job for job in summaries if job.status in IN_FLIGHT]
+        loaded = [await self.manager.get_job(job.job_id) for job in in_flight[:MAX_PROGRESS_JOBS]]
+        # A job can settle between the listing and the reload; leave it to the
+        # completion notice rather than reporting it as still running.
+        shown = [job for job in loaded if job is not None and job.status in IN_FLIGHT]
+        return shown, max(len(in_flight) - len(shown), 0)
+
+    async def _progress_notice(self) -> tuple[SystemMessage | None, list[Job]]:
+        shown, others = await self._in_flight()
+        moved = [
+            job for job in shown
+            if progress_signature(job) != self._reported.get(job.job_id)
+        ]
+        if not moved:
+            return None, shown
+        lines = [progress_line(job) for job in moved]
+        if others:
+            lines.append(f"(+{others} more still running)")
+        return SystemMessage(
+            f"[job progress] The following {PROGRESS_MARKER} — no results yet, "
+            "do not announce them as finished. Mention the state only if the "
+            "user asks or it is genuinely useful.\n"
+            + "\n".join(lines)
+        ), shown
+
+    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+        finished_notice, finished = await self._finished_notice()
+        progress_notice, in_flight_shown = await self._progress_notice()
+        if finished_notice is None and progress_notice is None:
+            return await handler(request)
+
+        messages = list(request.messages)
+        if progress_notice is not None:
+            # Background, not an instruction: slotted *before* the latest turn
+            # so the conversation's last message stays the last message — a
+            # status line must not read as the thing being replied to.
+            messages.insert(max(len(messages) - 1, 0), progress_notice)
+        if finished_notice is not None:
+            messages.append(finished_notice)   # this one IS the instruction: announce now
+        response = await handler(request.override(messages=messages))
+        # Only now that the model has actually seen them: mark completions
+        # announced, and re-baseline progress (rebuilt from the in-flight set,
+        # so a job that settles drops out of the map instead of lingering).
         for job in finished:
             await self.manager.mark_announced(job.job_id)
+        self._reported = {job.job_id: progress_signature(job) for job in in_flight_shown}
         return response
 
 

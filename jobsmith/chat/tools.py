@@ -25,6 +25,7 @@ job needs the referent, not the thread.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from typing import Any
 
 from langchain.tools import ToolRuntime
@@ -34,7 +35,7 @@ from langgraph.types import interrupt
 
 from ..core.state import CONVERSATION_INPUT_KEY
 from ..jobs.manager import JobManager
-from ..jobs.models import Job
+from ..jobs.models import Job, JobStatus
 
 # Bounds on the conversation excerpt attached to a launch (~400 tokens worst case).
 MAX_CONTEXT_TURNS = 6      # most recent user/assistant turns kept
@@ -90,6 +91,75 @@ def recent_conversation(messages: Iterable[Any]) -> str:
 
 def _line(job: Job) -> str:
     return f"{job.job_id[:8]} [{job.status.value}] {job.query[:60]!r}"
+
+
+# ---------------- Progress, derived from what is already persisted ----------
+#
+# Nothing here adds bookkeeping to the job engine: `plan` says what the DAG is
+# and `step_finished_at` says what has landed, which is enough to say where a
+# run currently stands. Shared by the `job_status` tool (pull) and the
+# notification middleware (push).
+
+
+def running_steps(job: Job) -> list[str]:
+    """Plan steps whose dependencies have all landed but which have not
+    finished yet — i.e. the executor's current wave.
+
+    Empty for a job that is not RUNNING: a cancelled or failed run leaves
+    unfinished steps behind, and calling those "running" would be a lie.
+    """
+    if not job.plan or job.status is not JobStatus.RUNNING:
+        return []
+    done = job.step_finished_at
+    return [
+        step["capability"]
+        for step in job.plan["steps"]
+        if step["capability"] not in done
+        and all(dep in done for dep in step.get("depends_on", []))
+    ]
+
+
+def elapsed_since(timestamp: str) -> str:
+    """Coarse human duration since an ISO timestamp ("" when unparseable)."""
+    try:
+        seconds = int((datetime.now(UTC) - datetime.fromisoformat(timestamp)).total_seconds())
+    except (TypeError, ValueError):
+        return ""
+    seconds = max(seconds, 0)
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}"
+
+
+def progress_line(job: Job) -> str:
+    """One compact line: how far an in-flight job has got.
+
+    Deliberately one line: it is re-injected (fresh, never accumulated) into a
+    model request whenever it changes, so its cost is paid again every time.
+    """
+    head = f"{job.job_id[:8]} {job.query[:50]!r}"
+    tail = f" · {age} elapsed" if (age := elapsed_since(job.created_at)) else ""
+    if not job.plan:
+        return f"{head}: {job.status.value}, planning{tail}"
+    steps = [s["capability"] for s in job.plan["steps"]]
+    done = [name for name in steps if name in job.step_finished_at]
+    parts = [f"{len(done)}/{len(steps)} steps done"]
+    if done:
+        parts[0] += f" ({', '.join(done)})"
+    if running := running_steps(job):
+        parts.append(f"running {', '.join(running)}")
+    return f"{head}: {' · '.join(parts)}{tail}"
+
+
+def progress_signature(job: Job) -> str:
+    """What must change before a job is worth reporting again: its status, the
+    shape of its plan, and how many steps have landed. Elapsed time is
+    deliberately excluded — otherwise every single turn would look like news.
+    """
+    plan_size = len(job.plan["steps"]) if job.plan else 0
+    return f"{job.status.value}:{plan_size}:{len(job.step_finished_at)}"
 
 
 async def _find(manager: JobManager, session_id: str, prefix: str) -> Job | None:
@@ -151,16 +221,27 @@ def make_job_tools(manager: JobManager, session_id: str) -> list[Any]:
 
     @tool
     async def job_status(job_id_prefix: str) -> str:
-        """Get the status and progress (finished steps) of one of this
-        session's jobs, by id prefix."""
+        """Get the detailed status of one of this session's jobs, by id prefix:
+        every plan step marked done / running / pending, how long it has been
+        going, the report path once there is one.
+
+        Call it when the user wants more detail than the short [job progress]
+        notice carries, or asks about a job that notice does not mention (an
+        older, already finished one)."""
         job = await _find(manager, session_id, job_id_prefix)
         if job is None:
             return f"No unique job of this session matches prefix {job_id_prefix!r}."
         parts = [_line(job)]
+        if age := elapsed_since(job.created_at):
+            parts[0] += f" · {age} elapsed"
         if job.plan:
+            wave = set(running_steps(job))
             for step in job.plan["steps"]:
                 name = step["capability"]
-                mark = "done" if name in job.step_finished_at else "pending"
+                if name in job.step_finished_at:
+                    mark = f"done at {job.step_finished_at[name]}"
+                else:
+                    mark = "running" if name in wave else "pending"
                 parts.append(f"  - {name}: {mark}")
         if job.report_path:
             parts.append(f"report: {job.report_path}")
