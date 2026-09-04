@@ -18,6 +18,14 @@ the last completed superstep, and the job is marked CANCELLED. With no task
 registered in this process (another process, or already finished), a CANCELLED
 tombstone is written best-effort — true cross-process preemption is out of
 scope for v1.
+
+Resume semantics: a stopped job kept its checkpoint, so `resume_job` re-enters
+the thread instead of paying for the whole plan again. Only the steps that had
+not finished run; the ones already in the store are kept as they are, and the
+run settles through the same persistence, events and reporting path as a first
+attempt. What is *not* here: re-running part of the DAG of a job that already
+finished — that needs a way to say which results are stale, and is its own
+feature.
 """
 from __future__ import annotations
 
@@ -28,12 +36,18 @@ from pathlib import Path
 from typing import Any
 
 from ..core.state import NodeError
-from ..core.usage import current_ledger, usage_ledger
+from ..core.usage import Usage, UsageLedger, current_ledger, usage_ledger
 from .events import InProcessEvents, JobEvents, job_event
 from .models import Job, JobStatus, now_iso
 from .report import MarkdownReport
 from .repository import JobRepository, StoreJobRepository
 from .runner import GraphRunner, JobUpdate, NodeErrors, PlanReady, StepFinished, Terminal
+
+# Statuses a job can be resumed from — see `JobManager._begin_resume`.
+RESUMABLE = (JobStatus.CANCELLED, JobStatus.FAILED)
+
+# Ledger scope carrying what previous attempts of a resumed job already spent.
+EARLIER_ATTEMPTS = "earlier attempts"
 
 
 class JobManager:
@@ -95,22 +109,88 @@ class JobManager:
 
     async def run_job(self, job_id: str) -> Job:
         """Run a QUEUED job to completion, persisting progress as it streams."""
+        job = await self._require(job_id)
+        if job.status is not JobStatus.QUEUED:
+            raise ValueError(f"job {job_id} is {job.status.value}, expected queued")
+        await self._begin(job)
+        return await self._drive(job, self.runner.stream(job.job_id, job.query, job.inputs))
+
+    async def resume_job(self, job_id: str) -> Job:
+        """Re-enter a stopped job's checkpoint and run it to completion.
+
+        See `_begin_resume` for what may be resumed and why.
+        """
+        job = await self._begin_resume(job_id)
+        return await self._drive(job, self.runner.resume(job.job_id), resumed=True)
+
+    async def _require(self, job_id: str) -> Job:
         job = await self.get_job(job_id)
         if job is None:
             raise KeyError(f"unknown job: {job_id}")
-        if job.status is not JobStatus.QUEUED:
-            raise ValueError(f"job {job_id} is {job.status.value}, expected queued")
+        return job
 
+    async def _begin(self, job: Job) -> None:
+        """Mark the job RUNNING before anything is driven, so a caller that
+        starts it in the background already sees the new status."""
         job.status = JobStatus.RUNNING
         await self._persist_summary(job)
 
+    async def _begin_resume(self, job_id: str) -> Job:
+        """Check that this job can be resumed, and open the attempt.
+
+        Resumable = **stopped with work left to do**, which is exactly two
+        cases, both of which kept their checkpoint:
+
+        - CANCELLED — `cancel_job` interrupted a run mid-capability;
+        - FAILED after `recover_interrupted()` — the process died mid-run.
+
+        The status alone is not enough: a job that FAILED *because a node
+        raised* reached a terminal node (`escalate`/`user_error`), so its
+        thread has nothing left to run. Re-entering it would replay the last
+        superstep and yield nothing — a silent no-op that would look like a
+        successful resume. The runner is asked instead, and an empty
+        `pending()` is refused out loud. Same for a job cancelled before it
+        ever started: it has no checkpoint, and `run_job` is what it needs.
+
+        DONE is deliberately not resumable — pushing a finished job further is
+        a different feature (re-running part of the DAG), not this one.
+        """
+        job = await self._require(job_id)
+        if job.status not in RESUMABLE:
+            raise ValueError(
+                f"job {job_id} is {job.status.value}, expected "
+                f"{' or '.join(s.value for s in RESUMABLE)}"
+            )
+        if not await self.runner.pending(job_id):
+            raise ValueError(
+                f"job {job_id} has no checkpoint to resume from: it either never "
+                f"started or already reached its last step"
+            )
+        job.error = None          # the stopped attempt's message is stale now
+        await self._begin(job)
+        return job
+
+    async def _drive(self, job: Job, updates: Any, *, resumed: bool = False) -> Job:
+        """Fold a run's updates into the job, and settle it.
+
+        The single place a run is driven, whichever way it was entered: a
+        resumed attempt therefore persists, reports and emits events exactly
+        like a first one.
+        """
         errors: list[NodeError] = []
         # One ledger per run — a fresh one, so a job launched from inside
         # another run can never bill its parent. Every LLM call underneath
         # books into it, attributed to the graph step that made it.
-        with usage_ledger() as ledger:
+        ledger = UsageLedger()
+        if resumed and job.usage:
+            # A resume is a second attempt at ONE job, and the tokens the
+            # first attempt burned are just as spent. Seeding the ledger keeps
+            # `job.usage` the job's total cost rather than the last attempt's;
+            # the per-step breakdown stays in each result's own `meta`.
+            ledger.add(EARLIER_ATTEMPTS, Usage.from_dict(job.usage))
+        with usage_ledger(ledger):
             try:
-                async for update in self.runner.stream(job.job_id, job.query, job.inputs):
+                async for update in updates:
                     await self._apply(job, update, errors)
             except asyncio.CancelledError:
                 job.status = JobStatus.CANCELLED
@@ -153,7 +233,24 @@ class JobManager:
 
     def start_job(self, job_id: str) -> asyncio.Task:
         """Fire-and-forget: run the job in a background task (cancellable)."""
-        task = asyncio.create_task(self.run_job(job_id), name=f"job:{job_id}")
+        return self._background(job_id, self.run_job(job_id))
+
+    async def start_resume(self, job_id: str) -> Job:
+        """Resume in a background task, and return the job now RUNNING.
+
+        Async where `start_job` is sync, on purpose: a resume can be *refused*
+        (wrong status, no checkpoint), and that refusal has to reach the
+        caller rather than die inside a background task nobody awaits. So the
+        checks run here, and only the driving is backgrounded.
+        """
+        job = await self._begin_resume(job_id)
+        self._background(job.job_id, self._drive(job, self.runner.resume(job.job_id),
+                                                 resumed=True))
+        return job
+
+    def _background(self, job_id: str, coro: Any) -> asyncio.Task:
+        """Run a job's coroutine as a task this manager can cancel."""
+        task = asyncio.create_task(coro, name=f"job:{job_id}")
         self._tasks[job_id] = task
         task.add_done_callback(lambda _: self._tasks.pop(job_id, None))
         return task

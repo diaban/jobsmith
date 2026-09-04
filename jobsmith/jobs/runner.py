@@ -8,6 +8,10 @@ and a test can drive it with a fake runner.
 
 Reading progress from the stream (rather than instrumenting nodes) is what
 keeps graph nodes job-agnostic: they do not know a Job exists.
+
+There are two ways in — `stream()` starts a run from the job's query,
+`resume()` re-enters the thread's checkpoint — and both are translated by the
+same code, so the JobManager folds a resumed run exactly like a first one.
 """
 from __future__ import annotations
 
@@ -56,16 +60,52 @@ class GraphRunner:
     def __init__(self, graph: Any):
         self.graph = graph
 
+    @staticmethod
+    def _config(job_id: str) -> dict[str, Any]:
+        # job_id doubles as the LangGraph thread_id: the checkpoint of a
+        # cancelled or interrupted run stays addressable for a future resume.
+        return {"configurable": {"thread_id": job_id}}
+
     async def stream(
         self, job_id: str, query: str, inputs: dict[str, Any]
     ) -> AsyncIterator[JobUpdate]:
-        # job_id doubles as the LangGraph thread_id: the checkpoint of a
-        # cancelled or interrupted run stays addressable for a future resume.
-        async for update in self.graph.astream(
+        async for update in self._translate(self.graph.astream(
             {"query": query, "inputs": inputs, "job_id": job_id},
-            config={"configurable": {"thread_id": job_id}},
+            config=self._config(job_id),
             stream_mode="updates",
+        )):
+            yield update
+
+    async def resume(self, job_id: str) -> AsyncIterator[JobUpdate]:
+        """Re-enter the thread's checkpoint instead of starting a new run.
+
+        `None` as input is LangGraph's "carry on from where you stopped": the
+        last completed superstep is replayed from the checkpoint and only the
+        tasks that were still pending are executed. A capability interrupted
+        mid-flight therefore runs again from its start, while the steps that
+        had already finished are *not* re-emitted — which is why the caller
+        must keep the results it loaded from the repository.
+
+        Only call this when `pending()` is non-empty: on a thread with no
+        checkpoint LangGraph raises (it has no input to start from).
+        """
+        async for update in self._translate(
+            self.graph.astream(None, config=self._config(job_id), stream_mode="updates")
         ):
+            yield update
+
+    async def pending(self, job_id: str) -> tuple[str, ...]:
+        """Nodes the thread would run next — what a resume would execute.
+
+        Empty means there is nothing to resume: either no checkpoint exists
+        (the run never started) or the graph already reached a terminal node.
+        """
+        snapshot = await self.graph.aget_state(self._config(job_id))
+        return tuple(snapshot.next or ())
+
+    async def _translate(self, stream: AsyncIterator[dict]) -> AsyncIterator[JobUpdate]:
+        """LangGraph `updates` events → the domain updates above."""
+        async for update in stream:
             for node, value in update.items():
                 if not isinstance(value, dict):
                     continue

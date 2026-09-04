@@ -20,7 +20,7 @@ from jobsmith.cli.main import build_parser
 from jobsmith.service import LocalAgentService
 
 CLIENT_OPS = ("new_session", "send", "approve", "list_jobs", "get_job",
-              "cancel_job", "launch_job", "get_report", "resolve_job")
+              "cancel_job", "resume_job", "launch_job", "get_report", "resolve_job")
 
 
 def daemon_client_over(app) -> DaemonClient:
@@ -132,6 +132,7 @@ def test_parser_shape():
     assert parser.parse_args(["serve", "--port", "9100"]).port == 9100
     assert parser.parse_args(["chat", "--session", "abc"]).session == "abc"
     assert parser.parse_args(["job", "1a2b"]).job_id == "1a2b"
+    assert parser.parse_args(["resume", "1a2b"]).job_id == "1a2b"
     assert parser.parse_args([]).command is None      # bare call -> main() maps to chat
 
 
@@ -151,3 +152,26 @@ async def test_embedded_run_actually_runs_the_job(tmp_path, capsys):
         assert "no daemon" in capsys.readouterr().err      # and said why it waited
     finally:
         await client.aclose()
+
+
+async def test_resume_command_restarts_a_stopped_job(store, checkpointer, tmp_path, capsys):
+    """`jobsmith resume <prefix>` finishes a cancelled job, and refuses one
+    that has nothing left to run with a non-zero exit code."""
+    from types import SimpleNamespace
+
+    from test_jobs import cancelled_midway
+
+    from jobsmith.cli.main import cmd_resume
+
+    manager, job, _alpha, slow = await cancelled_midway(store, checkpointer, tmp_path)
+    client = LocalAgentService(manager, lambda session_id=None: None)
+    slow.delay = 0.0
+
+    assert await cmd_resume(client, SimpleNamespace(job_id=job.job_id[:8])) == 0
+    assert (await client.get_job(job.job_id))["status"] == "done"
+    # embedded: the command waited here instead of orphaning the resumed run
+    assert "no daemon" in capsys.readouterr().err
+
+    assert await cmd_resume(client, SimpleNamespace(job_id=job.job_id[:8])) == 1
+    assert "cannot resume" in capsys.readouterr().out
+    assert await cmd_resume(client, SimpleNamespace(job_id="zzzz")) == 1

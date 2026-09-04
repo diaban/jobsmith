@@ -10,6 +10,7 @@ import asyncio
 
 import pytest
 
+from jobsmith.core.usage import record_usage
 from jobsmith.jobs.events import InProcessEvents, job_event
 from jobsmith.jobs.manager import JobManager
 from jobsmith.jobs.models import Job, JobStatus
@@ -18,14 +19,32 @@ from jobsmith.jobs.runner import NodeErrors, PlanReady, StepFinished, Terminal
 
 
 class FakeRunner:
-    """Replays a scripted list of domain updates, as a real run would."""
+    """Replays a scripted list of domain updates, as a real run would.
 
-    def __init__(self, *updates):
+    `pending` is what the graph's checkpoint would still have to run — the
+    only thing the manager asks before resuming; `on_resume` lets a test do
+    something (spend, say) inside the resumed run.
+    """
+
+    def __init__(self, *updates, pending=(), on_resume=None):
         self.updates = updates
+        self.pending_nodes = tuple(pending)
+        self.on_resume = on_resume
         self.calls: list[tuple[str, str, dict]] = []
+        self.resumed: list[str] = []
 
     async def stream(self, job_id, query, inputs):
         self.calls.append((job_id, query, inputs))
+        for update in self.updates:
+            yield update
+
+    async def pending(self, job_id):
+        return self.pending_nodes
+
+    async def resume(self, job_id):
+        self.resumed.append(job_id)
+        if self.on_resume is not None:
+            self.on_resume()
         for update in self.updates:
             yield update
 
@@ -69,10 +88,10 @@ class DictRepository:
 PLAN = {"rationale": "because", "steps": [{"capability": "alpha", "depends_on": []}]}
 
 
-def make_manager(tmp_path, *updates, **kwargs):
+def make_manager(tmp_path, *updates, pending=(), on_resume=None, **kwargs):
     return JobManager(
         repository=DictRepository(),
-        runner=FakeRunner(*updates),
+        runner=FakeRunner(*updates, pending=pending, on_resume=on_resume),
         reports_dir=tmp_path / "artifacts",
         **kwargs,
     )
@@ -127,6 +146,51 @@ async def test_a_broken_runner_fails_the_job_rather_than_the_caller(tmp_path):
     done = await mgr.run_job(job.job_id)
     assert done.status is JobStatus.FAILED
     assert "engine down" in done.error
+
+
+async def test_resuming_goes_through_the_runner_port_too(tmp_path):
+    """A resume asks the runner what is still pending and re-enters it — no
+    graph, no checkpoint API, nothing the manager knows about LangGraph."""
+    mgr = make_manager(tmp_path, Terminal("answer", "Finished on the second try.", None),
+                       pending=("cap_alpha",))
+    job = await mgr.create_job("resume me")
+    await mgr.cancel_job(job.job_id)
+
+    done = await mgr.resume_job(job.job_id)
+    assert done.status is JobStatus.DONE
+    assert done.final_answer == "Finished on the second try."
+    assert mgr.runner.resumed == [job.job_id]   # re-entered...
+    assert mgr.runner.calls == []               # ...never re-run from the query
+    assert done.report_path is not None         # and it still produces its deliverable
+
+
+async def test_resume_is_refused_when_the_runner_has_nothing_pending(tmp_path):
+    mgr = make_manager(tmp_path, Terminal("answer", "unreachable", None))  # pending: ()
+    job = await mgr.create_job("q")
+    await mgr.cancel_job(job.job_id)
+    with pytest.raises(ValueError, match="no checkpoint to resume from"):
+        await mgr.resume_job(job.job_id)
+    assert mgr.runner.resumed == []
+
+
+async def test_a_resumed_attempt_bills_on_top_of_the_stopped_one(tmp_path):
+    """`job.usage` is what the JOB cost, not what its last attempt cost — the
+    tokens the interrupted attempt burned were spent all the same."""
+    mgr = make_manager(
+        tmp_path, Terminal("answer", "Done at last.", None), pending=("cap_alpha",),
+        on_resume=lambda: record_usage("claude-opus-5", input_tokens=10, output_tokens=5),
+    )
+    job = await mgr.create_job("expensive")
+    await mgr.cancel_job(job.job_id)
+    mgr.repo.summaries[job.job_id]["usage"] = {
+        "input_tokens": 100, "output_tokens": 50, "calls": 1,
+        "cost_usd": 0.5, "models": ["claude-opus-5"],
+    }
+
+    done = await mgr.resume_job(job.job_id)
+    assert done.usage["calls"] == 2
+    assert (done.usage["input_tokens"], done.usage["output_tokens"]) == (110, 55)
+    assert done.usage["cost_usd"] > 0.5
 
 
 async def test_manager_refuses_to_be_built_without_a_backing(tmp_path):

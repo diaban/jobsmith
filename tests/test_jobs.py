@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from conftest import FakeLLM, plan_json
@@ -37,6 +38,47 @@ class SlowEcho(Capability):
         g.set_entry_point("work")
         g.add_edge("work", END)
         return g.compile()
+
+
+class CountingEcho(SlowEcho):
+    """Echoes how many times it has run, so a re-run shows up in the result."""
+
+    def __init__(self, name: str, **kwargs):
+        super().__init__(name, **kwargs)
+        self.runs = 0
+
+    async def work(self, state: CapabilityBaseState) -> dict:
+        self.runs += 1
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        return self._emit_success({"echo": f"{self.spec.name}#{self.runs}"})
+
+
+async def cancelled_midway(store, checkpointer, tmp_path):
+    """A job stopped *inside* its second step: one result stored, one pending.
+
+    The shape every resume test needs — and the one a job really stops in,
+    since a cancellation lands wherever the run happened to be. Returns the
+    manager, the job, and the two capabilities (mutate `slow.delay` to let the
+    interrupted step finish instantly when the run is resumed).
+    """
+    alpha, slow = CountingEcho("alpha"), CountingEcho("slow", delay=30.0)
+    llm = FakeLLM(
+        {"planner": plan_json("alpha", "slow", deps={"slow": ["alpha"]})},
+        default="A sufficiently long final answer for the job test.",
+    )
+    mgr = make_manager(store, checkpointer, tmp_path, caps=[alpha, slow], llm=llm)
+    job = await mgr.create_job("a job worth resuming")
+    mgr.start_job(job.job_id)
+    for _ in range(500):                       # wait until `slow` is actually running
+        await asyncio.sleep(0.01)
+        if slow.runs:
+            break
+    assert slow.runs == 1, "the second step never started"
+    stopped = await mgr.cancel_job(job.job_id)
+    assert stopped.status is JobStatus.CANCELLED
+    assert set(stopped.results) == {"alpha"}   # the finished step was persisted
+    return mgr, job, alpha, slow
 
 
 def make_manager(store, checkpointer, tmp_path, *, caps=None, llm=None) -> JobManager:
@@ -146,6 +188,87 @@ async def test_cancel_tombstone_without_task(store, checkpointer, tmp_path):
     await mgr.run_job(job2.job_id)
     after = await mgr.cancel_job(job2.job_id)
     assert after.status is JobStatus.DONE
+
+
+async def test_resume_finishes_a_cancelled_job_without_redoing_finished_steps(
+    store, checkpointer, tmp_path
+):
+    """The point of resuming: the steps already paid for are kept, only the
+    interrupted one runs again — and the job ends exactly like a normal run."""
+    mgr, job, alpha, slow = await cancelled_midway(store, checkpointer, tmp_path)
+
+    slow.delay = 0.0                              # the pending step can finish now
+    done = await mgr.resume_job(job.job_id)
+
+    assert done.status is JobStatus.DONE
+    assert alpha.runs == 1                        # the finished step was NOT re-run
+    assert slow.runs == 2                         # the interrupted one started over
+    assert done.results["alpha"]["data"]["echo"] == "alpha#1"   # the original result
+    assert done.results["slow"]["data"]["echo"] == "slow#2"
+    # the stored result of the finished step was left untouched
+    kept = await store.aget(("jobs", job.job_id, "results"), "alpha")
+    assert kept.value["data"]["echo"] == "alpha#1"
+    # the plan came back from the repository — a resumed stream never replans
+    assert [s["capability"] for s in done.plan["steps"]] == ["alpha", "slow"]
+    # and the deliverable is produced the same way a first attempt produces it
+    assert done.report_path is not None
+    assert "final answer" in Path(done.report_path).read_text()
+
+
+async def test_resume_settles_a_job_its_process_died_on(store, checkpointer, tmp_path):
+    """`recover_interrupted` marks a killed run FAILED but keeps its
+    checkpoint. A *new process* over the same store must be able to finish it."""
+    mgr, job, alpha, slow = await cancelled_midway(store, checkpointer, tmp_path)
+    # what a killed process actually leaves behind: a RUNNING record + checkpoint
+    record = await store.aget(("jobs", "index"), job.job_id)
+    await store.aput(("jobs", "index"), job.job_id, record.value | {"status": "running"})
+
+    # a fresh manager and a fresh graph over the same store and checkpointer
+    restarted = make_manager(store, checkpointer, tmp_path, caps=[alpha, slow],
+                             llm=FakeLLM(default="A sufficiently long final answer."))
+    (stale,) = await restarted.recover_interrupted()
+    assert stale.status is JobStatus.FAILED and "interrupted" in stale.error
+
+    slow.delay = 0.0
+    done = await restarted.resume_job(job.job_id)
+    assert done.status is JobStatus.DONE
+    assert done.error is None                     # the interrupted message is stale
+    assert alpha.runs == 1                        # still not re-run, across processes
+
+
+async def test_resume_refuses_a_job_with_nothing_left_to_run(store, checkpointer, tmp_path):
+    """FAILED is not a licence to resume: a run that reached `escalate` has an
+    empty checkpoint frontier, and re-entering it would silently do nothing."""
+    class ExplodingGenLLM(FakeLLM):
+        async def chat(self, messages, **kwargs):
+            if "planner" in self._system_of(messages):
+                return plan_json("alpha")
+            raise RuntimeError("llm down")
+
+    mgr = make_manager(store, checkpointer, tmp_path, llm=ExplodingGenLLM())
+    job = await mgr.create_job("q")
+    failed = await mgr.run_job(job.job_id)
+    assert failed.status is JobStatus.FAILED and failed.terminal_kind == "escalated"
+    with pytest.raises(ValueError, match="no checkpoint to resume from"):
+        await mgr.resume_job(job.job_id)
+
+    # a job cancelled before it ever started has no checkpoint at all
+    never_ran = await mgr.create_job("q2")
+    await mgr.cancel_job(never_ran.job_id)
+    with pytest.raises(ValueError, match="no checkpoint to resume from"):
+        await mgr.resume_job(never_ran.job_id)
+
+
+async def test_resume_refuses_wrong_statuses(store, checkpointer, tmp_path):
+    mgr = make_manager(store, checkpointer, tmp_path)
+    job = await mgr.create_job("q")
+    with pytest.raises(ValueError, match="expected cancelled or failed"):
+        await mgr.resume_job(job.job_id)          # QUEUED: `run_job` is what it needs
+    await mgr.run_job(job.job_id)
+    with pytest.raises(ValueError, match="expected cancelled or failed"):
+        await mgr.resume_job(job.job_id)          # DONE: iterating is another feature
+    with pytest.raises(KeyError):
+        await mgr.resume_job("nonexistent")
 
 
 async def test_report_written_on_done(store, checkpointer, tmp_path):

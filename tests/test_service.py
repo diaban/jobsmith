@@ -81,5 +81,13 @@ async def test_identical_answers_through_either_backing(
         assert report.startswith("# ")
         assert await client.get_report("nope") is None
         assert await client.get_job("nope") is None
+
+        # a refusal must read the same on both sides: the HTTP status code is
+        # translated back into the port's dict, never leaked as an exception
+        refused = await client.resume_job(job["job_id"])
+        assert refused["status"] == "done"
+        assert "expected cancelled or failed" in refused["error"]
+        assert (await client.resume_job("nope")) == {
+            "job_id": "nope", "status": "unknown", "error": "unknown job: nope"}
     finally:
         await client.aclose()

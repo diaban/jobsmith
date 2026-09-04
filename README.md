@@ -83,6 +83,7 @@ propose a job; you approve. In-REPL commands:
 | `/bg <text>` | skip the chat, run it as a job now |
 | `/image <key>` | attach an image input to the next `/bg` job |
 | `/cancel <id>` | cancel a running job |
+| `/resume <id>` | restart a stopped job from its checkpoint |
 | `/quit` | leave (jobs keep running if a daemon owns them) |
 
 ### CLI
@@ -95,6 +96,7 @@ jobsmith job <id-prefix>         # plan, steps, results, answer
 jobsmith report <id-prefix>      # print the markdown deliverable
 jobsmith outputs <id-prefix>     # list the files the job produced
 jobsmith cancel <id-prefix>
+jobsmith resume <id-prefix>       # restart a stopped job from its checkpoint
 ```
 
 Ids can be given by prefix. All diagnostics go to **stderr**, so stdout stays
@@ -428,13 +430,18 @@ Honest v1 boundaries:
 
 - **Cancellation and SSE are in-process.** A client can cancel a job the daemon
   runs; cross-process preemption writes a best-effort tombstone.
-- **No `resume_job()` yet.** A job interrupted by a dead process is marked
-  failed on the next start — its checkpoint is retained, so resuming is a
-  feature away, not a redesign.
+- **Resume restarts, it does not re-plan.** `jobsmith resume <id>` re-enters a
+  cancelled or interrupted job's checkpoint and runs only the steps that never
+  finished — the ones already paid for are kept as they are. A job that
+  finished, or that failed at its last step, has nothing to re-enter and is
+  refused: pushing a *finished* job further (redo one step, extend the
+  analysis) is a separate feature.
 - **Cost accounting covers jobs, not conversations.** The job engine books
   every LLM call; the chat layer talks to LangChain models on the other side of
   the two-stack split and is not counted yet. Dollar figures are estimates from
-  a local price table, never a bill.
+  a local price table, never a bill. A resumed job reports the *total* it cost
+  across attempts, not just the resumed portion — the interrupted attempt's
+  tokens were spent all the same.
 - **Markdown is the only Reporter.** HTML/PDF/PPTX are additional Reporters over
   the same `JobDocument`.
 - **No web UI.** Everything is terminal or HTTP for now; the API already serves

@@ -109,6 +109,28 @@ async def test_direct_job_launch_and_cancel_and_404s(store, checkpointer, tmp_pa
         assert (await client.get("/jobs/nope/report")).status_code == 404
 
 
+async def test_resume_endpoint_restarts_a_stopped_job(store, checkpointer, tmp_path):
+    """A cancelled job is restarted from its checkpoint over HTTP; a job with
+    nothing left to run is refused with 409 rather than silently accepted."""
+    from test_jobs import cancelled_midway
+
+    manager, job, alpha, slow = await cancelled_midway(store, checkpointer, tmp_path)
+    app = create_api(LocalAgentService(manager, lambda session_id=None: None))
+    async with client_for(app) as client:
+        slow.delay = 0.0
+        r = await client.post(f"/jobs/{job.job_id}/resume")
+        assert r.status_code == 200 and r.json()["status"] == "running"
+
+        finished = await wait_done(client, job.job_id)
+        assert finished["status"] == "done"
+        assert finished["results"]["alpha"]["data"]["echo"] == "alpha#1"   # not re-run
+
+        # done: resuming it again is a refusal, not a no-op
+        again = await client.post(f"/jobs/{job.job_id}/resume")
+        assert again.status_code == 409 and "expected cancelled" in again.json()["detail"]
+        assert (await client.post("/jobs/nope/resume")).status_code == 404
+
+
 async def test_session_is_resumable_by_id(store, checkpointer, tmp_path):
     """The registry is a cache: chatting on a known id rebuilds the session,
     so a client keeps its conversation across a daemon restart."""
