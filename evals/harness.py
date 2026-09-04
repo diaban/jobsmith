@@ -26,7 +26,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
-from jobsmith.app.agent import build_app
+from jobsmith.app.agent import build_app, pick_report_format
 from jobsmith.app.providers import KeywordChatModel, make_llm, pick_provider
 from jobsmith.core.executor import Executor
 
@@ -54,6 +54,7 @@ class Observation:
     final_answer: str | None = None
     report_path: str | None = None
     report_text: str | None = None
+    report_format: str = "markdown"   # which Reporter wrote it (checks read through it)
     registry: tuple[str, ...] = ()
     duration_s: float = 0.0
     error: str | None = None          # the harness itself blew up (not a run failure)
@@ -105,6 +106,9 @@ async def run_case(
         obs.terminal_kind = job.terminal_kind
         obs.final_answer = job.final_answer
         obs.report_path = job.report_path
+        main = next((o for o in job.outputs if o.role == "main"), None)
+        if main is not None:
+            obs.report_format = main.format
         obs.route = await _route_of(app, job.job_id)
         if obs.report_path:
             try:
@@ -127,6 +131,7 @@ async def run_suite(
     repeat: int = 1,
     concurrency: int = 1,
     reports_dir: str | None = None,
+    report_format: str | None = None,
 ) -> tuple[list[Observation], dict[str, Any]]:
     """Compose the agent once, then run every case (× `repeat`) through it.
 
@@ -142,6 +147,7 @@ async def run_suite(
             chat_model=KeywordChatModel(),   # unused: no chat session is opened
             db="memory",
             reports_dir=reports_dir or scratch,
+            report_format=report_format,
         )
         registry = registry_names(app)
         try:
@@ -163,6 +169,10 @@ async def run_suite(
         "provider": choice,
         "registry": list(registry),
         "repeat": max(1, repeat),
+        # Recorded, but deliberately NOT part of what makes two runs
+        # comparable: the checks read through `deliverable.extract`, so the
+        # score is the same property whichever Reporter produced the file.
+        "report_format": pick_report_format(report_format),
     }
     return list(observations), context
 

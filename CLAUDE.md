@@ -214,6 +214,18 @@ prints a table comparable with the previous run.
   the answer and its provenance (job id + request). `scoring.py` holds one
   function per property, each returning pass / fail / **skip** — skipped checks
   leave the denominator, so a direct-route case never dilutes the plan checks.
+- **The report checks are format-independent, and now really are.** They read
+  the deliverable through `deliverable.extract(text, format)`, which returns
+  the title and the visible text with the markup stripped, and compare needle
+  and haystack after the same `normalize()` — so `- **web_search**` and
+  `<li><strong>web_search</strong></li>` are one string. Before that they were
+  markdown-shaped while the docstring claimed otherwise (`# ` is not how HTML
+  opens; escaping moved the strings they searched for), and the golden set
+  scored 13 checks lower in HTML purely on the format. `--report-format html`
+  scores the other Reporter, and `tests/test_evals.py` pins the two runs to
+  identical per-check tallies. An unknown format is read as plain text: a new
+  Reporter is scored on its content from day one, only its *title* needs an
+  extractor here.
 - **Two tiers.** `structural` runs on `KeywordLLM` — no key, no variance — and
   is expected to be 100%: `tests/test_evals.py` asserts exactly that, so a
   prompt edit that breaks the machinery fails `make check`. `llm` needs a real
@@ -229,9 +241,12 @@ prints a table comparable with the previous run.
   checkpointer (`graph.aget_state`), because a planner rescuing a message the
   router should have sent direct is invisible from the outside.
 - **Runs are stored, not just printed** — `evals/results/*.json` (gitignored),
-  tagged with agent, provider, tier, case set and git rev; the next run matching
-  the first four is picked up as a baseline automatically and rendered as a Δ
-  column. A `--case` slice is therefore never a baseline for the full set.
+  tagged with agent, provider, tier, case set, report format and git rev; the
+  next run matching the first four is picked up as a baseline automatically and
+  rendered as a Δ column. A `--case` slice is therefore never a baseline for the
+  full set. The report format is recorded but deliberately NOT part of that
+  match: the checks score the same property either way, so an HTML run is a
+  legitimate baseline for a markdown one.
 - Adding a case is one `EvalCase` in `cases.py`; adding a property is one
   function in `scoring.py` plus its name in `CHECK_NAMES` (a test pins the two
   together). Cases stay **domain-neutral** — `make leak-check` scans `evals/`

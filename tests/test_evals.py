@@ -20,6 +20,7 @@ import pytest
 
 from evals import cases_for, run_suite, score
 from evals.cases import GOLDEN_CASES, EvalCase
+from evals.deliverable import extract
 from evals.harness import Observation
 from evals.results import load_baseline, render_summary, summarize, write_result
 from evals.scoring import CHECK_NAMES, step_failure_rate
@@ -41,6 +42,21 @@ def structural_run():
     return asyncio.run(go())
 
 
+@pytest.fixture(scope="module")
+def html_structural_run():
+    """The same tier, scored on the HTML Reporter instead of the markdown one."""
+
+    async def go():
+        cases = cases_for("structural")
+        started = time.perf_counter()
+        observations, context = await run_suite(
+            cases, provider="fake", report_format="html")
+        return cases, summarize(cases, observations, tier="structural", context=context,
+                                duration_s=time.perf_counter() - started)
+
+    return asyncio.run(go())
+
+
 def test_structural_tier_is_perfect(structural_run):
     """The fakes are deterministic: anything under 100% is a real regression."""
     _, result = structural_run
@@ -54,6 +70,26 @@ def test_structural_tier_actually_exercises_every_check(structural_run):
     _, result = structural_run
     never_applied = [n for n in CHECK_NAMES if not result.checks[n]["applicable"]]
     assert never_applied == []
+
+
+def test_the_score_does_not_depend_on_the_deliverable_format(
+    structural_run, html_structural_run
+):
+    """What the module docstring of `scoring.py` promises, actually pinned.
+
+    The report checks used to be markdown-shaped while claiming otherwise:
+    `# ` is not how HTML opens and escaping moves the strings they search
+    for, so the golden set scored 13 checks lower purely on the format. Same
+    runs, same score, is the property — and a docstring that promises it
+    needs a test, or the next reformatting quietly breaks it again.
+    """
+    _, markdown = structural_run
+    _, html = html_structural_run
+    assert (markdown.report_format, html.report_format) == ("markdown", "html")
+    assert html.pass_rate == 1.0, "\n".join(
+        f"{f['case']} {f['check']}: {f['detail']}" for f in html.failures
+    )
+    assert html.checks == markdown.checks
 
 
 def test_structural_tier_covers_both_routes_and_the_guard(structural_run):
@@ -154,6 +190,73 @@ def test_a_clean_observation_passes_everything():
 )
 def test_each_check_fires_on_its_own_violation(check, broken):
     assert _status(PLAN_CASE, _obs(**broken), check) == "fail"
+
+
+# --------------------------------------------------- reading a deliverable
+
+def test_extract_reads_html_as_the_text_a_reader_sees():
+    doc = extract(
+        "<!doctype html><html><head><title>t</title><style>h1{color:red}</style></head>"
+        "<body><h1>Compare the options</h1>"
+        "<p>Rock &amp; roll &lt;is&gt; the answer</p>"
+        "<ul><li><code>web_search</code> ran</li></ul></body></html>",
+        "html",
+    )
+    assert doc.title == "Compare the options"       # not the first line, which is a doctype
+    assert doc.contains("Rock & roll <is> the answer")   # escaping undone
+    assert doc.contains("web_search")
+    assert "color" not in doc.text                  # a stylesheet is not content
+
+
+def test_extract_flattens_markup_so_both_formats_carry_the_same_text():
+    same = "- **web_search** produced 3 notes"
+    markdown = extract(f"# T\n\n{same}\n", "markdown")
+    html = extract("<h1>T</h1><ul><li><strong>web_search</strong> produced 3 notes</li></ul>",
+                   "html")
+    assert markdown.title == html.title == "T"
+    assert markdown.text == html.text
+    # and the needle is flattened the same way, whichever side it came from
+    assert markdown.contains(same) and html.contains(same)
+
+
+def test_an_unknown_format_degrades_to_plain_text():
+    """A future Reporter scores on its content from day one; only the title waits."""
+    doc = extract("just words, no markup at all", "pptx")
+    assert doc.contains("just words") and doc.title == ""
+
+
+HTML_HEAD = "<!doctype html><html><body>"
+
+
+@pytest.mark.parametrize(
+    ("check", "body"),
+    [
+        ("report_title", "<p>no heading at all</p>"),
+        ("report_answer", "<h1>t</h1><p>something else entirely</p>"),
+        ("report_provenance", f"<h1>t</h1><p>{ANSWER}</p>"),
+        ("report_covers_plan",
+         f"<h1>t</h1><p>{ANSWER}</p><dl><dt>Job</dt><dd>job1</dd>"
+         "<dt>Request</dt><dd>q</dd></dl>"),
+    ],
+)
+def test_the_report_checks_still_fire_on_an_html_deliverable(check, body):
+    """Reading through the markup must not become reading past everything: a
+    stripper permissive enough to pass any HTML would score nothing at all."""
+    obs = _obs(report_text=f"{HTML_HEAD}{body}</body></html>", report_format="html")
+    assert _status(PLAN_CASE, obs, check) == "fail"
+
+
+def test_an_html_deliverable_with_everything_in_it_passes():
+    obs = _obs(
+        report_format="html",
+        report_text=(
+            f"{HTML_HEAD}<h1>title</h1><p>{ANSWER}</p>"
+            "<dl><dt>Request</dt><dd>q</dd><dt>Job</dt><dd><code>job1</code></dd></dl>"
+            "<table><tr><td><code>research</code></td><td><code>analysis</code></td></tr>"
+            "</table></body></html>"
+        ),
+    )
+    assert "fail" not in {c.name: c.status for c in score(PLAN_CASE, obs)}.values()
 
 
 def test_a_broken_run_skips_the_downstream_checks():

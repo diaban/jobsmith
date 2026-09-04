@@ -52,6 +52,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"where run records are written (default: {RESULTS_DIR})")
     parser.add_argument("--reports-dir",
                         help="keep the generated job reports here (default: a scratch dir)")
+    parser.add_argument("--report-format", metavar="FORMAT",
+                        help="deliverable format to score (default: $JOBSMITH_REPORT_FORMAT "
+                             "or markdown) — the checks read through the markup, so the "
+                             "scores stay comparable")
     parser.add_argument("--baseline", help="compare against this results file instead of the latest")
     parser.add_argument("--no-write", action="store_true", help="print only, store nothing")
     parser.add_argument("--list", action="store_true", help="list the golden set and exit")
@@ -91,6 +95,7 @@ async def _run(args: argparse.Namespace) -> int:
         repeat=args.repeat,
         concurrency=args.concurrency,
         reports_dir=args.reports_dir,
+        report_format=args.report_format,
     )
     result = summarize(cases, observations, tier=tier, context=context,
                        duration_s=time.perf_counter() - started)
