@@ -375,6 +375,7 @@ to be judged by eye on one example. `evals/` turns that into a number.
 make eval                     # deterministic tier — fakes, no API key, runs in CI
 make eval-llm                 # the same golden set against a real provider (opt-in)
 make eval ARGS='--repeat 3'   # sample the same cases repeatedly to see the variance
+make eval ARGS='--report-format html'   # score the other deliverable format
 python -m evals --list        # what the golden set contains
 ```
 
@@ -383,7 +384,9 @@ capabilities, its DAG is acyclic with satisfiable dependencies, an obviously
 simple message is triaged `direct` and a compound one `plan`, the run reaches
 the terminal it should, every planned step ran and reported success, and the
 deliverable carries a title, the answer and its provenance. Wording may vary
-freely; structure may not.
+freely; structure may not — and neither does the deliverable's format: the
+report checks read the file through a markup stripper, so a markdown run and an
+HTML one score identically.
 
 Two tiers, because only one of them can be trusted to gate anything:
 

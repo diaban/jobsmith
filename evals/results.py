@@ -63,6 +63,11 @@ class SuiteResult:
     #: the case ids this run covered — a filtered run is not a baseline for a
     #: full one, so this is part of what "comparable" means
     cases: list[str] = field(default_factory=list)
+    #: which Reporter wrote the deliverables this run scored. Recorded so a
+    #: record says what it measured — NOT part of `load_baseline`'s notion of
+    #: comparable, because the report checks read through the markup and score
+    #: the same property either way.
+    report_format: str = "markdown"
     checks: dict[str, dict[str, int]] = field(default_factory=dict)
     metrics: dict[str, float | None] = field(default_factory=dict)
     overall: dict[str, int] = field(default_factory=dict)
@@ -143,6 +148,7 @@ def summarize(
         git_rev=_git_rev(),
         duration_s=round(duration_s, 2),
         cases=sorted(c.id for c in cases),
+        report_format=str(context.get("report_format", "markdown")),
         checks={name: asdict(t) for name, t in tallies.items()},
         metrics={
             "pass_rate": overall.rate,

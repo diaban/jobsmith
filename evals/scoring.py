@@ -16,7 +16,12 @@ exercises one path never dilutes the score of another.
 The report checks are deliberately layout-independent — they look for the
 title, the answer text, the job id and the request, not for the headings
 `MarkdownReport` happens to use today. A reformatting of the deliverable
-should not read as a regression; losing its provenance should.
+should not read as a regression; losing its provenance should. That holds
+across *formats* too: they read the file through `deliverable.extract`,
+which hands back the title and the visible text with the markup stripped,
+so the same check scores a markdown and an HTML report identically. It used
+to be true only within markdown — `# ` is not how HTML opens, and escaping
+moved the very strings the checks searched for.
 """
 from __future__ import annotations
 
@@ -24,6 +29,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from .cases import EvalCase
+from .deliverable import Deliverable, extract
 from .harness import Observation
 
 PASS = "pass"
@@ -234,8 +240,9 @@ def check_report_written(case: EvalCase, obs: Observation) -> Check:
     return _check(name, bool(obs.report_text), "no report file was produced")
 
 
-def _report_body(obs: Observation) -> str:
-    return obs.report_text or ""
+def _deliverable(obs: Observation) -> Deliverable:
+    """The report as title + visible text, whichever Reporter wrote it."""
+    return extract(obs.report_text, obs.report_format)
 
 
 def check_report_title(case: EvalCase, obs: Observation) -> Check:
@@ -243,12 +250,8 @@ def check_report_title(case: EvalCase, obs: Observation) -> Check:
     name = "report_title"
     if (s := _report_applies(case, obs, name)) is not None:
         return s
-    first = next((ln for ln in _report_body(obs).splitlines() if ln.strip()), "")
-    return _check(
-        name,
-        first.startswith("# ") and len(first[2:].strip()) > 0,
-        f"first line is {first[:60]!r}",
-    )
+    title = _deliverable(obs).title
+    return _check(name, bool(title.strip()), "the deliverable announces no title")
 
 
 def check_report_answer(case: EvalCase, obs: Observation) -> Check:
@@ -260,7 +263,8 @@ def check_report_answer(case: EvalCase, obs: Observation) -> Check:
     if len(answer) < 20:
         return _check(name, False, f"final answer is {len(answer)} chars")
     probe = answer[:80]
-    return _check(name, probe in _report_body(obs), "the final answer is not in the report")
+    return _check(name, _deliverable(obs).contains(probe),
+                  "the final answer is not in the report")
 
 
 def check_report_provenance(case: EvalCase, obs: Observation) -> Check:
@@ -268,10 +272,10 @@ def check_report_provenance(case: EvalCase, obs: Observation) -> Check:
     name = "report_provenance"
     if (s := _report_applies(case, obs, name)) is not None:
         return s
-    body = _report_body(obs)
+    doc = _deliverable(obs)
     missing = [
         label for label, needle in (("job id", obs.job_id), ("request", obs.query.strip()[:60]))
-        if needle and needle not in body
+        if needle and not doc.contains(needle)
     ]
     return _check(name, not missing, f"no {', no '.join(missing)} in the report")
 
@@ -283,8 +287,8 @@ def check_report_covers_plan(case: EvalCase, obs: Observation) -> Check:
         return s
     if not obs.plan_steps:
         return _skip(name, "no plan in this run")
-    body = _report_body(obs)
-    missing = [s["capability"] for s in obs.plan_steps if s["capability"] not in body]
+    doc = _deliverable(obs)
+    missing = [s["capability"] for s in obs.plan_steps if not doc.contains(s["capability"])]
     return _check(name, not missing, f"unmentioned step(s): {', '.join(missing)}")
 
 
