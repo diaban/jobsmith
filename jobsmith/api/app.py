@@ -30,7 +30,7 @@ import json
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from ..jobs.models import JobStatus
@@ -53,6 +53,24 @@ class JobIn(BaseModel):
     query: str
     inputs: dict[str, Any] | None = None
     session_id: str | None = None
+
+
+# `JobOutput.format` is free-form domain vocabulary ("markdown", "html", ...);
+# turning it into an HTTP content type is this adapter's business, which is why
+# the table lives here and not in jobs/report.py. An unknown format degrades to
+# plain text rather than a guess — a browser then shows it instead of offering
+# a download of something it cannot name.
+REPORT_MEDIA_TYPES = {
+    "markdown": "text/markdown",
+    "html": "text/html",
+    "text": "text/plain",
+}
+
+
+def _report_media_type(job: dict) -> str:
+    """Content type of a job's main deliverable, from the format it declares."""
+    main = next((o for o in job.get("outputs") or [] if o.get("role") == "main"), None)
+    return REPORT_MEDIA_TYPES.get((main or {}).get("format") or "", "text/plain")
 
 
 def create_api(service: LocalAgentService) -> FastAPI:
@@ -132,13 +150,20 @@ def create_api(service: LocalAgentService) -> FastAPI:
         return FileResponse(path, filename=name)
 
     @app.get("/jobs/{job_id}/report")
-    async def get_report(job_id: str) -> PlainTextResponse:
-        """The main deliverable, inline (shortcut over /outputs)."""
-        await _job_or_404(job_id)
+    async def get_report(job_id: str) -> Response:
+        """The main deliverable, inline (shortcut over /outputs).
+
+        The content type follows the format the job actually produced: an
+        HTML report announced as text/markdown is shown by a browser as
+        markup instead of being rendered. Text formats only — a binary
+        deliverable would be served by /outputs/{name}, which streams the
+        file and infers its type from the extension.
+        """
+        job = await _job_or_404(job_id)
         report = await service.get_report(job_id)
         if report is None:
             raise HTTPException(404, "no report for this job (not DONE yet?)")
-        return PlainTextResponse(report, media_type="text/markdown")
+        return Response(report, media_type=_report_media_type(job))
 
     # ---------------- live events ----------------
 
