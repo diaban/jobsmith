@@ -16,6 +16,7 @@ from test_jobs import make_manager
 
 from jobsmith.api import create_api
 from jobsmith.chat import ChatSession
+from jobsmith.jobs.report import make_reporter
 from jobsmith.service import LocalAgentService
 
 
@@ -72,12 +73,36 @@ async def test_chat_flow_proposal_approval_report(store, checkpointer, tmp_path)
         report = await client.get(f"/jobs/{job['job_id']}/report")
         assert report.status_code == 200
         assert report.text.startswith("# analyse the data")   # deliverable first
+        assert report.headers["content-type"].startswith("text/markdown")
 
         # the same file is listed as the job's main output, and downloadable
         (output,) = (await client.get(f"/jobs/{job['job_id']}/outputs")).json()
         assert (output["role"], output["format"]) == ("main", "markdown")
         download = await client.get(f"/jobs/{job['job_id']}/outputs/{output['name']}")
         assert download.status_code == 200
+
+
+async def test_report_content_type_follows_the_deliverable_format(
+    store, checkpointer, tmp_path
+):
+    """/report announces what it actually serves. Every other test asserts on
+    the body, which is how an HTML report kept being labelled text/markdown —
+    correct bytes, wrong header, unreadable in a browser."""
+    app, manager = make_app(store, checkpointer, tmp_path, [AIMessage(content="hi")])
+
+    async with client_for(app) as client:
+        job = await wait_done(client, (await client.post(
+            "/jobs", json={"query": "a markdown run"})).json()["job_id"])
+        report = await client.get(f"/jobs/{job['job_id']}/report")
+        assert report.headers["content-type"].startswith("text/markdown")
+
+        # the Reporter is the manager's documented swap seam: same run, other format
+        manager.reporter = make_reporter("html")
+        job = await wait_done(client, (await client.post(
+            "/jobs", json={"query": "an html run"})).json()["job_id"])
+        report = await client.get(f"/jobs/{job['job_id']}/report")
+        assert report.headers["content-type"].startswith("text/html")
+        assert report.text.startswith("<!doctype html>")
 
 
 async def test_chat_flow_decline_creates_no_job(store, checkpointer, tmp_path):
