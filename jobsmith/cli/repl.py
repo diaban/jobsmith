@@ -11,6 +11,7 @@ Commands:
   /bg <any text>    bypass the chat: run that query as a job directly
   /image <key>      attach an image input to the NEXT /bg job
   /cancel <id-pfx>  cancel a job
+  /resume <id-pfx>  restart a stopped job from its checkpoint
   /quit             exit
 """
 from __future__ import annotations
@@ -96,6 +97,12 @@ async def run_repl(client: AgentClient, session_id: str) -> None:
             job = await _resolve(client, line.split(maxsplit=1)[1])
             if job:
                 print(f"  -> {(await client.cancel_job(job['job_id']))['status']}")
+        elif line.startswith("/resume "):
+            job = await _resolve(client, line.split(maxsplit=1)[1])
+            if job:
+                resumed = await client.resume_job(job["job_id"])
+                print("  " + (f"cannot resume: {resumed['error']}" if resumed.get("error")
+                              else f"-> {resumed['status']}"))
         elif line.startswith("/image "):
             key = line.split(maxsplit=1)[1]
             pending_inputs["image_s3_keys"] = [key]
@@ -108,7 +115,8 @@ async def run_repl(client: AgentClient, session_id: str) -> None:
             short = launched["job_id"][:8]
             print(f"  started in background: {short}  (try /jobs, /job {short[:4]})")
         elif line.startswith("/"):
-            print("  unknown command (try /jobs, /job, /report, /bg, /image, /cancel, /quit)")
+            print("  unknown command (try /jobs, /job, /report, /bg, /image, "
+                  "/cancel, /resume, /quit)")
         else:
             reply = await client.send(session_id, line)
             # human-in-the-loop: the agent proposes a job, you approve or not

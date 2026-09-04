@@ -61,6 +61,9 @@ class AgentService(ABC):
     async def cancel_job(self, job_id: str) -> dict: ...
 
     @abstractmethod
+    async def resume_job(self, job_id: str) -> dict: ...
+
+    @abstractmethod
     async def get_report(self, job_id: str) -> str | None: ...
 
     async def aclose(self) -> None:
@@ -167,6 +170,24 @@ class LocalAgentService(AgentService):
     async def cancel_job(self, job_id: str) -> dict:
         job = await self.manager.cancel_job(job_id)
         return {"job_id": job_id, "status": job.status.value if job else "unknown"}
+
+    async def resume_job(self, job_id: str) -> dict:
+        """Restart a stopped job from its checkpoint, in the background.
+
+        A refusal comes back as `{"status": <unchanged>, "error": ...}` rather
+        than an exception: the HTTP backing can only answer with a body, and
+        the two backings must stay indistinguishable to a front-end.
+        """
+        try:
+            job = await self.manager.start_resume(job_id)
+        except KeyError:
+            return {"job_id": job_id, "status": "unknown", "error": f"unknown job: {job_id}"}
+        except ValueError as e:
+            current = await self.manager.get_job(job_id)
+            return {"job_id": job_id,
+                    "status": current.status.value if current else "unknown",
+                    "error": str(e)}
+        return {"job_id": job_id, "status": job.status.value}
 
     async def get_report(self, job_id: str) -> str | None:
         job = await self.manager.get_job(job_id)

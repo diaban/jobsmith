@@ -88,6 +88,18 @@ class DaemonClient(AgentService):
         r.raise_for_status()
         return r.json()
 
+    async def resume_job(self, job_id: str) -> dict:
+        r = await self._http.post(f"/jobs/{job_id}/resume")
+        if r.status_code in (404, 409):
+            # The API says "refused" with a status code; the port says it with
+            # an `error` key, so both backings answer a caller the same way.
+            job = await self.get_job(job_id)
+            return {"job_id": job_id,
+                    "status": job["status"] if job else "unknown",
+                    "error": r.json().get("detail")}
+        r.raise_for_status()
+        return r.json()
+
     async def launch_job(self, query, *, session_id=None, inputs=None) -> dict:
         r = await self._http.post(
             "/jobs", json={"query": query, "session_id": session_id, "inputs": inputs}

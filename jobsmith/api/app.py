@@ -13,7 +13,8 @@ against this API.
   POST /sessions/{id}/approval {"approved": bool}.
 - Jobs tab:   GET /jobs (+?session_id/?status), GET /jobs/{id} (plan/DAG,
   step timestamps, artifacts), POST /jobs (direct launch, bypassing chat),
-  POST /jobs/{id}/cancel.
+  POST /jobs/{id}/cancel, POST /jobs/{id}/resume (restart a stopped job from
+  its checkpoint; 409 when it has nothing left to run).
 - Outputs:    GET /jobs/{id}/outputs — the files the job produced for the
   human; /outputs/{name} downloads one; /report is a shortcut to the main one.
 - Live:       GET /events — SSE stream of job-progress events
@@ -102,6 +103,19 @@ def create_api(service: LocalAgentService) -> FastAPI:
     async def cancel_job(job_id: str):
         await _job_or_404(job_id)
         return await service.cancel_job(job_id)
+
+    @app.post("/jobs/{job_id}/resume")
+    async def resume_job(job_id: str):
+        """Restart a stopped job from its checkpoint (cancelled/interrupted).
+
+        A job that cannot be resumed answers 409 with the reason, so a client
+        can tell "refused" from "restarted" without parsing prose.
+        """
+        await _job_or_404(job_id)
+        result = await service.resume_job(job_id)
+        if result.get("error"):
+            raise HTTPException(409, result["error"])
+        return result
 
     @app.get("/jobs/{job_id}/outputs")
     async def list_outputs(job_id: str):

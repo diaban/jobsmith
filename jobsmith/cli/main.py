@@ -8,6 +8,7 @@
     jobsmith report <id-prefix>      print the markdown deliverable
     jobsmith outputs <id-prefix>     list the files the job produced
     jobsmith cancel <id-prefix>      cancel a running job
+    jobsmith resume <id-prefix>      restart a stopped job from its checkpoint
 
 Every command except `serve` is a CLIENT: it talks to a daemon when one is
 running (so jobs outlive the command that launched them, and any other
@@ -66,7 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
     for name, help_text in (("job", "show one job in detail"),
                             ("report", "print a job's markdown report"),
                             ("outputs", "list the files a job produced"),
-                            ("cancel", "cancel a job")):
+                            ("cancel", "cancel a job"),
+                            ("resume", "restart a stopped job from its checkpoint")):
         sub.add_parser(name, help=help_text).add_argument("job_id", metavar="ID-PREFIX")
     return parser
 
@@ -78,6 +80,16 @@ async def cmd_chat(client: AgentClient, args) -> int:
     print(f"[session {session_id}]")
     await run_repl(client, session_id)
     return 0
+
+
+async def _follow(client: AgentClient, job_id: str) -> int:
+    """Block until the job settles, then show it. Exit code says how it ended."""
+    while True:
+        await asyncio.sleep(0.5)
+        job = await client.get_job(job_id)
+        if job and job["status"] in ("done", "failed", "cancelled"):
+            show_job(job)
+            return 0 if job["status"] == "done" else 1
 
 
 async def cmd_run(client: AgentClient, args) -> int:
@@ -93,12 +105,7 @@ async def cmd_run(client: AgentClient, args) -> int:
     if not wait:
         print(f"follow it with:  jobsmith job {job_id[:8]}")
         return 0
-    while True:
-        await asyncio.sleep(0.5)
-        job = await client.get_job(job_id)
-        if job and job["status"] in ("done", "failed", "cancelled"):
-            show_job(job)
-            return 0 if job["status"] == "done" else 1
+    return await _follow(client, job_id)
 
 
 async def cmd_jobs(client: AgentClient, args) -> int:
@@ -155,9 +162,30 @@ async def cmd_cancel(client: AgentClient, args) -> int:
     return 0
 
 
+async def cmd_resume(client: AgentClient, args) -> int:
+    job = await client.resolve_job(args.job_id)
+    if job is None:
+        print(f"no single job matching {args.job_id!r}")
+        return 1
+    job_id = job["job_id"]
+    resumed = await client.resume_job(job_id)
+    if resumed.get("error"):
+        print(f"cannot resume {job_id[:8]}: {resumed['error']}")
+        return 1
+    print(f"{job_id[:8]} -> {resumed['status']}")
+    if client.persistent:
+        print(f"follow it with:  jobsmith job {job_id[:8]}")
+        return 0
+    # Same trade-off as `run`: embedded, the resumed run dies with us.
+    print("no daemon: finishing the job here — it needs this process to stay alive",
+          file=sys.stderr)
+    return await _follow(client, job_id)
+
+
 COMMANDS = {
     "chat": cmd_chat, "run": cmd_run, "jobs": cmd_jobs, "job": cmd_job,
     "report": cmd_report, "outputs": cmd_outputs, "cancel": cmd_cancel,
+    "resume": cmd_resume,
 }
 
 
