@@ -132,21 +132,42 @@ class JobNotificationMiddleware(AgentMiddleware):
             + "\n".join(lines)
         ), shown
 
+    @staticmethod
+    def _inject(messages: list[Any], notices: list[SystemMessage]) -> list[Any]:
+        """Place transient notices directly after the leading system prompt.
+
+        NOT a stylistic choice — a provider constraint, so do not "helpfully"
+        move them later in the list. `langchain_anthropic._format_messages`
+        raises "Received multiple non-consecutive system messages" for any
+        SystemMessage that is not adjacent to the leading system block: a
+        notice appended last, or slotted just before the final turn, kills the
+        whole turn on Claude (the default provider whenever ANTHROPIC_API_KEY
+        is set). Anthropic hoists every system message into the top-level
+        `system` parameter anyway, so adjacency loses nothing there, and
+        OpenAI accepts either placement.
+
+        What the placement still buys, and why it is the right compromise: the
+        conversation itself is left untouched, so the user's own message stays
+        the last message — the turn being answered — and a status line is never
+        mistaken for the thing to reply to. Order within the notices carries
+        the rest of the intent: completion (an instruction to act on now)
+        before progress (background awareness).
+        """
+        head = 0
+        while head < len(messages) and isinstance(messages[head], SystemMessage):
+            head += 1
+        return [*messages[:head], *notices, *messages[head:]]
+
     async def awrap_model_call(self, request: Any, handler: Any) -> Any:
         finished_notice, finished = await self._finished_notice()
         progress_notice, in_flight_shown = await self._progress_notice()
-        if finished_notice is None and progress_notice is None:
+        notices = [n for n in (finished_notice, progress_notice) if n is not None]
+        if not notices:
             return await handler(request)
 
-        messages = list(request.messages)
-        if progress_notice is not None:
-            # Background, not an instruction: slotted *before* the latest turn
-            # so the conversation's last message stays the last message — a
-            # status line must not read as the thing being replied to.
-            messages.insert(max(len(messages) - 1, 0), progress_notice)
-        if finished_notice is not None:
-            messages.append(finished_notice)   # this one IS the instruction: announce now
-        response = await handler(request.override(messages=messages))
+        response = await handler(
+            request.override(messages=self._inject(list(request.messages), notices))
+        )
         # Only now that the model has actually seen them: mark completions
         # announced, and re-baseline progress (rebuilt from the in-flight set,
         # so a job that settles drops out of the map instead of lingering).
