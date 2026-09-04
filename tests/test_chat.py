@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from conftest import FakeLLM, ScriptedChatModel, plan_json
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
@@ -10,7 +11,11 @@ from langgraph.types import Command
 from test_jobs import make_manager
 
 from jobsmith.chat import ChatSession
-from jobsmith.chat.session import NOTICE_MARKER, PROGRESS_MARKER
+from jobsmith.chat.session import (
+    NOTICE_MARKER,
+    PROGRESS_MARKER,
+    JobNotificationMiddleware,
+)
 from jobsmith.chat.tools import (
     MAX_CONTEXT_CHARS,
     MAX_CONTEXT_TURNS,
@@ -375,20 +380,75 @@ async def test_progress_notices_never_accumulate_in_the_thread(store, checkpoint
     assert len(notices(model.calls[-1], PROGRESS_MARKER)) == 1
 
 
-async def test_progress_sits_before_the_latest_turn(store, checkpointer, tmp_path):
-    """Placement is deliberate: progress is background, so the user's message
-    stays the last one — a status line must not read as the thing to reply to.
-    (The completion notice is the opposite: an instruction to announce now.)"""
+async def both_notices_turn(store, checkpointer, tmp_path):
+    """One turn carrying both notices at once: a finished job to announce and
+    a running one to report on."""
     session, model = make_session(store, checkpointer, tmp_path, [AIMessage(content="ok")])
+    done = await session.manager.create_job("crunch numbers", session_id=session.session_id)
+    await session.manager.run_job(done.job_id)
     await make_running_job(
-        session.manager, session.session_id, "analyse the alpha data", ["research"],
+        session.manager, session.session_id, "analyse the alpha data",
+        ["research", "analysis"], done=["research"], deps={"analysis": ["research"]},
     )
     agent = session.build()
-
     await agent.ainvoke({"messages": [HumanMessage("unrelated question")]}, CFG)
-    call = model.calls[0]
+    return model.calls[-1]
+
+
+async def test_notices_stay_adjacent_to_the_leading_system_prompt(
+    store, checkpointer, tmp_path
+):
+    """The placement is forced by the provider, not by taste: Anthropic rejects
+    any SystemMessage that is not adjacent to the leading system block."""
+    call = await both_notices_turn(store, checkpointer, tmp_path)
+
+    systems = [i for i, m in enumerate(call) if isinstance(m, SystemMessage)]
+    assert systems == list(range(len(systems)))         # one contiguous leading block
+    assert NOTICE_MARKER in call[1].content             # completion: act on it now
+    assert PROGRESS_MARKER in call[2].content           # progress: background
+    # the conversation itself is untouched — the user's turn is still the turn
+    # being answered, so a status line is never mistaken for the thing to reply to
     assert isinstance(call[-1], HumanMessage)
-    assert PROGRESS_MARKER in call[-2].content
+    assert call[-1].content == "unrelated question"
+
+
+async def test_notices_survive_the_real_provider_formatters(store, checkpointer, tmp_path):
+    """The bug this class of test exists for: every other test scripts the
+    model, so no notice's *formatting* was ever exercised. Both notices used to
+    be emitted non-adjacent, which `langchain_anthropic` refuses outright —
+    silently breaking the chat layer's headline feature on Claude."""
+    anthropic = pytest.importorskip("langchain_anthropic.chat_models")
+    openai = pytest.importorskip("langchain_openai.chat_models.base")
+    call = await both_notices_turn(store, checkpointer, tmp_path)
+
+    system, formatted = anthropic._format_messages(call)   # raises on the old placement
+    hoisted = " ".join(block["text"] for block in system)
+    assert NOTICE_MARKER in hoisted and PROGRESS_MARKER in hoisted
+    assert [m["role"] for m in formatted] == ["user"]      # only the real turn remains
+
+    as_dicts = [openai._convert_message_to_dict(m) for m in call]
+    assert [d["role"] for d in as_dicts[:3]] == ["system"] * 3
+    assert as_dicts[-1] == {"role": "user", "content": "unrelated question"}
+
+
+def test_a_tool_calling_thread_also_formats(store, checkpointer, tmp_path):
+    """Same guarantee on the messiest thread shape: mid-launch, with a tool
+    call and its result between the prompt and the latest turn."""
+    anthropic = pytest.importorskip("langchain_anthropic.chat_models")
+    thread = [
+        SystemMessage("system prompt"),
+        HumanMessage("analyse the alpha data"),
+        launch_call("analyse the alpha data", "multi-step"),
+        ToolMessage(content="Job abcd1234 launched", tool_call_id="call_1"),
+        HumanMessage("meanwhile, what is the alpha cohort?"),
+    ]
+    notice = SystemMessage(f"[job progress] {PROGRESS_MARKER}: 1/2 steps done")
+
+    injected = JobNotificationMiddleware._inject(thread, [notice])
+    system, formatted = anthropic._format_messages(injected)
+
+    assert PROGRESS_MARKER in " ".join(block["text"] for block in system)
+    assert [m["role"] for m in formatted] == ["user", "assistant", "user"]
 
 
 async def test_settled_jobs_are_announced_not_reported_as_running(store, checkpointer, tmp_path):
