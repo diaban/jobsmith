@@ -32,6 +32,9 @@ The REPL is a CONVERSATION by default (chat agent; complex asks → job proposal
 
 - **One short-lived branch per issue**, off `main`: `feat/<n>-<slug>`, `fix/<n>-<slug>`, `chore/<slug>` (`gh issue develop <n>` creates one already linked). Open a PR, let CI run, merge, delete. **No `develop` branch**: there are no releases yet, so it would only add a merge — the PR + CI is the integration point it used to provide. Releases, when they come, are tags.
 - `main` stays green. CI (`.github/workflows/ci.yml`) runs `make check` on push and PR across Python 3.11 and 3.12, plus `uv lock --check` so the lockfile cannot silently drift from pyproject.
+- **`main` is protected**: PR required, the three checks must pass, admins included, no force-push. **Status checks are strict** — a branch must contain the current `main` before it can merge, so CI validates the *post-merge* state rather than a stale snapshot. When several PRs are in flight, each merge invalidates the rest: bring them up to date with `gh pr update-branch <n>` (or a rebase) and let CI re-run.
+
+  This exists because green checks on a stale base do not mean the merge is green. Git only sees *textual* conflicts; two PRs can merge cleanly and still break each other — one renames what the other calls, one reshapes an output the other asserts on. Three PRs in the first parallel batch merged on stale CI and survived only because the combination was verified by hand each time.
 - **`uv.lock` is committed** and must be regenerated (`uv lock`) in the same commit as any dependency change. This project has already been bitten by version drift (`create_react_agent` deprecation, the removed `llm_input_messages` channel, checkpoint-sqlite's `isolation_level`), which is exactly what the lockfile prevents across sessions.
 - **Parallel sessions use git worktrees**, one per issue — separate checkouts of the same repo, so two sessions never fight over the working tree or the current branch:
 
