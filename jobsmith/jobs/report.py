@@ -366,18 +366,35 @@ def compose_reporters(
 
     A single name gives back that format's Reporter unchanged (a run then
     produces exactly the one file it always did); several give a
-    `MultiReporter` whose first name is the main deliverable. Aliases of the
-    same format are collapsed (`"markdown,md"` is one file, not the same file
-    written twice), and an unknown name anywhere in the list still raises —
-    `make_reporter` is the per-format factory and stays the one that decides.
+    `MultiReporter` whose first name is the main deliverable. An unknown name
+    anywhere in the list still raises — `make_reporter` is the per-format
+    factory and stays the one that decides.
+
+    A Reporter writes `{job_id}.{extension}`, so the extension is what makes
+    two of them collide, and the two ways to name one twice are not the same
+    mistake:
+
+    - the SAME Reporter twice (an alias: `"markdown,md"`) is a harmless way
+      of saying one format — collapsed silently, one file;
+    - two DIFFERENT Reporters claiming one extension would write the same
+      path, the second overwriting the first, and `Job.outputs` would then
+      list two entries for one file. That is a composition error and raises
+      here, like an unknown name — a trap laid for whoever adds PDF or a
+      second markdown flavour, sprung at composition rather than in a job.
     """
     names = parse_report_formats(formats) if isinstance(formats, str) else list(formats)
     reporters: list[Reporter] = []
-    seen: set[type] = set()
+    seen: dict[str, tuple[type, str]] = {}     # extension -> (class, format name)
     for name in names or ["markdown"]:
         reporter = make_reporter(name, registry, with_annexes=with_annexes)
-        if type(reporter) in seen:
-            continue
-        seen.add(type(reporter))
+        known = seen.get(reporter.extension)
+        if known is not None:
+            if known[0] is type(reporter):
+                continue                        # an alias of a format already asked for
+            raise ValueError(
+                f"report formats {known[1]!r} and {reporter.format!r} both write "
+                f".{reporter.extension} files — one would overwrite the other"
+            )
+        seen[reporter.extension] = (type(reporter), reporter.format)
         reporters.append(reporter)
     return reporters[0] if len(reporters) == 1 else MultiReporter(reporters)

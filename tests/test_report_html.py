@@ -17,6 +17,7 @@ from jobsmith.app import build_app
 from jobsmith.app.agent import pick_report_formats
 from jobsmith.app.providers import KeywordChatModel, KeywordLLM
 from jobsmith.core.usage import Usage
+from jobsmith.jobs import report as report_module
 from jobsmith.jobs.models import Job, JobOutput, JobStatus
 from jobsmith.jobs.report import (
     JobDocument,
@@ -345,6 +346,31 @@ def test_aliases_of_one_format_do_not_write_the_same_file_twice(tmp_path):
     reporter = compose_reporters("markdown,md")
     assert isinstance(reporter, MarkdownReport)
     assert len(reporter.write(done_job("j12"), tmp_path)) == 1
+
+
+def test_two_formats_claiming_one_extension_refuse_to_compose(monkeypatch):
+    """The path is `{job_id}.{extension}`, so the extension is the collision
+    key: two different Reporters sharing one would write the same file, the
+    second overwriting the first, and the job would list two outputs for one
+    file. Fail at composition, not silently at report time."""
+
+    class MarkdownLite(MarkdownReport):     # a second flavour, same extension
+        format = "md-lite"
+
+    real = report_module.make_reporter
+
+    def factory(name="markdown", registry=None, *, with_annexes=False):
+        if (name or "").strip().lower() == "md-lite":
+            return MarkdownLite(registry, with_annexes=with_annexes)
+        return real(name, registry, with_annexes=with_annexes)
+
+    monkeypatch.setattr(report_module, "make_reporter", factory)
+
+    with pytest.raises(ValueError, match=r"both write \.md files"):
+        compose_reporters("markdown,md-lite")
+    # an alias of the SAME reporter is still just a repetition, not a clash
+    assert isinstance(compose_reporters("md-lite,md-lite"), MarkdownLite)
+    assert isinstance(compose_reporters("md-lite,html"), MultiReporter)
 
 
 def test_an_unknown_name_anywhere_in_the_list_still_fails_loudly():
