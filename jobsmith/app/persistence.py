@@ -92,12 +92,17 @@ async def _open_postgres(dsn: str, stack: AsyncExitStack, *, max_size: int = 10)
     try:
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
         from langgraph.store.postgres.aio import AsyncPostgresStore
-        from psycopg.rows import dict_row
+        from psycopg import AsyncConnection
+        from psycopg.rows import DictRow, dict_row
         from psycopg_pool import AsyncConnectionPool
     except ImportError:  # pragma: no cover - depends on install extras
         sys.exit('Postgres persistence needs:  uv pip install -e ".[postgres]"')
 
-    pool = AsyncConnectionPool(
+    # The annotation says out loud what `row_factory: dict_row` below means:
+    # this pool hands out dict-row connections, which is exactly the `Conn`
+    # both langgraph Postgres backends accept. Buried in a kwargs dict, that
+    # is invisible to a reader and to a checker.
+    pool: AsyncConnectionPool[AsyncConnection[DictRow]] = AsyncConnectionPool(
         conninfo=dsn,
         min_size=1,
         max_size=max_size,

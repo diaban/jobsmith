@@ -17,9 +17,12 @@ so out loud.
 from __future__ import annotations
 
 import sys
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..service import AgentService, LocalAgentService
+
+if TYPE_CHECKING:                      # only to name the app the embedded client owns
+    from ..app.agent import AgentApp
 
 DEFAULT_URL = "http://127.0.0.1:8000"
 
@@ -114,6 +117,8 @@ class DaemonClient(AgentService):
 
 class EmbeddedClient(LocalAgentService):
     """The local service, owning the app it composed."""
+
+    app: AgentApp
 
     @classmethod
     async def create(cls, **build_kwargs: Any) -> EmbeddedClient:

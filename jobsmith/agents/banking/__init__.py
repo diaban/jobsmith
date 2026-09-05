@@ -17,6 +17,7 @@ from ..base import AgentContext, AgentDefinition
 from .capabilities.refs import RefsCapability
 from .capabilities.search import SearchCapability
 from .capabilities.vision import VisionCapability
+from .deps import S3Client, SearchEngine, VisionClient
 from .fakes import FakeS3, KeywordSearch
 from .profile import BANKING_CHAT_PROMPT, BANKING_PROFILE
 
@@ -30,8 +31,8 @@ class BankingResources:
     — never a single client exposing both sets of methods.
     """
 
-    search: KeywordSearch
-    objects: FakeS3
+    search: SearchEngine
+    objects: S3Client
 
 
 async def open_banking_resources(stack: AsyncExitStack) -> BankingResources:
@@ -44,11 +45,18 @@ async def open_banking_resources(stack: AsyncExitStack) -> BankingResources:
 def banking_capabilities(ctx: AgentContext) -> list[Capability]:
     # Each capability receives exactly the ports it declared, nothing more.
     res: BankingResources = ctx.resources
-    return [
+    caps: list[Capability] = [
         SearchCapability(ctx.llm, res.search),
-        VisionCapability(ctx.llm, res.objects),
         RefsCapability(res.search),
     ]
+    # The framework's LLMClient promises `chat`, nothing more; vision is this
+    # agent's own port, and only some adapters satisfy it. Same rule the
+    # default agent applies to `documents`: a capability nothing can serve
+    # stays out of the registry, or the planner will plan a step that can
+    # only fail.
+    if isinstance(ctx.llm, VisionClient):
+        caps.insert(1, VisionCapability(ctx.llm, res.objects))
+    return caps
 
 
 BANKING_AGENT = AgentDefinition(

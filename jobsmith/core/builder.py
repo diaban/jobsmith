@@ -14,6 +14,7 @@ fresh AgentBuilder with a new registry; compilation costs milliseconds.
 """
 from __future__ import annotations
 
+from collections.abc import Hashable
 from typing import Any
 
 from langgraph.constants import END
@@ -70,7 +71,7 @@ class AgentBuilder:
 
         # Route name → target node. A new route (added to Router.routes) only
         # needs its node registered and an entry here before .build().
-        self.route_targets: dict[str, str] = {
+        self.route_targets: dict[Hashable, str] = {
             "plan": "planner",
             "direct": "direct_answer",
         }

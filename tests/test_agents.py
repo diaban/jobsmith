@@ -44,11 +44,33 @@ async def test_the_two_agents_contribute_different_capabilities():
         for n in ("default", "banking"):
             definition = get_agent(n)
             resources = await open_agent_resources(definition, stack)
-            ctx = AgentContext(llm=object(), resources=resources)
+            # FakeLLM chats *and* sees, which is what the banking pack asks for.
+            ctx = AgentContext(llm=FakeLLM(), resources=resources)
             names[n] = {c.spec.name for c in definition.capabilities(ctx)}
     assert names["default"] == {"research", "analysis", "critique"}
     assert names["banking"] == {"search", "vision", "refs"}
     assert not names["default"] & names["banking"]
+
+
+async def test_banking_drops_vision_when_the_llm_cannot_see():
+    """A capability nothing can serve stays out of the registry.
+
+    `LLMClient` promises `chat` and nothing more; `vision` is the banking
+    agent's own port. Handed a chat-only adapter, the pack must leave the
+    vision capability unregistered rather than let the planner plan a step
+    that can only raise AttributeError halfway through a job.
+    """
+
+    class ChatOnly:
+        async def chat(self, messages, **kwargs) -> str:
+            return "..."
+
+    async with AsyncExitStack() as stack:
+        definition = get_agent("banking")
+        resources = await open_agent_resources(definition, stack)
+        ctx = AgentContext(llm=ChatOnly(), resources=resources)
+        names = {c.spec.name for c in definition.capabilities(ctx)}
+    assert names == {"search", "refs"}
 
 
 async def test_a_third_party_agent_needs_no_shared_code(store, checkpointer, tmp_path):

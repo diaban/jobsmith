@@ -21,7 +21,7 @@ class StepState(CapabilityBaseState, total=False):
 
 
 class SingleStepCapability(Capability):
-    spec: ClassVar[CapabilitySpec]
+    spec: CapabilitySpec                               # declared by Capability, not a ClassVar
     SYSTEM: ClassVar[str]                              # the node's system prompt
     HEADING: ClassVar[str]                             # markdown heading in render_context
     OUTPUT_KEY: ClassVar[str]                          # key in the emitted data dict

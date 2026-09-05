@@ -132,11 +132,11 @@ def markdown_to_html(text: str) -> str:
             continue
         bullet = _BULLET.fullmatch(stripped)
         ordered = _ORDERED.fullmatch(stripped)
-        if bullet or ordered:
+        item = bullet or ordered
+        if item is not None:
             close_paragraph()
             open_list("ul" if bullet else "ol")
-            item = (bullet or ordered).group(1)
-            out.append(f"<li>{_inline(escape(item))}</li>")
+            out.append(f"<li>{_inline(escape(item.group(1)))}</li>")
             continue
         paragraph.append(stripped)
 
