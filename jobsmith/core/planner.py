@@ -15,7 +15,7 @@ from typing import Any
 from .deps import Deps
 from .profile import DEFAULT_PLANNER_TEMPLATE
 from .registry import CapabilityRegistry
-from .state import CONVERSATION_INPUT_KEY, AgentState, NodeError, Plan
+from .state import CONVERSATION_INPUT_KEY, AgentState, NodeError, Plan, PlanStep
 
 
 class Planner:
@@ -80,7 +80,7 @@ class Planner:
         allowed = set(self.registry.names())
         seen: set[str] = set()
         dropped: set[str] = set()
-        cleaned: list[dict[str, Any]] = []
+        cleaned: list[PlanStep] = []
         for step in steps:
             name = step.get("capability")
             if name not in allowed:

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from ..core.state import NodeError, Plan
+from ..core.state import CapabilityResult, NodeError, Plan
 from .models import Job, JobOutput, JobStatus
 
 
@@ -34,7 +34,7 @@ class JobRepository(Protocol):
     async def load_all(self, *, limit: int = 50) -> list[Job]: ...
     async def save_plan(self, job_id: str, plan: Plan) -> None: ...
     async def save_errors(self, job_id: str, errors: list[NodeError]) -> None: ...
-    async def save_result(self, job_id: str, capability: str, result: dict) -> None: ...
+    async def save_result(self, job_id: str, capability: str, result: CapabilityResult) -> None: ...
 
 
 class StoreJobRepository:
@@ -54,7 +54,7 @@ class StoreJobRepository:
     async def save_errors(self, job_id: str, errors: list[NodeError]) -> None:
         await self.store.aput(("jobs", job_id, "meta"), "errors", list(errors))
 
-    async def save_result(self, job_id: str, capability: str, result: dict) -> None:
+    async def save_result(self, job_id: str, capability: str, result: CapabilityResult) -> None:
         """A capability's own output — intermediate material, not a deliverable."""
         await self.store.aput(("jobs", job_id, "results"), capability, result)
 

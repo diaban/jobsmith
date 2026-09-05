@@ -262,6 +262,8 @@ def make_job_tools(manager: JobManager, session_id: str) -> list[Any]:
         if job is None:
             return f"No unique job of this session matches prefix {job_id_prefix!r}."
         cancelled = await manager.cancel_job(job.job_id)
-        return f"Job {job.job_id[:8]} is now {cancelled.status.value}."
+        # cancel_job re-reads the record and can come back empty; the one we
+        # just found is the honest fallback.
+        return f"Job {job.job_id[:8]} is now {(cancelled or job).status.value}."
 
     return [launch_job, job_status, list_my_jobs, cancel_job]

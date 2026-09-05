@@ -18,6 +18,7 @@ from operator import add
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from .state import AgentState, CapabilityResult, NodeError, merge_results
 from .usage import current_ledger
@@ -75,7 +76,7 @@ class Capability(ABC):
     spec: CapabilitySpec  # set as a class attribute (or instance attribute) by subclasses
 
     @abstractmethod
-    def build(self):
+    def build(self) -> CompiledStateGraph:
         """Return the compiled sub-graph (no checkpointer — the parent owns it)."""
         ...
 

@@ -91,7 +91,9 @@ def make_chat_model(choice: str) -> Any:
             sys.exit("chat with Claude needs:  uv pip install langchain-anthropic")
         model = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5")
         print(f"[chat llm: ChatAnthropic — {model}]", file=sys.stderr)
-        return ChatAnthropic(model=model, max_tokens=4096)
+        # pydantic aliases: the fields are `model_name`/`max_tokens_to_sample`, and
+        # pyright reads the synthesized __init__, not the alias LangChain documents.
+        return ChatAnthropic(model=model, max_tokens=4096)  # pyright: ignore[reportCallIssue]
     if choice == "openai":
         try:
             from langchain_openai import ChatOpenAI
@@ -178,6 +180,20 @@ class KeywordLLM:
         return reply
 
 
+def _text(message: BaseMessage) -> str:
+    """A message's content as plain text.
+
+    LangChain types `content` as `str | list[str | dict]` (content blocks), and
+    everything below reads it as a string. The fake only ever sees messages
+    this project built, so the list arm is a formality — but it is the typed
+    contract, so it is handled instead of assumed away.
+    """
+    content = message.content
+    if isinstance(content, str):
+        return content
+    return "".join(part for part in content if isinstance(part, str))
+
+
 class KeywordChatModel(BaseChatModel):
     """Deterministic tool-calling chat model: proposes a job on analysis-ish
     words, otherwise answers directly. Lets the whole chat/HITL/notification
@@ -202,9 +218,9 @@ class KeywordChatModel(BaseChatModel):
     def _generate(self, messages: list[BaseMessage], stop=None, run_manager=None, **kwargs) -> ChatResult:
         # 1. a finished-job notice was injected → synthesize it
         for m in reversed(messages):
-            if isinstance(m, SystemMessage) and "background jobs finished" in m.content:
+            if isinstance(m, SystemMessage) and "background jobs finished" in _text(m):
                 report = next(
-                    (ln.split(": ", 1)[1] for ln in m.content.splitlines()
+                    (ln.split(": ", 1)[1] for ln in _text(m).splitlines()
                      if ln.startswith("Report file: ")), "?",
                 )
                 return self._reply(
@@ -214,11 +230,11 @@ class KeywordChatModel(BaseChatModel):
         last = messages[-1]
         # 2. tool result (launch/status/cancel) → relay it
         if isinstance(last, ToolMessage):
-            if "DECLINED" in last.content:
+            if "DECLINED" in _text(last):
                 return self._reply("Understood, I won't launch that job.")
-            return self._reply(f"Noted — {last.content}")
+            return self._reply(f"Noted — {_text(last)}")
         # 3. user message → job proposal or direct answer
-        user = last.content if isinstance(last, HumanMessage) else ""
+        user = _text(last) if isinstance(last, HumanMessage) else ""
         if any(w in user.lower() for w in self.COMPLEX_WORDS):
             call = {
                 "name": "launch_job",
