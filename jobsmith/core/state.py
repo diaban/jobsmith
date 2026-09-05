@@ -17,11 +17,23 @@ Determinism caveat:
   Insertion order of `results` depends on wave arrival order. Consumers that
   need stable ordering (e.g. context merging) must iterate in *plan order*,
   never in dict order.
+
+Totality, and why `query` is the exception:
+  These schemas are `total=False` because a LangGraph node returns a *partial*
+  update — that is right for writes. It is wrong for reads: pyright's
+  `reportTypedDictNotRequiredAccess` then rejects `state["query"]` even though
+  the graph is only ever entered with a query (`jobs/runner.py` invokes it with
+  `{"query", "inputs", "job_id"}`, and a resume replays that same checkpoint).
+  `Required[str]` states that truthfully, and costs nothing on the write side
+  because no node is annotated `-> AgentState`: they all return plain `dict`.
+  Every other key is genuinely absent until some node writes it, so it stays
+  NotRequired and must be read with `.get()` and a default that says what
+  missing means — see PostProcessor, DocumentsCapability, ResearchCapability.
 """
 from __future__ import annotations
 
 from operator import add
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, Required, TypedDict
 
 # ---------- Plan ----------
 
@@ -79,7 +91,7 @@ class NodeError(TypedDict):
 
 class AgentState(TypedDict, total=False):
     # --- Input ---
-    query: str
+    query: Required[str]        # guaranteed at entry: the graph is invoked with it
     inputs: dict[str, Any]      # arbitrary domain inputs (image keys, file refs, ...)
                                 # plus CONVERSATION_INPUT_KEY when chat-launched
     job_id: str

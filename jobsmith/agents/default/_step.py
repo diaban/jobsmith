@@ -35,8 +35,13 @@ class SingleStepCapability(Capability):
     def _material(self, state: StepState) -> str:
         for cap_name, data_key in self.UPSTREAM:
             result = state.get("results", {}).get(cap_name)
-            if result and result.get("ok") and result.get("data", {}).get(data_key):
-                return f"[material from {cap_name}]\n{result['data'][data_key]}"
+            if not result or not result.get("ok"):
+                continue
+            # Every CapabilityResult key is NotRequired — a failed step has no
+            # `data` at all — so bind the value once instead of asserting twice.
+            material = (result.get("data") or {}).get(data_key)
+            if material:
+                return f"[material from {cap_name}]\n{material}"
         return "(no upstream material available — reason from the request alone)"
 
     async def work(self, state: StepState) -> dict:
@@ -56,7 +61,9 @@ class SingleStepCapability(Capability):
         return {"output": output}
 
     async def emit_success(self, state: StepState) -> dict:
-        return self._emit_success({self.OUTPUT_KEY: state["output"]})
+        # Reached only through route_after_work == "success", which gates on a
+        # non-empty `output`.
+        return self._emit_success({self.OUTPUT_KEY: state.get("output") or ""})
 
     async def emit_failure(self, state: StepState) -> dict:
         return self._emit_failure(f"{self.spec.name} produced no output")

@@ -98,8 +98,11 @@ class DocumentsCapability(Capability):
         return {"queries": queries[: self.max_queries] or [state["query"]]}
 
     async def retrieve(self, state: DocumentsState) -> dict:
+        # plan_queries always writes a non-empty list (it degrades to the
+        # request itself); the same fallback keeps this node honest on its own.
+        queries = state.get("queries") or [state["query"]]
         best: dict[str, Document] = {}
-        for query in state["queries"]:
+        for query in queries:
             try:
                 hits = await self.source.search(query, limit=self.per_query)
             except Exception:
@@ -115,10 +118,12 @@ class DocumentsCapability(Capability):
         ]}
 
     async def emit_success(self, state: DocumentsState) -> dict:
-        found = state["found"]
+        # Reached only when the router saw a non-empty `found`; `queries` was
+        # written before it, by plan_queries.
+        found = state.get("found") or []
         return self._emit_success(
             {"documents": found},
-            meta={"document_count": len(found), "queries": state["queries"]},
+            meta={"document_count": len(found), "queries": state.get("queries") or []},
         )
 
     async def emit_failure(self, state: DocumentsState) -> dict:

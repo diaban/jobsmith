@@ -85,11 +85,15 @@ venv = ".venv"
 pythonVersion = "3.11"      # the floor in requires-python, same as ruff's target-version
 typeCheckingMode = "basic"
 
-# Phase 2 of #31, on purpose. The 31 hits are not 31 oversights: they cluster in
-# the capabilities that read `CapabilityResult`, every key of which is
-# NotRequired. Turning this on is a decision about that TypedDict's contract,
-# not a cleanup, so it gets its own change.
-reportTypedDictNotRequiredAccess = false
+# On since #31 phase 2. The state schemas are `total=False` because a LangGraph
+# node returns a *partial* update — right for writes, wrong for reads. The 31
+# hits it found split three ways: 17 reads of `query`, guaranteed at entry and
+# now `Required` in AgentState / CapabilityBaseState; 12 reads of a key
+# guaranteed only by graph order (`aspects`, `generated_query`, `found`,
+# `draft_answer`, ...), now read with a default that says what missing means;
+# and 2 reads of `CapabilityResult`, whose keys really are all optional. It is
+# therefore a read-discipline gate, and a blanket ignore on it defeats it.
+reportTypedDictNotRequiredAccess = true
 
 # The optional extras (anthropic, openai, langchain-anthropic/-openai, psycopg)
 # are imported lazily behind `try: ... except ImportError`, and `make install`
