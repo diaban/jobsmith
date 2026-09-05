@@ -149,7 +149,7 @@ async def cmd_outputs(client: AgentClient, args) -> int:
         return 1
     for output in outputs:
         title = f"  {output['title']}" if output.get("title") else ""
-        print(f"{output['role']:<6} {output['format']:<9} {output['path']}{title}")
+        print(f"{output['role']:<9} {output['format']:<9} {output['path']}{title}")
     return 0
 
 

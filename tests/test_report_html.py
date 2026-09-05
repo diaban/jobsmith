@@ -14,15 +14,17 @@ from pathlib import Path
 import pytest
 
 from jobsmith.app import build_app
-from jobsmith.app.agent import pick_report_format
+from jobsmith.app.agent import pick_report_formats
 from jobsmith.app.providers import KeywordChatModel, KeywordLLM
 from jobsmith.core.usage import Usage
-from jobsmith.jobs.models import Job, JobStatus
+from jobsmith.jobs.models import Job, JobOutput, JobStatus
 from jobsmith.jobs.report import (
     JobDocument,
     MarkdownReport,
+    MultiReporter,
     PlanRow,
     build_document,
+    compose_reporters,
     make_reporter,
 )
 from jobsmith.jobs.report_html import HtmlReport, dag_svg, markdown_to_html
@@ -204,7 +206,7 @@ def test_the_page_carries_the_same_provenance_as_the_markdown_one():
 def test_write_produces_one_html_output_and_report_path_points_at_it(tmp_path):
     job = Job(job_id="j9", status=JobStatus.DONE, query="analyse the thing",
               created_at="2026-09-01T00:00:00Z", final_answer="Here it is.")
-    output = HtmlReport().write(job, tmp_path)
+    [output] = HtmlReport().write(job, tmp_path)
 
     assert output.format == "html" and output.role == "main"
     assert output.path == str(tmp_path / "j9.html")
@@ -245,12 +247,22 @@ def test_make_reporter_picks_a_format_and_refuses_an_unknown_one():
         make_reporter("pdf")
 
 
-def test_pick_report_format_prefers_the_argument_then_the_env(monkeypatch):
+def test_pick_report_formats_prefers_the_argument_then_the_env(monkeypatch):
     monkeypatch.delenv("JOBSMITH_REPORT_FORMAT", raising=False)
-    assert pick_report_format() == "markdown"
+    assert pick_report_formats() == ["markdown"]
     monkeypatch.setenv("JOBSMITH_REPORT_FORMAT", "html")
-    assert pick_report_format() == "html"
-    assert pick_report_format("markdown") == "markdown"
+    assert pick_report_formats() == ["html"]
+    assert pick_report_formats("markdown") == ["markdown"]
+
+
+def test_pick_report_formats_reads_a_comma_separated_list(monkeypatch):
+    """One run, several deliverables — order is meaning: the first is main."""
+    monkeypatch.setenv("JOBSMITH_REPORT_FORMAT", "markdown, html")
+    assert pick_report_formats() == ["markdown", "html"]
+    assert pick_report_formats("html,markdown") == ["html", "markdown"]
+    # junk in the list degrades to the default rather than to an empty reporter
+    monkeypatch.setenv("JOBSMITH_REPORT_FORMAT", " , ")
+    assert pick_report_formats() == ["markdown"]
 
 
 async def test_the_composed_agent_can_hand_back_html(tmp_path):
@@ -284,3 +296,96 @@ def test_both_reporters_read_the_same_document(tmp_path):
     assert "```mermaid" in markdown and "<svg" in html
     for expected in ("An answer.", "research", "j7"):
         assert expected in markdown and expected in html
+
+
+# ------------------------------------------------- several formats at once
+
+
+def done_job(job_id: str = "j10") -> Job:
+    return Job(job_id=job_id, status=JobStatus.DONE, query="compare A and B",
+               created_at="2026-09-01T00:00:00Z", final_answer="A beats B.")
+
+
+def test_one_format_still_composes_to_that_one_reporter():
+    """The ordinary case must not grow a wrapper: a single name gives back
+    the same Reporter object it always did, so a one-format run is unchanged."""
+    assert isinstance(compose_reporters("markdown"), MarkdownReport)
+    assert isinstance(compose_reporters("html"), HtmlReport)
+    assert isinstance(compose_reporters(["HTML"]), HtmlReport)
+    assert compose_reporters("html", "reg", with_annexes=True).registry == "reg"
+
+
+def test_two_formats_write_two_files_and_exactly_one_is_main(tmp_path):
+    job = done_job()
+    outputs = compose_reporters("markdown,html").write(job, tmp_path)
+
+    assert [(o.format, o.role) for o in outputs] == [
+        ("markdown", "main"), ("html", "alternate")]
+    assert [Path(o.path).suffix for o in outputs] == [".md", ".html"]
+    for output in outputs:                       # both really landed on disk
+        assert "A beats B." in Path(output.path).read_text(encoding="utf-8")
+
+    job.outputs = outputs
+    assert job.report_path == outputs[0].path    # the main one, unambiguously
+
+
+def test_the_first_format_asked_for_is_the_main_deliverable(tmp_path):
+    """Order is the decision — and `format` is what /report announces."""
+    reporter = compose_reporters("html,markdown")
+    assert reporter.format == "html" and reporter.extension == "html"
+
+    job = done_job("j11")
+    job.outputs = reporter.write(job, tmp_path)
+    assert [(o.format, o.role) for o in job.outputs] == [
+        ("html", "main"), ("markdown", "alternate")]
+    assert job.report_path.endswith(".html")
+
+
+def test_aliases_of_one_format_do_not_write_the_same_file_twice(tmp_path):
+    reporter = compose_reporters("markdown,md")
+    assert isinstance(reporter, MarkdownReport)
+    assert len(reporter.write(done_job("j12"), tmp_path)) == 1
+
+
+def test_an_unknown_name_anywhere_in_the_list_still_fails_loudly():
+    with pytest.raises(ValueError, match="unknown report format"):
+        compose_reporters("markdown,pdf")
+    with pytest.raises(ValueError, match="unknown report format"):
+        compose_reporters("pdf,markdown")
+    with pytest.raises(ValueError, match="at least one reporter"):
+        MultiReporter([])
+
+
+def test_an_annex_is_never_demoted_to_a_sibling_format(tmp_path):
+    """Only a second *main* is a rival for `report_path`. A Reporter that
+    also emits per-step material keeps that material labelled as an annex."""
+
+    class WithAnnex:
+        format, extension = "markdown", "md"
+
+        def write(self, job, directory):
+            return [JobOutput(path="a.md", format="markdown"),
+                    JobOutput(path="chart.svg", format="svg", role="annex",
+                              produced_by="research")]
+
+    outputs = MultiReporter([WithAnnex(), WithAnnex()]).write(done_job("j13"), tmp_path)
+    assert [o.role for o in outputs] == ["main", "annex", "alternate", "annex"]
+
+
+async def test_the_composed_agent_can_hand_back_both_formats(tmp_path):
+    """End to end, keyless: `JOBSMITH_REPORT_FORMAT=markdown,html` is one run,
+    two recorded deliverables — and `report_path` still points at the first."""
+    app = await build_app(llm=KeywordLLM(), chat_model=KeywordChatModel(), db="memory",
+                          reports_dir=str(tmp_path / "artifacts"),
+                          report_format="markdown,html")
+    try:
+        job = await app.manager.create_job("study the topic in depth")
+        done = await app.manager.run_job(job.job_id)
+        assert [(o.format, o.role) for o in done.outputs] == [
+            ("markdown", "main"), ("html", "alternate")]
+        assert done.report_path.endswith(".md")
+        paths = [Path(o.path) for o in done.outputs]
+        assert all(p.exists() for p in paths) and len({str(p) for p in paths}) == 2
+        assert paths[1].read_text(encoding="utf-8").startswith("<!doctype html>")
+    finally:
+        await app.aclose()

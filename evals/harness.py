@@ -26,7 +26,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
-from jobsmith.app.agent import build_app, pick_report_format
+from jobsmith.app.agent import build_app, pick_report_formats
 from jobsmith.app.providers import KeywordChatModel, make_llm, pick_provider
 from jobsmith.core.executor import Executor
 
@@ -172,7 +172,7 @@ async def run_suite(
         # Recorded, but deliberately NOT part of what makes two runs
         # comparable: the checks read through `deliverable.extract`, so the
         # score is the same property whichever Reporter produced the file.
-        "report_format": pick_report_format(report_format),
+        "report_format": ",".join(pick_report_formats(report_format)),
     }
     return list(observations), context
 

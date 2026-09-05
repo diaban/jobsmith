@@ -16,7 +16,7 @@ from test_jobs import make_manager
 
 from jobsmith.api import create_api
 from jobsmith.chat import ChatSession
-from jobsmith.jobs.report import make_reporter
+from jobsmith.jobs.report import compose_reporters, make_reporter
 from jobsmith.service import LocalAgentService
 
 
@@ -103,6 +103,31 @@ async def test_report_content_type_follows_the_deliverable_format(
         report = await client.get(f"/jobs/{job['job_id']}/report")
         assert report.headers["content-type"].startswith("text/html")
         assert report.text.startswith("<!doctype html>")
+
+
+async def test_every_deliverable_is_listed_and_downloadable(store, checkpointer, tmp_path):
+    """A run asked for two formats: both are outputs of the job, both can be
+    downloaded, and /report still serves the main one — with its own type."""
+    app, manager = make_app(store, checkpointer, tmp_path, [AIMessage(content="hi")])
+    manager.reporter = compose_reporters("markdown,html")
+
+    async with client_for(app) as client:
+        job = await wait_done(client, (await client.post(
+            "/jobs", json={"query": "two formats"})).json()["job_id"])
+        assert len(job["outputs"]) == 2
+
+        outputs = (await client.get(f"/jobs/{job['job_id']}/outputs")).json()
+        assert [(o["role"], o["format"]) for o in outputs] == [
+            ("main", "markdown"), ("alternate", "html")]
+        for output in outputs:
+            download = await client.get(f"/jobs/{job['job_id']}/outputs/{output['name']}")
+            assert download.status_code == 200
+        assert outputs[1]["name"].endswith(".html")
+
+        report = await client.get(f"/jobs/{job['job_id']}/report")
+        assert report.headers["content-type"].startswith("text/markdown")
+        assert report.text.startswith("# two formats")
+        assert job["report_path"] == outputs[0]["path"]
 
 
 async def test_chat_flow_decline_creates_no_job(store, checkpointer, tmp_path):
