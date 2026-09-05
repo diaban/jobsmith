@@ -45,6 +45,12 @@ jobs:
       - name: Lint
         run: .venv/bin/ruff check .
 
+      - name: Type check
+        # Every extra is installed above, so this is the strictest reading of
+        # the tree: the optional providers' imports resolve here, and the
+        # `[tool.pyright]` config is the same one Pylance applies in the editor.
+        run: .venv/bin/pyright
+
       - name: Domain-leakage gate
         run: make leak-check
 

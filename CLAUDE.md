@@ -11,13 +11,14 @@ CLI/API surface, limits. Keep it in sync when a command or a limit changes.
 
 ## Commands
 
-A Makefile wraps the common ones: `make help` lists them (`install`, `install-all`, `test [T=kw]`, `lint`, `fix`, `check` = lint+leak-gate+tests, `eval`/`eval-llm` = score the prompts on the golden set, `serve`/`chat`/`jobs` = the global agent, `chat-banking`/`api-banking`/`demo-banking` = the example, `clean`). Raw equivalents:
+A Makefile wraps the common ones: `make help` lists them (`install`, `install-all`, `test [T=kw]`, `lint`, `fix`, `types`, `check` = lint+types+leak-gate+tests, `eval`/`eval-llm` = score the prompts on the golden set, `serve`/`chat`/`jobs` = the global agent, `chat-banking`/`api-banking`/`demo-banking` = the example, `clean`). Raw equivalents:
 
 ```bash
 uv venv --python 3.12 .venv && uv pip install -e ".[dev,api,anthropic]"  # setup
 .venv/bin/python -m pytest tests/ -q                        # all tests
 .venv/bin/python -m pytest tests/test_planner.py::test_cycle_rejected  # one test
 .venv/bin/ruff check .                                      # lint
+.venv/bin/pyright                                           # types (config: [tool.pyright])
 jobsmith serve [--port 8000]                                # ★ the daemon: it owns the job engine
 jobsmith chat [--session ID]                                # ★ converse (daemon if up, else embedded)
 jobsmith run "<task>" [--wait] | jobs | job <id> | report <id> | cancel <id>
@@ -31,7 +32,12 @@ The REPL is a CONVERSATION by default (chat agent; complex asks → job proposal
 ### Working on this repo
 
 - **One short-lived branch per issue**, off `main`: `feat/<n>-<slug>`, `fix/<n>-<slug>`, `chore/<slug>` (`gh issue develop <n>` creates one already linked). Open a PR, let CI run, merge, delete. **No `develop` branch**: there are no releases yet, so it would only add a merge — the PR + CI is the integration point it used to provide. Releases, when they come, are tags.
-- `main` stays green. CI (`.github/workflows/ci.yml`) runs `make check` on push and PR across Python 3.11 and 3.12, plus `uv lock --check` so the lockfile cannot silently drift from pyproject.
+- `main` stays green. CI (`.github/workflows/ci.yml`) runs what `make check` runs — lint, **types**, the leakage gate, tests — on push and PR across Python 3.11 and 3.12, plus `uv lock --check` so the lockfile cannot silently drift from pyproject. CI installs **every** extra, so it is the stricter reading: the optional providers' imports resolve there and are type-checked, where a plain `make install` (`.[dev,api]`) leaves them unresolved.
+- **The type gate (`make types`, pyright)** is the only check here that can see a bug no test can. A signature that lies is not observable at runtime — the one that prompted #31 (`compose_reporters` promising `Reporter`, returning `Reporter | MultiReporter`) was spotted by accident in VS Code and would never have failed CI. pyright rather than mypy *because* of that: they report the same findings, but Pylance **is** pyright, so `[tool.pyright]` in `pyproject.toml` is one configuration for the editor and the gate instead of a permanent split. What it deliberately does **not** check yet:
+  - `reportTypedDictNotRequiredAccess` is **off** — 31 hits, concentrated in the capabilities that read `CapabilityResult` (`agents/default/research.py` 7, `agents/banking/capabilities/search.py` 6, `agents/default/documents.py` 5, `core/generation.py` 4). That is one under-specified TypedDict contract, not 31 oversights, so it is its own decision (Phase 2 of #31).
+  - `reportMissingImports` is a **warning**, not an error: the optional extras are imported lazily behind `try/except ImportError`, and their absence under `.[dev,api]` is a fact about that environment, not a defect. A misspelled import stays visible and is loud at runtime anyway.
+  - Scope is `jobsmith/`. `tests/` and `evals/` are out, and `typeCheckingMode` is `basic`, not `strict` — the point is a gate that holds, not a maximal one.
+  - pyright is a Python wrapper around a bundled JS checker: it needs a `node` on `PATH`. GitHub runners have one; without one it silently downloads a node build on first run, which is why `make types` is fast here and may not be on a fresh machine.
 - **`main` is protected**: PR required, the three checks must pass, admins included, no force-push. **Status checks are strict** — a branch must contain the current `main` before it can merge, so CI validates the *post-merge* state rather than a stale snapshot. When several PRs are in flight, each merge invalidates the rest: bring them up to date with `gh pr update-branch <n>` (or a rebase) and let CI re-run.
 
   This exists because green checks on a stale base do not mean the merge is green. Git only sees *textual* conflicts; two PRs can merge cleanly and still break each other — one renames what the other calls, one reshapes an output the other asserts on. Three PRs in the first parallel batch merged on stale CI and survived only because the combination was verified by hand each time.
@@ -94,7 +100,7 @@ AgentDefinition(
   - Both are registered **only when something backs them** (`--docs PATH` / `$JOBSMITH_DOCS`; `$TAVILY_API_KEY` + extra `.[web]`), read by `open_default_resources`. A capability nothing can serve must stay out of the registry, or the planner will plan a step that can only fail. With neither, the agent still runs LLM-only.
   - `TavilySource` is the **first adapter that must be closed**: its `httpx.AsyncClient` is entered on the app's `AsyncExitStack`, so the connection pool is released with the app — cleanly or on a failed startup. It raises rather than returning `[]` on an HTTP error, because the capability already isolates one failing query and a silent empty list would read as "the web knows nothing about this".
   - Retrieved passages carry a **quotable id** (`path#chunk`); `render_context` gives the model the material, `render_report` gives the human the provenance only.
-- `agents/banking/`: the domain example — capabilities, its **own ports** (`deps.py`: `SearchEngine`/`VisionClient`/`S3Client` Protocols), **its own adapters** (`fakes.py`, assembled in `open_banking_resources`), and a French profile. The ports live next to the capabilities that consume them, never in a central `ports/` package: that is what keeps them scaling with their consumers, and a port is shaped by the *need*, not by the vendor's API. `demo.py` runs the whole product with richer fakes injected through `build_app(resources=...)`.
+- `agents/banking/`: the domain example — capabilities, its **own ports** (`deps.py`: `SearchEngine`/`VisionClient`/`S3Client` Protocols), **its own adapters** (`fakes.py`, assembled in `open_banking_resources`), and a French profile. The ports live next to the capabilities that consume them, never in a central `ports/` package: that is what keeps them scaling with their consumers, and a port is shaped by the *need*, not by the vendor's API. `demo.py` runs the whole product with richer fakes injected through `build_app(resources=...)`. `vision` is registered **only when the composed LLM actually satisfies `VisionClient`** — the framework's `LLMClient` promises `chat` and nothing more, and the same rule the default agent applies to `documents` applies here: a capability nothing can serve stays out of the registry rather than becoming a planned step that raises `AttributeError` halfway through a job.
 - Selection: `--agent NAME` (CLI, applies to whichever process owns the engine — so pass it to `serve`), `build_app(agent=...)`, `make chat AGENT=banking`.
 
 ### The composition root (`app/`)
