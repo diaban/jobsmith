@@ -229,6 +229,11 @@ A job carries a **list** of outputs (`role: main | alternate | annex`, a
 capability produced. `jobsmith outputs <id>` and `GET /jobs/{id}/outputs`
 list them all.
 
+If writing a file fails (a full disk, a read-only directory), the job is
+still **done** — the answer was produced and is stored — and says so: the
+error names the format that failed, and any file that did get written is
+still listed as an output.
+
 ---
 
 ## Architecture
