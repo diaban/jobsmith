@@ -79,13 +79,33 @@ class JobNotificationMiddleware(AgentMiddleware):
 
     @staticmethod
     def _notice_for(job: Job) -> str:
-        if job.status is JobStatus.DONE:
-            return (
-                f"Job {job.job_id[:8]} ({job.query[:60]!r}) is DONE.\n"
-                f"Report file: {job.report_path}\n"
-                f"Full answer (synthesize it, do not paste it):\n{job.final_answer}"
-            )
-        return f"Job {job.job_id[:8]} ({job.query[:60]!r}) FAILED: {job.error}"
+        """What the model is told about one finished job.
+
+        A DONE job can have no main deliverable: the run answered and only
+        the write failed, which is why the manager keeps it DONE with
+        `job.error` set. Rendering `report_path` unconditionally then
+        announces "Report file: None" and never says why — the answer, the
+        thing that survived, arrives next to a lie. So the path is stated
+        when there is one, and the reason when there is not; either way the
+        answer is delivered, since that is the whole point of staying DONE.
+        """
+        if job.status is not JobStatus.DONE:
+            return f"Job {job.job_id[:8]} ({job.query[:60]!r}) FAILED: {job.error}"
+
+        lines = [f"Job {job.job_id[:8]} ({job.query[:60]!r}) is DONE."]
+        if job.report_path:
+            lines.append(f"Report file: {job.report_path}")
+        else:
+            reason = job.error or "the deliverable could not be written"
+            lines.append(f"No report file was saved ({reason}) — say so, then "
+                         "deliver the answer below anyway.")
+            # A write can fail after earlier formats landed: those files
+            # exist and are worth naming, even with the main one missing.
+            if job.outputs:
+                lines.append("Files that were written: "
+                             + ", ".join(o.path for o in job.outputs))
+        lines.append(f"Full answer (synthesize it, do not paste it):\n{job.final_answer}")
+        return "\n".join(lines)
 
     async def _finished_notice(self) -> tuple[SystemMessage | None, list[Job]]:
         finished = await self.manager.list_finished_unannounced(self.session_id)
@@ -93,7 +113,8 @@ class JobNotificationMiddleware(AgentMiddleware):
             return None, []
         return SystemMessage(
             f"[job update] The following {NOTICE_MARKER}. Announce each to the "
-            "user now: a short synthesis plus the report file path.\n\n"
+            "user now: a short synthesis plus the report file path, or the "
+            "reason there is no file.\n\n"
             + "\n\n".join(self._notice_for(job) for job in finished)
         ), finished
 
