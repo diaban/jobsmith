@@ -384,10 +384,15 @@ other ignores. It is the only gate here that can see a bug the tests cannot: a
 signature that lies is invisible at runtime, and the one that prompted this
 (a factory promising `Reporter` and returning `Reporter | MultiReporter`) was
 noticed by accident in an editor. Scope is `jobsmith/` — tests and `evals/` are
-deliberately out. One rule is off for now, `reportTypedDictNotRequiredAccess`:
-its 31 hits cluster in the code that reads `CapabilityResult`, whose keys are
-all optional, so turning it on is a decision about that TypedDict's contract
-rather than a cleanup.
+deliberately out.
+
+`reportTypedDictNotRequiredAccess` is on, and it is a read-discipline gate
+rather than a lint: the graph state schemas are `total=False` because a node
+returns a *partial* update, which is right for writes and wrong for reads. Of
+its 31 hits, 17 were `query` — guaranteed at entry, so it is now `Required` in
+`AgentState` and `CapabilityBaseState` — 12 were keys guaranteed only by graph
+order, now read with a default that says what missing means, and 2 were reads
+of `CapabilityResult`, whose keys really are all optional.
 
 ### Judging a prompt change
 

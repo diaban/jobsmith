@@ -160,4 +160,10 @@ class PostProcessor:
     JobManager observes this node's update via astream and stores the answer."""
 
     async def run(self, state: AgentState) -> dict:
-        return {"final_answer": state["draft_answer"], "terminal_kind": "answer"}
+        # `draft_answer` is guaranteed by graph order, not by the schema: this
+        # node is reachable only through validate_output's passing branch, and
+        # the default output rules reject an empty draft. A profile that drops
+        # those rules is the only way here without one — `None` then flows on
+        # as the "no answer" the job layer already models (Job.final_answer is
+        # `str | None`, and the reporter renders it as "(no answer)").
+        return {"final_answer": state.get("draft_answer"), "terminal_kind": "answer"}

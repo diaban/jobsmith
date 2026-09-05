@@ -73,9 +73,15 @@ class SearchCapability(Capability):
             "max_retries": self.max_retries,
         }
 
+    def _search_query(self, state: SearchState) -> str:
+        """The rewritten query, written by generate_query before any of the
+        three search nodes can run. Its own fallback is the raw request, so
+        that is the honest default here too."""
+        return state.get("generated_query") or state["query"]
+
     async def search_call(self, state: SearchState) -> dict:
         try:
-            docs = await self.search.search(state["generated_query"], top_k=self.top_k)
+            docs = await self.search.search(self._search_query(state), top_k=self.top_k)
             return {"raw_docs": docs}
         except Exception:
             return {"raw_docs": []}
@@ -86,14 +92,14 @@ class SearchCapability(Capability):
         delay = (2 ** (n - 1)) * 0.5 + random.uniform(0, 0.25)
         await asyncio.sleep(delay)
         try:
-            docs = await self.search.search(state["generated_query"], top_k=self.top_k)
+            docs = await self.search.search(self._search_query(state), top_k=self.top_k)
             return {"raw_docs": docs, "retry_count": n}
         except Exception:
             return {"raw_docs": [], "retry_count": n}
 
     async def fallback_search(self, state: SearchState) -> dict:
         try:
-            docs = await self.search.search_cached(state["generated_query"], top_k=self.top_k)
+            docs = await self.search.search_cached(self._search_query(state), top_k=self.top_k)
             return {"raw_docs": docs}
         except Exception:
             return {"raw_docs": []}

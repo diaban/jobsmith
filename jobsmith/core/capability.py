@@ -15,7 +15,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from operator import add
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, Required, TypedDict
 
 from langgraph.graph import StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -65,8 +65,15 @@ class CapabilityBaseState(CapabilityOutputState, total=False):
 
     Sub-graph private schemas extend this with their own intermediate fields.
     The reducers MUST match AgentState's so parent fan-in works.
+
+    `query` is Required for the same reason it is in AgentState: the executor
+    fans out with `Send(node, state)`, handing each sub-graph the *whole*
+    parent state, so a capability is entered with exactly the query the graph
+    was invoked with. Fields a sub-graph writes for itself (`aspects`,
+    `generated_query`, ...) are NOT — they belong to the schema that declares
+    them and are absent until their own node has run.
     """
-    query: str
+    query: Required[str]
     inputs: dict[str, Any]
 
 

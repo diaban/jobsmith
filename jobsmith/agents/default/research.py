@@ -73,6 +73,10 @@ class ResearchCapability(Capability):
         return {"aspects": aspects[: self.max_aspects] or [state["query"]]}
 
     async def investigate(self, state: ResearchState) -> dict:
+        # `aspects` is written by decompose, which always returns a non-empty
+        # list — the fallback here is the same one it uses, so an aspect list
+        # that somehow never arrived degrades to the request itself.
+        aspects = state.get("aspects") or [state["query"]]
         try:
             notes = await self.llm.chat(
                 messages=[
@@ -81,7 +85,7 @@ class ResearchCapability(Capability):
                         "role": "user",
                         "content": (
                             f"Request: {state['query']}\n\n"
-                            "Aspects:\n" + "\n".join(f"- {a}" for a in state["aspects"])
+                            "Aspects:\n" + "\n".join(f"- {a}" for a in aspects)
                         ),
                     },
                 ],
@@ -92,9 +96,12 @@ class ResearchCapability(Capability):
         return {"notes": notes}
 
     async def emit_success(self, state: ResearchState) -> dict:
+        # Reached only through route_after_notes == "success", i.e. with
+        # non-empty notes; decompose has likewise already written the aspects.
+        aspects = state.get("aspects") or []
         return self._emit_success(
-            {"aspects": state["aspects"], "notes": state["notes"]},
-            meta={"aspect_count": len(state["aspects"])},
+            {"aspects": aspects, "notes": state.get("notes") or ""},
+            meta={"aspect_count": len(aspects)},
         )
 
     async def emit_failure(self, state: ResearchState) -> dict:

@@ -74,7 +74,7 @@ async def main() -> None:
         print(f"\nplan: {json.dumps(job.plan, indent=2)}")
         print(f"\nresults: {sorted(job.results)}")
         for name, result in job.results.items():
-            print(f"  - {name}: ok={result['ok']}")
+            print(f"  - {name}: ok={result.get('ok')}")
         print(f"\nanswer:\n{job.final_answer}")
         print(f"\ndeliverable: {job.report_path}")
 
