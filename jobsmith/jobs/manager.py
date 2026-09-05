@@ -39,7 +39,7 @@ from ..core.state import NodeError
 from ..core.usage import Usage, UsageLedger, current_ledger, usage_ledger
 from .events import InProcessEvents, JobEvents, job_event
 from .models import Job, JobStatus, now_iso
-from .report import MarkdownReport
+from .report import MarkdownReport, ReportWriteError
 from .repository import JobRepository, StoreJobRepository
 from .runner import GraphRunner, JobUpdate, NodeErrors, PlanReady, StepFinished, Terminal
 
@@ -208,11 +208,37 @@ class JobManager:
             if job.status is JobStatus.DONE:
                 # The reporter reads job.usage, so settle it before writing.
                 job.usage = ledger.total().to_dict()
-                # Whatever it hands back IS the job's deliverables: one
-                # Reporter writes one file, a composed one writes several.
-                job.outputs = list(self.reporter.write(job, self.reports_dir))
+                self._write_outputs(job)
             await self._persist_summary(job)
         return job
+
+    def _write_outputs(self, job: Job) -> None:
+        """Produce the deliverables — and survive failing to.
+
+        Whatever the reporter hands back IS the job's deliverables: one
+        Reporter writes one file, a composed one writes several.
+
+        A write that raises must NOT escape: this runs after the stream's
+        own `try`, so an exception here would skip the final persist and
+        leave the store holding the RUNNING row the last finished step
+        wrote — a job with an answer that no caller can ever reach, until
+        some later process start settles it as interrupted.
+
+        The job therefore stays DONE: the graph answered, the answer is
+        persisted, only the file failed — and `job.error` says which format
+        and why. FAILED would misreport the work *and* be a dead end, since
+        it is resumable in name only (the graph ran to completion, so the
+        checkpoint has nothing pending and `resume_job` would refuse it).
+        A separate `try` on purpose: the run's own `except` means "the graph
+        blew up", which a full disk is not.
+        """
+        try:
+            job.outputs = list(self.reporter.write(job, self.reports_dir))
+        except Exception as e:
+            failure = e if isinstance(e, ReportWriteError) else ReportWriteError(
+                getattr(self.reporter, "format", "unknown"), e)
+            job.outputs = failure.outputs   # keep what did make it to disk
+            job.error = str(failure)
 
     async def _apply(self, job: Job, update: JobUpdate, errors: list[NodeError]) -> None:
         """Fold one domain update from the runner into the job."""

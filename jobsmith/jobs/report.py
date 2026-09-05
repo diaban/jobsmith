@@ -147,6 +147,33 @@ def format_step_usage(usage: Usage) -> str:
     return f"{size} tok · {cost}" if cost else f"{size} tok"
 
 
+class ReportWriteError(RuntimeError):
+    """A deliverable could not be written — carrying whatever WAS written.
+
+    The run is not the file: by the time a Reporter runs, the job has an
+    answer and it is persisted. So a failed write is not a failed job, and
+    the manager needs two things from it — a message naming which format
+    broke and why, and the outputs already on disk. Without the latter, a
+    markdown file written before the HTML one raised would exist with no
+    `JobOutput` describing it: a deliverable nobody can find, which is the
+    whole reason `write` returns a list.
+    """
+
+    def __init__(
+        self,
+        report_format: str,
+        cause: BaseException,
+        outputs: Sequence[JobOutput] = (),
+    ):
+        self.report_format = report_format
+        self.cause = cause
+        self.outputs = list(outputs)
+        super().__init__(
+            f"the {report_format} deliverable could not be written: "
+            f"{type(cause).__name__}: {cause}"
+        )
+
+
 class Reporter(Protocol):
     """Produces a job's deliverable file(s).
 
@@ -303,7 +330,17 @@ class MultiReporter:
     def write(self, job: Job, directory: Path) -> list[JobOutput]:
         outputs: list[JobOutput] = []
         for reporter in self.reporters:
-            for output in reporter.write(job, directory):
+            try:
+                written = reporter.write(job, directory)
+            except ReportWriteError as failed:      # a composed composite
+                raise ReportWriteError(
+                    failed.report_format, failed.cause, outputs + failed.outputs
+                ) from failed.cause
+            except Exception as cause:
+                # The files already written stay the job's deliverables:
+                # they exist, and only a JobOutput makes them findable.
+                raise ReportWriteError(reporter.format, cause, outputs) from cause
+            for output in written:
                 if outputs and output.role == "main":
                     output = replace(output, role="alternate")
                 outputs.append(output)

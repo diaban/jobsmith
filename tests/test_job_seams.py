@@ -7,6 +7,7 @@ or a real store again, a responsibility has leaked back into the manager.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -258,3 +259,55 @@ async def test_how_many_deliverables_a_job_has_is_the_reporter_s_business(tmp_pa
     assert done.report_path.endswith(".md")
     # and the repository — the port, no store — recorded both
     assert len(mgr.repo.summaries[job.job_id]["outputs"]) == 2
+
+
+async def test_a_failed_report_write_leaves_the_job_done_and_persisted(tmp_path):
+    """The run answered; only the file failed. That is DONE with an error —
+    and, above all, it is *persisted*: the write happens after the stream's
+    own try/except, so an escaping exception used to skip the final persist
+    and leave the store holding the RUNNING row the last step wrote — a job
+    with an answer nobody could reach."""
+
+    class Boom:
+        format, extension = "markdown", "md"
+
+        def write(self, job, directory):
+            raise OSError("No space left on device")
+
+    mgr = make_manager(tmp_path, Terminal("answer", "The answer.", None), reporter=Boom())
+    job = await mgr.create_job("q")
+    done = await mgr.run_job(job.job_id)
+
+    assert done.status is JobStatus.DONE          # the work is not the file
+    assert done.final_answer == "The answer."
+    assert done.outputs == [] and done.report_path is None
+    assert "markdown" in done.error and "No space left on device" in done.error
+
+    stored = mgr.repo.summaries[job.job_id]       # what a later reader sees
+    assert stored["status"] == "done" and stored["error"] == done.error
+    assert stored["outputs"] == [] and stored["final_answer"] == "The answer."
+
+
+async def test_deliverables_already_written_survive_a_later_failure(tmp_path):
+    """Markdown lands, HTML raises: the markdown file exists, so it stays a
+    deliverable of the job. Dropping it would leave a file on disk that
+    `/jobs/{id}/outputs` never mentions."""
+    from jobsmith.jobs.report import MarkdownReport, MultiReporter
+
+    class Boom:
+        format, extension = "html", "html"
+
+        def write(self, job, directory):
+            raise RuntimeError("renderer exploded")
+
+    mgr = make_manager(tmp_path, Terminal("answer", "The answer.", None),
+                       reporter=MultiReporter([MarkdownReport(), Boom()]))
+    job = await mgr.create_job("q")
+    done = await mgr.run_job(job.job_id)
+
+    assert done.status is JobStatus.DONE
+    [output] = done.outputs
+    assert output.role == "main" and Path(output.path).exists()
+    assert done.report_path == output.path
+    assert "html" in done.error and "renderer exploded" in done.error
+    assert len(mgr.repo.summaries[job.job_id]["outputs"]) == 1
