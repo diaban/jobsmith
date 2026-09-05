@@ -215,13 +215,19 @@ Per-step material is deliberately **not** inlined — it lives in the store, and
 **Or the same thing as a web page.** `JOBSMITH_REPORT_FORMAT=html` makes the
 deliverable a self-contained HTML file instead — same document, same order
 (answer first, provenance after), no dependency and no network: inline CSS,
-and the plan drawn as an inline SVG since a browser renders no mermaid. It is
-a *choice*, not an addition: a run still produces one deliverable, and
-`report_path` points at whichever format was asked for.
+and the plan drawn as an inline SVG since a browser renders no mermaid.
 
-A job carries a **list** of outputs (`role: main | annex`, a `format`, the
-capability that produced it), so annexes and other formats are a matter of
-adding Reporters, not of reshaping the model.
+**Or both.** The variable takes a comma-separated list —
+`JOBSMITH_REPORT_FORMAT=markdown,html` — and one run then writes one file per
+format, each recorded as an output of the job. The **first** name is the main
+deliverable: `report_path`, `jobsmith report <id>` and `GET /jobs/{id}/report`
+point at it, the others are the same report rendered again.
+
+A job carries a **list** of outputs (`role: main | alternate | annex`, a
+`format`, the capability that produced it): `main` is the deliverable,
+`alternate` the same report in another format, `annex` per-step material a
+capability produced. `jobsmith outputs <id>` and `GET /jobs/{id}/outputs`
+list them all.
 
 ---
 
@@ -340,7 +346,7 @@ handle per-provider tool formats), the job engine uses a dependency-light
 | `TAVILY_API_KEY` | enables the `web_search` step (extra `.[web]`); absent, the capability is not registered |
 | `--db memory\|<file.db>\|<postgres DSN>` | persistence (default: `$JOBSMITH_DB`, else memory) |
 | `$JOBSMITH_PRICES` | per-model prices for the cost estimate, as inline JSON or a path to a JSON file (USD per million tokens) |
-| `$JOBSMITH_REPORT_FORMAT` | `markdown` (default) or `html` — the format of the deliverable a finished job writes |
+| `$JOBSMITH_REPORT_FORMAT` | `markdown` (default) or `html` — the deliverable a finished job writes; a comma-separated list (`markdown,html`) writes one file per format, the first being the main one |
 | `--url` / `--local` | point at another daemon / never use one |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | key auto-detection; Anthropic wins if both are set |
 | `ANTHROPIC_MODEL`, `OPENAI_MODEL`, `OPENAI_BASE_URL` | model override; the base URL points at Ollama, vLLM or a gateway |

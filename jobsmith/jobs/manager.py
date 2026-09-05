@@ -208,7 +208,9 @@ class JobManager:
             if job.status is JobStatus.DONE:
                 # The reporter reads job.usage, so settle it before writing.
                 job.usage = ledger.total().to_dict()
-                job.outputs = [self.reporter.write(job, self.reports_dir)]
+                # Whatever it hands back IS the job's deliverables: one
+                # Reporter writes one file, a composed one writes several.
+                job.outputs = list(self.reporter.write(job, self.reports_dir))
             await self._persist_summary(job)
         return job
 

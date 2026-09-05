@@ -331,7 +331,8 @@ def test_report_shows_the_cost_in_about_this_job_and_per_step():
 
 def test_report_of_an_untracked_job_says_so(tmp_path):
     job = make_job(usage={}, results={})
-    path = MarkdownReport().write(job, tmp_path).path
+    [output] = MarkdownReport().write(job, tmp_path)
+    path = output.path
     assert "- **Usage**: not recorded" in open(path).read()
 
 

@@ -26,10 +26,17 @@ class JobStatus(StrEnum):
 class JobOutput:
     """A file the job produced FOR THE HUMAN — the deliverable.
 
-    A job can have several: the main report plus annexes (a chart a
-    capability drew, an exported table), and later the same content in
-    other formats. `role` is "main" or "annex"; `format` is free-form
-    ("markdown", "html", "pdf", ...).
+    A job can have several. `role` says what each one is:
+
+    - "main"      the deliverable, exactly one per job — what
+                  `report_path`, `jobsmith report` and `/report` point at
+    - "alternate" the same report rendered in another format (asked for
+                  with `JOBSMITH_REPORT_FORMAT=markdown,html`)
+    - "annex"     per-step material a capability produced (a chart, an
+                  exported table) — supporting material, not the report
+
+    `format` is free-form ("markdown", "html", "pdf", ...); `produced_by`
+    names the capability, when a step made the file.
     """
 
     path: str

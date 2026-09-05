@@ -13,7 +13,7 @@ import pytest
 from jobsmith.core.usage import record_usage
 from jobsmith.jobs.events import InProcessEvents, job_event
 from jobsmith.jobs.manager import JobManager
-from jobsmith.jobs.models import Job, JobStatus
+from jobsmith.jobs.models import Job, JobOutput, JobStatus
 from jobsmith.jobs.repository import StoreJobRepository
 from jobsmith.jobs.runner import NodeErrors, PlanReady, StepFinished, Terminal
 
@@ -228,3 +228,33 @@ async def test_a_full_subscriber_is_dropped_not_awaited():
     for _ in range(5):
         await asyncio.wait_for(asyncio.to_thread(events.publish, job_event(job)), timeout=1)
     assert queue.qsize() == 1  # the rest were dropped, publish never blocked
+
+
+async def test_how_many_deliverables_a_job_has_is_the_reporter_s_business(tmp_path):
+    """The manager assigns what the Reporter hands back, it does not wrap it:
+    a Reporter returning two outputs gives the job two deliverables, and the
+    manager still knows which one is *the* report."""
+
+    class TwoFormats:
+        format, extension = "markdown", "md"
+
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def write(self, job, directory):
+            self.calls.append(job.job_id)
+            return [JobOutput(path=f"{directory}/{job.job_id}.md", format="markdown"),
+                    JobOutput(path=f"{directory}/{job.job_id}.html", format="html",
+                              role="alternate")]
+
+    reporter = TwoFormats()
+    mgr = make_manager(tmp_path, Terminal("answer", "Done.", None), reporter=reporter)
+    job = await mgr.create_job("q")
+    done = await mgr.run_job(job.job_id)
+
+    assert reporter.calls == [job.job_id]            # written once, not once per output
+    assert [(o.format, o.role) for o in done.outputs] == [
+        ("markdown", "main"), ("html", "alternate")]
+    assert done.report_path.endswith(".md")
+    # and the repository — the port, no store — recorded both
+    assert len(mgr.repo.summaries[job.job_id]["outputs"]) == 2

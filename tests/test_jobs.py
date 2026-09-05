@@ -432,3 +432,33 @@ def test_mermaid_draws_isolated_steps_once():
     assert "research --> analysis" in mermaid
     assert mermaid.count("research") == 1      # not redrawn as a bare node
     assert "\n  aside\n" in mermaid            # isolated step still shown
+
+
+async def test_several_formats_are_all_recorded_as_deliverables(
+    store, checkpointer, tmp_path
+):
+    """A job hands back what its Reporter produced — one file or several.
+    Both land in `Job.outputs`, so both are in the store and visible to
+    `GET /jobs/{id}/outputs` and `jobsmith outputs`; a file that exists on
+    disk without a JobOutput is a deliverable nobody can find."""
+    from jobsmith.jobs.report import compose_reporters
+
+    mgr = make_manager(store, checkpointer, tmp_path)
+    mgr.reporter = compose_reporters("markdown,html")   # the documented swap seam
+    job = await mgr.create_job("two deliverables")
+    done = await mgr.run_job(job.job_id)
+
+    assert [(o.format, o.role) for o in done.outputs] == [
+        ("markdown", "main"), ("html", "alternate")]
+    artifacts = tmp_path / "artifacts"
+    assert sorted(p.name for p in artifacts.iterdir()) == [
+        f"{done.job_id}.html", f"{done.job_id}.md"]
+    assert done.report_path == str(artifacts / f"{done.job_id}.md")
+
+    # persisted, and reloaded with the roles intact — `report_path` is derived
+    summary = (await store.aget(("jobs", "index"), job.job_id)).value
+    assert [o["role"] for o in summary["outputs"]] == ["main", "alternate"]
+    fetched = await mgr.get_job(job.job_id)
+    assert [(o.format, o.role) for o in fetched.outputs] == [
+        ("markdown", "main"), ("html", "alternate")]
+    assert fetched.report_path == done.report_path

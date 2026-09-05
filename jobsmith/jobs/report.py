@@ -4,16 +4,21 @@ Two layers, so a new format never re-implements the layout:
 
     JobDocument   plain data — the deliverable's structure (answer,
                   provenance, optional annexes), built once from a Job
-    Reporter      serializes that document to a file and returns a JobOutput
+    Reporter      serializes that document to file(s) and returns the
+                  `JobOutput`s describing them
 
 `MarkdownReport` and `HtmlReport` (report_html.py) are the built-in ones:
 same document, same `build_document`, two serializers. PDF/PPTX would be more
 of them — that is the whole point of the split.
 
-One job, one deliverable: `Reporter.write` returns a single `JobOutput`, so a
-format is a *choice* (`make_reporter("html")`), not an addition. Handing back
-markdown *and* HTML for the same run is a protocol change
-(`write() -> list[JobOutput]`), not a new Reporter.
+A job can hand back **several** deliverables: `Reporter.write` returns a
+`list[JobOutput]`, and `MultiReporter` composes one Reporter per requested
+format (`compose_reporters("markdown,html")`) so the manager still holds a
+single reporter object. Exactly one of the outputs is `role="main"` — the
+first format asked for, the one `Job.report_path` and `GET /jobs/{id}/report`
+point at; the others are `role="alternate"`, the same document rendered
+again. They are NOT annexes: an annex is per-step material a capability
+produced, not a second copy of the report.
 
 Per-step material is asked of the capabilities themselves
 (`Capability.render_report`), never introspected here: the registry is
@@ -21,7 +26,8 @@ optional, and without it the annexes are simply left out.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -142,12 +148,18 @@ def format_step_usage(usage: Usage) -> str:
 
 
 class Reporter(Protocol):
-    """Produces one output file for a job."""
+    """Produces a job's deliverable file(s).
+
+    `write` returns a list because one run may be asked for several formats
+    (see `MultiReporter`); a Reporter that knows one format returns one
+    element. The list is what lands in `Job.outputs`, so a file a Reporter
+    writes without describing it here is a file nobody can find.
+    """
 
     format: str
     extension: str
 
-    def write(self, job: Job, directory: Path) -> JobOutput: ...
+    def write(self, job: Job, directory: Path) -> list[JobOutput]: ...
 
 
 class FileReporter:
@@ -170,14 +182,17 @@ class FileReporter:
         self.registry = registry
         self.with_annexes = with_annexes
 
-    def write(self, job: Job, directory: Path) -> JobOutput:
+    def write(self, job: Job, directory: Path) -> list[JobOutput]:
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"{job.job_id}.{self.extension}"
         document = build_document(job, self.registry, with_annexes=self.with_annexes)
         path.write_text(self.render(document), encoding="utf-8")
-        return JobOutput(
+        # Always "main": a lone Reporter IS the deliverable. Deciding which
+        # one wins when several are asked for belongs to whoever composed
+        # them, not to a format that cannot see its siblings.
+        return [JobOutput(
             path=str(path), format=self.format, title=self.title, role="main"
-        )
+        )]
 
     def render(self, doc: JobDocument) -> str:
         raise NotImplementedError
@@ -253,3 +268,79 @@ def make_reporter(
             f"unknown report format {report_format!r} (known: markdown, html)"
         )
     return cls(registry, with_annexes=with_annexes)
+
+
+class MultiReporter:
+    """Several formats of the same deliverable, behind one Reporter.
+
+    The manager holds exactly one reporter and assigns whatever it returns
+    to `Job.outputs`, so asking for markdown *and* HTML is a composition
+    concern, not a manager change.
+
+    The invariant it owns: **exactly one output is `main`** — the first one
+    produced, i.e. the first format requested. `Job.report_path`, the CLI's
+    `report` command and `GET /jobs/{id}/report` (whose content type follows
+    that output's format) all read it, so a second `main` would make which
+    file is *the* deliverable a matter of dict order. Later renderings are
+    demoted to `alternate`; anything a Reporter already labelled otherwise
+    (an annex) is left alone.
+    """
+
+    def __init__(self, reporters: Sequence[Reporter]):
+        if not reporters:
+            raise ValueError("MultiReporter needs at least one reporter")
+        self.reporters = list(reporters)
+
+    @property
+    def format(self) -> str:
+        """The main deliverable's format — what /report announces."""
+        return self.reporters[0].format
+
+    @property
+    def extension(self) -> str:
+        return self.reporters[0].extension
+
+    def write(self, job: Job, directory: Path) -> list[JobOutput]:
+        outputs: list[JobOutput] = []
+        for reporter in self.reporters:
+            for output in reporter.write(job, directory):
+                if outputs and output.role == "main":
+                    output = replace(output, role="alternate")
+                outputs.append(output)
+        return outputs
+
+
+def parse_report_formats(spec: str) -> list[str]:
+    """`"markdown, html"` → `["markdown", "html"]`, order preserved.
+
+    Order is meaning here: the first name is the main deliverable.
+    """
+    return [name.strip() for name in (spec or "").split(",") if name.strip()]
+
+
+def compose_reporters(
+    formats: str | Iterable[str] = "markdown",
+    registry: Any = None,
+    *,
+    with_annexes: bool = False,
+) -> Reporter:
+    """One Reporter for one or more format names — the seam a composition
+    root uses to say what a job hands back.
+
+    A single name gives back that format's Reporter unchanged (a run then
+    produces exactly the one file it always did); several give a
+    `MultiReporter` whose first name is the main deliverable. Aliases of the
+    same format are collapsed (`"markdown,md"` is one file, not the same file
+    written twice), and an unknown name anywhere in the list still raises —
+    `make_reporter` is the per-format factory and stays the one that decides.
+    """
+    names = parse_report_formats(formats) if isinstance(formats, str) else list(formats)
+    reporters: list[Reporter] = []
+    seen: set[type] = set()
+    for name in names or ["markdown"]:
+        reporter = make_reporter(name, registry, with_annexes=with_annexes)
+        if type(reporter) in seen:
+            continue
+        seen.add(type(reporter))
+        reporters.append(reporter)
+    return reporters[0] if len(reporters) == 1 else MultiReporter(reporters)

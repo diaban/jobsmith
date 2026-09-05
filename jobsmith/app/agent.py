@@ -26,7 +26,7 @@ from ..core.builder import AgentBuilder
 from ..core.deps import Deps
 from ..core.registry import CapabilityRegistry
 from ..jobs.manager import JobManager
-from ..jobs.report import make_reporter
+from ..jobs.report import compose_reporters, parse_report_formats
 from .persistence import open_persistence, pick_db
 from .providers import make_chat_model, make_llm, pick_provider
 
@@ -55,14 +55,20 @@ class AgentApp:
         await self._stack.aclose()
 
 
-def pick_report_format(flag: str | None = None) -> str:
-    """Which format a finished job hands back: argument > env > markdown.
+def pick_report_formats(flag: str | None = None) -> list[str]:
+    """Which formats a finished job hands back: argument > env > markdown.
 
-    Same precedence shape as `pick_db`. There is no CLI flag yet — the
-    entrypoints belong to another seam — so `$JOBSMITH_REPORT_FORMAT=html`
-    is how an operator switches the deliverable today.
+    Same precedence shape as `pick_db`, and the value is a comma-separated
+    list: `JOBSMITH_REPORT_FORMAT=markdown,html` makes one run write both.
+    A single name is the ordinary case and behaves exactly as it always did.
+    **The first name is the main deliverable** — the one `report_path` and
+    `/report` point at — so the order is a decision, not a formality.
+
+    There is no CLI flag yet: the entrypoints belong to another seam, so the
+    environment variable is how an operator switches the deliverable today.
     """
-    return flag or os.environ.get("JOBSMITH_REPORT_FORMAT") or "markdown"
+    spec = flag or os.environ.get("JOBSMITH_REPORT_FORMAT") or "markdown"
+    return parse_report_formats(spec) or ["markdown"]
 
 
 async def build_app(
@@ -99,9 +105,10 @@ async def build_app(
         ).build()
         manager = JobManager(
             graph, store,
-            # The registry is passed so capabilities present their own results;
-            # the format is a choice — one job still produces one deliverable.
-            reporter=make_reporter(pick_report_format(report_format), registry),
+            # The registry is passed so capabilities present their own
+            # results; the formats asked for are composed into one reporter,
+            # whose first name is the main deliverable.
+            reporter=compose_reporters(pick_report_formats(report_format), registry),
             reports_dir=reports_dir,
         )
         # A previous process may have died mid-run: settle those jobs first.
