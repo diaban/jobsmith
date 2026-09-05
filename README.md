@@ -371,11 +371,23 @@ Without a backend everything is in-memory: only the `.md` reports survive.
 
 ```bash
 make help          # every target
-make check         # lint + domain-leakage gate + tests
+make check         # lint + types + domain-leakage gate + tests
+make types         # pyright over jobsmith/
 make test T=router # one keyword's worth
 make coverage      # per-module coverage report
 make fix           # ruff --fix
 ```
+
+`make types` runs **pyright**, configured once in `[tool.pyright]` — the same
+block Pylance reads, so VS Code and CI agree instead of each flagging what the
+other ignores. It is the only gate here that can see a bug the tests cannot: a
+signature that lies is invisible at runtime, and the one that prompted this
+(a factory promising `Reporter` and returning `Reporter | MultiReporter`) was
+noticed by accident in an editor. Scope is `jobsmith/` — tests and `evals/` are
+deliberately out. One rule is off for now, `reportTypedDictNotRequiredAccess`:
+its 31 hits cluster in the code that reads `CapabilityResult`, whose keys are
+all optional, so turning it on is a decision about that TypedDict's contract
+rather than a cleanup.
 
 ### Judging a prompt change
 
@@ -417,8 +429,10 @@ only covers failure modes somebody thought of. The structural tier is the part
 that is genuinely reliable, and it only proves the machinery still holds
 together, not that the answers got better.
 
-CI runs `make check` on every push and pull request, across Python 3.11 and
-3.12, and verifies that `uv.lock` still matches `pyproject.toml`.
+CI runs what `make check` runs — lint, types, the leakage gate, tests — on
+every push and pull request, across Python 3.11 and 3.12, and verifies that
+`uv.lock` still matches `pyproject.toml`. It installs every extra, so the
+optional providers' imports are type-checked there too.
 
 Contributions use one short-lived branch per issue (`feat/12-thing`,
 `fix/13-thing`) with a PR onto `main` — there is no `develop` branch, and

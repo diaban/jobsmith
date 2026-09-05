@@ -11,6 +11,9 @@
 VENV := .venv
 PY   := $(VENV)/bin/python
 RUFF := $(VENV)/bin/ruff
+# pyright ships as a Python wrapper around a bundled JS checker: it needs a
+# `node` on PATH (CI runners have one; otherwise it downloads one, once).
+PYRIGHT := $(VENV)/bin/pyright
 
 LLM   ?=
 AGENT ?=
@@ -30,7 +33,7 @@ WT_DIR    := $(subst /,-,$(B))
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install install-all test coverage lint fix check leak-check eval eval-llm \
+.PHONY: help install install-all test coverage lint fix types check leak-check eval eval-llm \
         worktree worktree-rm \
         serve chat jobs \
         chat-banking serve-banking demo-banking clean
@@ -59,13 +62,16 @@ lint: ## Lint with ruff
 fix: ## Lint and auto-fix what ruff can
 	$(RUFF) check . --fix
 
+types: ## Type-check jobsmith/ with pyright (same [tool.pyright] config the editor reads)
+	$(PYRIGHT)
+
 leak-check: ## Domain-leakage gate: shared code, the default agent and the eval set must contain no banking-specific strings
 	@! grep -rin --include="*.py" "banking\|banquier\|votre\|analyste" \
 		jobsmith/core jobsmith/jobs jobsmith/chat jobsmith/api jobsmith/app jobsmith/cli \
 		jobsmith/agents/default jobsmith/agents/base.py evals \
 		&& echo "leak-check: OK (shared code is domain-clean)"
 
-check: lint leak-check test ## Everything CI would run: lint + leakage gate + tests
+check: lint types leak-check test ## Everything CI would run: lint + types + leakage gate + tests
 
 eval: ## Score the prompts on the golden set — deterministic tier, no API key (ARGS='--repeat 3')
 	$(PY) -m evals $(EVAL_LLM) $(AGENT_FLAG) $(ARGS)
