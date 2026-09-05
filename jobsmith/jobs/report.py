@@ -181,10 +181,22 @@ class Reporter(Protocol):
     (see `MultiReporter`); a Reporter that knows one format returns one
     element. The list is what lands in `Job.outputs`, so a file a Reporter
     writes without describing it here is a file nobody can find.
+
+    `format` and `extension` are declared read-only because reading is all
+    this protocol ever does with them. Declared as plain variables they
+    would be *mutable* members (PEP 544), which a computed one cannot
+    satisfy — `MultiReporter` derives both from the reporter it puts first,
+    so it would not conform, and `compose_reporters` could not honestly
+    promise a `Reporter`. A class attribute still satisfies a read-only
+    member, which is why `FileReporter` needs no change; the converse is
+    what does not hold.
     """
 
-    format: str
-    extension: str
+    @property
+    def format(self) -> str: ...
+
+    @property
+    def extension(self) -> str: ...
 
     def write(self, job: Job, directory: Path) -> list[JobOutput]: ...
 
