@@ -31,6 +31,7 @@ from jobsmith.app.providers import KeywordChatModel, make_llm, pick_provider
 from jobsmith.core.executor import Executor
 
 from .cases import EvalCase
+from .deliverable import ensure_readable
 
 
 def resolve_provider(choice: str | None = None) -> str:
@@ -138,6 +139,14 @@ async def run_suite(
     Returns the observations plus the run's context (provider, agent, registry)
     — everything a results file needs to be comparable with another one.
     """
+    # Refused before anything is composed and before the first case runs: the
+    # FIRST format asked for is the job's `main` output, hence the only file
+    # the checks ever read, so a binary one fails every report check for a
+    # reason that is not about the agent — and the record it would leave
+    # behind is picked up as the next run's baseline. `markdown,pdf` is fine:
+    # markdown is what gets scored.
+    formats = pick_report_formats(report_format)
+    ensure_readable(formats[0])
     choice = resolve_provider(provider)
     llm = make_llm(choice)
     with TemporaryDirectory(prefix="jobsmith-eval-") as scratch:
@@ -170,9 +179,11 @@ async def run_suite(
         "registry": list(registry),
         "repeat": max(1, repeat),
         # Recorded, but deliberately NOT part of what makes two runs
-        # comparable: the checks read through `deliverable.extract`, so the
-        # score is the same property whichever Reporter produced the file.
-        "report_format": ",".join(pick_report_formats(report_format)),
+        # comparable: every stored run scored a *text* deliverable — a binary
+        # one is refused above — and the checks read through
+        # `deliverable.extract`, so the score is the same property whichever
+        # Reporter produced the file.
+        "report_format": ",".join(formats),
     }
     return list(observations), context
 

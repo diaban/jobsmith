@@ -55,7 +55,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--report-format", metavar="FORMAT",
                         help="deliverable format to score (default: $JOBSMITH_REPORT_FORMAT "
                              "or markdown) — the checks read through the markup, so the "
-                             "scores stay comparable")
+                             "scores stay comparable; a format whose file is bytes is "
+                             "refused, there is no text in it to score")
     parser.add_argument("--baseline", help="compare against this results file instead of the latest")
     parser.add_argument("--no-write", action="store_true", help="print only, store nothing")
     parser.add_argument("--list", action="store_true", help="list the golden set and exit")
@@ -88,15 +89,26 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"no case matches tier={tier}", file=sys.stderr)
         return 2
 
-    observations, context = await run_suite(
-        cases,
-        agent=args.agent,
-        provider=provider,
-        repeat=args.repeat,
-        concurrency=args.concurrency,
-        reports_dir=args.reports_dir,
-        report_format=args.report_format,
-    )
+    try:
+        observations, context = await run_suite(
+            cases,
+            agent=args.agent,
+            provider=provider,
+            repeat=args.repeat,
+            concurrency=args.concurrency,
+            reports_dir=args.reports_dir,
+            report_format=args.report_format,
+        )
+    except ValueError as e:
+        # A misconfigured run, refused before it started: an unscorable report
+        # format, an unknown one, an agent that cannot be composed. Nothing was
+        # measured, so nothing is stored — the same exit as "no case matches
+        # tier", and deliberately not a traceback for what is a typo. A case
+        # that blows up mid-run never reaches here: `run_case` records it as
+        # the observation's own error.
+        print(f"{e}", file=sys.stderr)
+        return 2
+
     result = summarize(cases, observations, tier=tier, context=context,
                        duration_s=time.perf_counter() - started)
 
