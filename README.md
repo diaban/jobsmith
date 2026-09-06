@@ -93,7 +93,7 @@ jobsmith serve [--port 8000]     # the daemon: it owns the job engine
 jobsmith run "<task>" [--wait]   # launch a job directly, no chat
 jobsmith jobs [--status running] # list
 jobsmith job <id-prefix>         # plan, steps, results, answer
-jobsmith report <id-prefix>      # print the markdown deliverable
+jobsmith report <id-prefix>      # print the deliverable (text formats)
 jobsmith outputs <id-prefix>     # list the files the job produced
 jobsmith cancel <id-prefix>
 jobsmith resume <id-prefix>       # restart a stopped job from its checkpoint
@@ -219,7 +219,23 @@ deliverable a self-contained HTML file instead — same document, same order
 (answer first, provenance after), no dependency and no network: inline CSS,
 and the plan drawn as an inline SVG since a browser renders no mermaid.
 
-**Or both.** The variable takes a comma-separated list —
+**Or as a PDF.** `JOBSMITH_REPORT_FORMAT=pdf` prints that very same page:
+`PdfReport` renders what the HTML Reporter renders and hands the string to
+WeasyPrint, so there is one layout and no Reporter waiting on another's file.
+It is the one extra with a dependency **outside Python** — WeasyPrint draws
+through pango/cairo, which must be installed where the agent runs:
+
+```bash
+uv pip install -e ".[pdf]"
+sudo apt-get install -y libpango-1.0-0 libpangoft2-1.0-0   # Debian/Ubuntu
+```
+
+(`ubuntu-latest` already has them — CI renders a PDF with no extra step. A
+container built `FROM python:3.12-slim` does not.) A format nothing can
+render refuses at startup rather than at the end of the first job that asked
+for one.
+
+**Or several at once.** The variable takes a comma-separated list —
 `JOBSMITH_REPORT_FORMAT=markdown,html` — and one run then writes one file per
 format, each recorded as an output of the job. The **first** name is the main
 deliverable: `report_path`, `jobsmith report <id>` and `GET /jobs/{id}/report`
@@ -230,6 +246,10 @@ A job carries a **list** of outputs (`role: main | alternate | annex`, a
 `alternate` the same report in another format, `annex` a **file a step
 produced** — a chart, an exported table. `jobsmith outputs <id>` and
 `GET /jobs/{id}/outputs` list them all, `/outputs/{name}` downloads one.
+`/report` is the inline shortcut to the main one and serves **text**: when
+that deliverable is a PDF it answers `415` naming the `/outputs/{name}` to
+download instead, because "no report" would be false — the job has one, on
+disk. `jobsmith report <id>` says the same thing in the terminal.
 
 **A capability can hand back a file.** It writes through the `ArtifactStore`
 port (`core/artifacts.py`) — `write(job_id, name, data) -> path`, backed by a
@@ -367,7 +387,7 @@ handle per-provider tool formats), the job engine uses a dependency-light
 | `POST /sessions/{id}/approval` | answer a proposal — `{"approved": bool}` |
 | `GET /jobs` · `GET /jobs/{id}` | listing and full detail (plan, timings, results) |
 | `POST /jobs` · `POST /jobs/{id}/cancel` | direct launch, cancellation |
-| `GET /jobs/{id}/outputs[/{name}]` · `/report` | the deliverables |
+| `GET /jobs/{id}/outputs[/{name}]` · `/report` | the deliverables (`/report` is text-only: `415` on a PDF, pointing at the download) |
 | `GET /events` | SSE stream of job progress |
 
 ---
@@ -382,7 +402,7 @@ handle per-provider tool formats), the job engine uses a dependency-light
 | `TAVILY_API_KEY` | enables the `web_search` step (extra `.[web]`); absent, the capability is not registered |
 | `--db memory\|<file.db>\|<postgres DSN>` | persistence (default: `$JOBSMITH_DB`, else memory) |
 | `$JOBSMITH_PRICES` | per-model prices for the cost estimate, as inline JSON or a path to a JSON file (USD per million tokens) |
-| `$JOBSMITH_REPORT_FORMAT` | `markdown` (default) or `html` — the deliverable a finished job writes; a comma-separated list (`markdown,html`) writes one file per format, the first being the main one |
+| `$JOBSMITH_REPORT_FORMAT` | `markdown` (default), `html` or `pdf` (extra `.[pdf]` + pango/cairo) — the deliverable a finished job writes; a comma-separated list (`markdown,pdf`) writes one file per format, the first being the main one |
 | `--url` / `--local` | point at another daemon / never use one |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | key auto-detection; Anthropic wins if both are set |
 | `ANTHROPIC_MODEL`, `OPENAI_MODEL`, `OPENAI_BASE_URL` | model override; the base URL points at Ollama, vLLM or a gateway |
@@ -394,7 +414,7 @@ uv pip install -e ".[sqlite]"    && jobsmith --db agent.db chat
 uv pip install -e ".[postgres]"  && jobsmith --db postgresql://user:pass@localhost/agent chat
 ```
 
-Without a backend everything is in-memory: only the `.md` reports survive.
+Without a backend everything is in-memory: only the written reports survive.
 
 ---
 
@@ -506,7 +526,12 @@ Honest v1 boundaries:
   a local price table, never a bill. A resumed job reports the *total* it cost
   across attempts, not just the resumed portion — the interrupted attempt's
   tokens were spent all the same.
-- **Markdown is the only Reporter.** HTML/PDF/PPTX are additional Reporters over
-  the same `JobDocument`.
+- **Three Reporters ship: markdown, HTML, PDF.** PPTX would be a fourth over
+  the same `JobDocument` — but a generation rather than a rendering, so it is
+  not one of these. The PDF is the only deliverable with a **deployment**
+  constraint: a daemon that produces one needs pango/cairo where it runs.
+- **`/report` serves text only.** A binary deliverable is fetched whole from
+  `/jobs/{id}/outputs/{name}`; the shortcut refuses with a `415` that names
+  it rather than pretending the job has no report.
 - **No web UI.** Everything is terminal or HTTP for now; the API already serves
   what a chat / jobs-DAG / artifacts interface would need.
