@@ -84,9 +84,11 @@ class DirectResponder:
     `merged_context`, so the shared refine cycle has material if the draft
     fails output validation.
 
-    An EMPTY registry is a supported case, not an accident — the router sends
-    one here structurally (see core/router.py) — so the capability list
-    degrades to `NO_CAPABILITIES_TEXT` rather than to a blank section.
+    It is reached by two paths: the router's "direct" triage, and — since the
+    router routes an empty registry here structurally — a plan that came back
+    with nothing to run. So an EMPTY registry is a supported case, not an
+    accident: the capability list degrades to `NO_CAPABILITIES_TEXT` rather
+    than to a blank section.
     """
 
     def __init__(self, deps: Deps, registry: CapabilityRegistry, profile: AgentProfile):

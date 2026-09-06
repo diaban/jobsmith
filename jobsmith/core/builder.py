@@ -84,10 +84,17 @@ class AgentBuilder:
 
     @staticmethod
     def _route_after_planner(state: AgentState) -> str:
-        if state.get("plan") is None or any(
+        plan = state.get("plan")
+        if plan is None or any(
             not e["recoverable"] for e in state.get("errors", [])
         ):
             return "execution_error"
+        # A valid but EMPTY plan means every step was dropped as inapplicable
+        # (`spec.requires_inputs` — vision without an image). Nothing to run is
+        # not the same as something gone wrong, so it joins the route the graph
+        # already owns for "this needs no capability" instead of hard-stopping.
+        if not plan["steps"]:
+            return "direct_answer"
         return "executor_dispatch"
 
     @staticmethod
@@ -148,6 +155,7 @@ class AgentBuilder:
         g.add_edge("direct_answer", "validate_output")
         g.add_conditional_edges("planner", self._route_after_planner, {
             "executor_dispatch": "executor_dispatch",
+            "direct_answer": "direct_answer",
             "execution_error": "execution_error",
         })
 

@@ -6,6 +6,12 @@ The class owns:
 - the LLM call
 
 It exposes `run` (the node coroutine) for the parent graph to register.
+
+Validation answers one of three things, never two of them at once: a plan with
+steps, an EMPTY plan (every step the model chose was dropped as inapplicable —
+nothing to run, nothing wrong), or an unrecoverable `NodeError`. What to do
+about an empty plan is a control-flow decision and lives in the builder's path
+map, not here.
 """
 from __future__ import annotations
 
@@ -125,9 +131,14 @@ class Planner:
                     queue.append(m)
         if visited != len(cleaned):
             raise ValueError("plan contains a cycle")
-        if not cleaned:
-            raise ValueError("plan is empty after validation")
 
+        # `cleaned` can only be empty because every step was dropped as
+        # inapplicable: an unknown name, a duplicate or a bad dependency raises,
+        # and an empty `steps` from the model was rejected above. So it is a
+        # fact about the request (no image for `vision`), not a broken plan —
+        # it travels as an EMPTY PLAN, and `AgentBuilder._route_after_planner`
+        # decides where that goes. The decision belongs to the path map, not
+        # to a rescue hidden in here.
         return Plan(steps=cleaned, rationale=str(raw.get("rationale", "")))
 
     # -------- Node --------

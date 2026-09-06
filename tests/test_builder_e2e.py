@@ -174,7 +174,7 @@ async def test_registry_frozen_after_build(checkpointer, store):
         registry.register(EchoCapability("second", "y"))
 
 
-# ---------------- Nothing to plan with (#38) ----------------
+# ---------------- Nothing to plan with / nothing to run (#38) ----------------
 
 async def test_empty_registry_answers_directly(checkpointer, store):
     """An agent whose capabilities are all conditionally registered can compose
@@ -195,3 +195,30 @@ async def test_empty_registry_answers_directly(checkpointer, store):
     assert not any("triage" in s or "planner" in s for s in systems)
     # ...and the direct prompt says "none" rather than showing a blank section.
     assert "- (none" in systems[0]
+
+
+async def test_plan_emptied_by_applicability_answers_directly(checkpointer, store):
+    """Registry NOT empty, but every planned step is dropped by `is_applicable`
+    (vision without an image). Nothing to run is not something gone wrong."""
+    cap = EchoCapability("needs_file", "x", requires_inputs=("file",))
+    llm = FakeLLM({
+        "planner": plan_json("needs_file"),
+        "Answer the user's message directly": "No file reached me, but here is the gist.",
+        "ONLY the provided": "The context is insufficient to answer.",
+    })
+    graph = build_agent(Deps(llm=llm), CapabilityRegistry([cap]), checkpointer=checkpointer)
+    out = await graph.ainvoke(
+        {"query": "summarise the attached file", "inputs": {}, "job_id": "e8"},
+        config={"configurable": {"thread_id": "e8"}},
+    )
+    assert out["route"] == "plan"          # the router still triaged normally
+    assert out["plan"]["steps"] == []      # ...the planner found nothing to run
+    assert out["terminal_kind"] == "answer"
+    assert not out.get("results")
+    assert not out.get("errors")
+    # It matters WHICH node answered. Falling through the executor also reaches
+    # a terminal (`_all_done` is vacuously true on an empty plan), but through
+    # the generator, whose prompt forbids answering outside the context it was
+    # given — "(no context available)" there means "I cannot answer".
+    assert out["final_answer"] == "No file reached me, but here is the gist."
+    assert not any("ONLY the provided" in llm._system_of(c["messages"]) for c in llm.calls)

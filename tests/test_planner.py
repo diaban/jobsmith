@@ -94,10 +94,21 @@ async def test_applicable_kept_when_input_present(registry):
     assert out["plan"]["steps"] == [{"capability": "gamma", "depends_on": []}]
 
 
-async def test_all_steps_inapplicable_is_planner_fail(registry):
+async def test_all_steps_inapplicable_yields_an_empty_plan(registry):
+    """Nothing applicable is a fact about the request, not a broken plan: the
+    planner answers with an empty plan and no error, and the builder's path map
+    decides what happens next (see test_builder_e2e)."""
     planner = make_planner(registry, plan_json("gamma"))
     out = await planner.run({"query": "q"})
-    assert "empty after validation" in out["errors"][0]["detail"]
+    assert out["plan"]["steps"] == []
+    assert "errors" not in out
+
+
+async def test_model_returning_no_steps_at_all_is_still_a_failure(registry):
+    """Distinct from the above: the model produced nothing to validate, which
+    is indistinguishable from a truncated response."""
+    out = await make_planner(registry, json.dumps({"steps": []})).run({"query": "q"})
+    assert "non-empty list" in out["errors"][0]["detail"]
 
 
 async def test_malformed_json_is_unrecoverable(registry):
