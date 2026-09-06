@@ -253,14 +253,13 @@ class JobManager:
         # Annexes are collected regardless of how the report went: they are on
         # disk either way, and a file with no JobOutput is a file nobody can
         # find — the same reason `ReportWriteError` carries its outputs.
-        self._collect_artifacts(job, deliverables=outputs, answered=True)
+        self._collect_artifacts(job, deliverables=outputs)
 
     def _collect_artifacts(
         self,
         job: Job,
         *,
         deliverables: list[JobOutput] | None = None,
-        answered: bool = False,
     ) -> None:
         """Record the files the steps left behind, as this job's annexes.
 
@@ -289,11 +288,14 @@ class JobManager:
         """
         annexes, missing = self._capability_outputs(job)
         job.outputs = list(deliverables or []) + annexes
-        # A promised file that is absent is only a *defect* when the run
-        # answered — see `_capability_outputs`. On a run that stopped it is an
-        # expected consequence of stopping, and `job.error` has to keep saying
-        # why the run stopped, which is what the human actually needs.
-        if missing and answered:
+        # Said out loud whatever the terminal. A declaration can only exist on
+        # a step that FINISHED (`_apply` writes `results` on `StepFinished`
+        # alone), so a ref with no file is a capability that promised what it
+        # did not leave — a defect the run stopping afterwards cannot explain
+        # away. It is appended after the failure reason, so "why the run
+        # stopped" still reads first, and a run someone is already inspecting
+        # is the last place to hide a second bug.
+        if missing:
             job.error = "; ".join(filter(None, [job.error, missing]))
 
     def _capability_outputs(self, job: Job) -> tuple[list[JobOutput], str]:
@@ -307,14 +309,16 @@ class JobManager:
         Recording it would repeat exactly the defect #28 fixed — a JobOutput
         for a file nobody can open, offered by `jobsmith outputs` and by
         `GET /jobs/{id}/outputs/{name}` and failing there instead of here.
-        Staying silent is no better *for a job that answered*: a promised file
-        that is absent is then a capability defect, and the run that hid it
-        would look perfect. So the drop is reported back and `_collect_artifacts`
-        decides what to do with it — into `job.error` when the run answered
-        (the same channel, and the same reasoning, as a failed report write:
-        the job stays DONE because the work is done, and the error says which
-        part of the delivery is not), silently when the run stopped, where a
-        half-written file is a consequence of stopping rather than a defect.
+        Staying silent is no better, **whatever terminal the run reached**: a
+        declaration only exists on a step that FINISHED (`_apply` writes
+        `results` on `StepFinished` alone), so a ref with no file behind it is
+        a capability that promised what it did not leave, and a run stopping
+        later cannot retroactively explain a promise made by a completed step.
+        It lands in `job.error` — the same channel, and the same reasoning, as
+        a failed report write: the job keeps the status the work earned, and
+        the error says which part of the delivery did not happen. Appended
+        after any failure reason already there, so "why the run stopped" is
+        still the first thing read.
 
         Two capabilities that wrote the same path are recorded once: the
         second would list one file twice in `Job.outputs`, which is the same

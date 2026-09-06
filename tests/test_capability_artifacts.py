@@ -519,9 +519,10 @@ async def test_a_run_that_blew_up_mid_stream_still_lists_what_landed(store, tmp_
     done = await mgr.run_job((await mgr.create_job("draw me something")).job_id)
 
     assert done.status is JobStatus.FAILED
-    # `job.error` still says why the run stopped, and ONLY that: on a run that
-    # did not answer, a declared file that is not there is a consequence of
-    # stopping, not the capability defect it would be on a job that answered.
-    assert done.error == "the graph blew up"
     assert [(o.role, o.path) for o in done.outputs] == [("annex", str(chart))]
     assert done.report_path is None
+    # Why the run stopped reads FIRST — and the file the finished step promised
+    # and did not leave is still named: a declaration exists only on a step that
+    # completed, so the run stopping afterwards explains nothing about it.
+    assert done.error.startswith("the graph blew up; ")
+    assert "chart → " in done.error and "half.svg" in done.error
