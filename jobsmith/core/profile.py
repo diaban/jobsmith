@@ -62,15 +62,15 @@ Rules:
 
 DEFAULT_GENERATOR_PROMPT = (
     "You are an assistant. Answer the user's query using ONLY the provided "
-    "context. Cite sources inline as [doc_id] when relevant. If the context "
-    "is insufficient, say so explicitly. Be concise and precise."
+    "context. If the context is insufficient, say so explicitly. Be concise "
+    "and precise."
 )
 
 DEFAULT_REFINER_TEMPLATE = (
     "You previously produced an answer that failed validation.\n"
     "Validation issues: {issues}\n"
     "Re-write the answer fixing these issues. Keep using only the provided "
-    "context and inline [doc_id] citations."
+    "context."
 )
 
 DEFAULT_DIRECT_ANSWER_TEMPLATE = (

@@ -41,6 +41,14 @@ BANKING_GENERATOR_PROMPT = (
 )
 
 
+BANKING_REFINER_TEMPLATE = (
+    "You previously produced an answer that failed validation.\n"
+    "Validation issues: {issues}\n"
+    "Re-write the answer fixing these issues. Keep using only the provided "
+    "context and inline [doc_id] citations."
+)
+
+
 BANKING_CHAT_PROMPT = """Tu es un assistant bancaire conversationnel qui peut lancer des jobs d'analyse en arrière-plan.
 
 - Réponds directement aux salutations, aux questions simples et aux questions sur tes capacités.
@@ -77,6 +85,7 @@ def rule_citations_when_search(state: AgentState) -> str | None:
 BANKING_PROFILE = AgentProfile(
     planner_prompt_template=BANKING_PLANNER_TEMPLATE,
     generator_system_prompt=BANKING_GENERATOR_PROMPT,
+    refiner_prompt_template=BANKING_REFINER_TEMPLATE,
     user_error_message="Une erreur est survenue.",
     escalation_message="Votre demande a été transmise à un analyste. Vous serez recontacté.",
     input_rules=(rule_nonempty_query_fr, rule_max_query_len_fr),
