@@ -32,6 +32,13 @@ api = [
     "uvicorn>=0.30",
     "httpx>=0.27",      # the CLI talks to the daemon over HTTP
 ]
+# The PDF deliverable (jobs/report_pdf.py). WeasyPrint is the only extra with
+# a **system**-level dependency: it renders through pango/cairo, so a machine
+# that must produce PDFs needs those libraries installed where the daemon runs
+# (see README). Pure-Python extras carry no such constraint.
+pdf = [
+    "weasyprint>=62",
+]
 # Persistence backends (checkpointer + store). Without either, state is
 # in-memory only and nothing survives the process.
 sqlite = [
