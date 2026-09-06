@@ -100,12 +100,10 @@ def _annexes(job: Job, registry: Any) -> list[tuple[str, str]]:
     """Ask each capability to present its own result (never guess here)."""
     if registry is None:
         return []
-    order = [row["capability"] for row in (job.plan or {}).get("steps", [])] if job.plan else []
-    names = sorted(job.results, key=lambda n: order.index(n) if n in order else 99)
     sections: list[tuple[str, str]] = []
-    for name in names:
+    for name, result in job.ordered_results():
         try:
-            body = registry.get(name).render_report(job.results[name])
+            body = registry.get(name).render_report(result)
         except KeyError:            # capability gone from the registry since the run
             body = None
         if body:

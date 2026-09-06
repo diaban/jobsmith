@@ -35,10 +35,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from ..core.artifacts import artifact_refs
 from ..core.state import NodeError
 from ..core.usage import Usage, UsageLedger, current_ledger, usage_ledger
 from .events import InProcessEvents, JobEvents, job_event
-from .models import Job, JobStatus, now_iso
+from .models import Job, JobOutput, JobStatus, now_iso
 from .report import MarkdownReport, ReportWriteError
 from .repository import JobRepository, StoreJobRepository
 from .runner import GraphRunner, JobUpdate, NodeErrors, PlanReady, StepFinished, Terminal
@@ -216,7 +217,9 @@ class JobManager:
         """Produce the deliverables — and survive failing to.
 
         Whatever the reporter hands back IS the job's deliverables: one
-        Reporter writes one file, a composed one writes several.
+        Reporter writes one file, a composed one writes several. The files a
+        capability produced for itself are appended to them as annexes, so
+        `Job.outputs` is the whole of what this job leaves behind.
 
         A write that raises must NOT escape: this runs after the stream's
         own `try`, so an exception here would skip the final persist and
@@ -233,12 +236,66 @@ class JobManager:
         blew up", which a full disk is not.
         """
         try:
-            job.outputs = list(self.reporter.write(job, self.reports_dir))
+            outputs = list(self.reporter.write(job, self.reports_dir))
         except Exception as e:
             failure = e if isinstance(e, ReportWriteError) else ReportWriteError(
                 getattr(self.reporter, "format", "unknown"), e)
-            job.outputs = failure.outputs   # keep what did make it to disk
+            outputs = failure.outputs       # keep what did make it to disk
             job.error = str(failure)
+        # Annexes come AFTER the deliverables and are never "main": #28's
+        # invariant (exactly one main, the first format asked for) is what
+        # `report_path`, `jobsmith report` and `/report` read, and a step's
+        # chart must not be able to become the thing the report points at.
+        # They are collected regardless of how the report went: they are on
+        # disk either way, and a file with no JobOutput is a file nobody can
+        # find — the same reason `ReportWriteError` carries its outputs.
+        annexes, missing = self._capability_outputs(job)
+        job.outputs = outputs + annexes
+        if missing:
+            job.error = "; ".join(filter(None, [job.error, missing]))
+
+    def _capability_outputs(self, job: Job) -> tuple[list[JobOutput], str]:
+        """The files the steps produced, as annexes — plus what went missing.
+
+        A capability declares what it wrote in its result's `meta`
+        (`core/artifacts.py`); this reads those declarations back, in plan
+        order so two runs of one plan list their files the same way.
+
+        **A ref whose file is not there is dropped, and said out loud.**
+        Recording it would repeat exactly the defect #28 fixed — a JobOutput
+        for a file nobody can open, offered by `jobsmith outputs` and by
+        `GET /jobs/{id}/outputs/{name}` and failing there instead of here.
+        Staying silent is no better: this runs only for a job that reached
+        `answer`, so a promised file that is absent is a capability defect,
+        and the run that hid it would look perfect. It therefore lands in
+        `job.error` — the same channel, and the same reasoning, as a failed
+        report write: the job stays DONE because the work is done, and the
+        error says which part of the delivery is not.
+
+        Two capabilities that wrote the same path are recorded once: the
+        second would list one file twice in `Job.outputs`, which is the same
+        ambiguity `compose_reporters` refuses at composition time.
+        """
+        outputs: list[JobOutput] = []
+        seen: set[str] = set()
+        gone: list[str] = []
+        for name, result in job.ordered_results():
+            for ref in artifact_refs(result.get("meta")):
+                if ref.path in seen:
+                    continue
+                seen.add(ref.path)
+                if not Path(ref.path).is_file():
+                    gone.append(f"{name} → {ref.path}")
+                    continue
+                outputs.append(JobOutput(
+                    path=ref.path, format=ref.file_format, title=ref.title,
+                    role="annex", produced_by=name,
+                ))
+        missing = (
+            f"{len(gone)} file(s) a step reported producing are missing: "
+            f"{', '.join(gone)}" if gone else ""
+        )
+        return outputs, missing
 
     async def _apply(self, job: Job, update: JobUpdate, errors: list[NodeError]) -> None:
         """Fold one domain update from the runner into the job."""

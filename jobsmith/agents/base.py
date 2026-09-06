@@ -34,6 +34,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any
 
+from ..core.artifacts import ArtifactStore
 from ..core.capability import Capability
 from ..core.deps import LLMClient
 from ..core.profile import AgentProfile
@@ -46,10 +47,20 @@ class AgentContext:
     A single parameter on purpose: what an agent may be handed will grow
     (settings, tracing), and growing this dataclass does not break every
     agent's signature.
+
+    `artifacts` is the store a capability that produces a FILE writes to
+    (`core/artifacts.py`). It is here rather than in `resources` because it is
+    the composition root's to provide, not the agent's to open: where a job's
+    files live is decided next to `reports_dir`, by the same reasoning that
+    keeps a capability from knowing that layout. `build_app` always supplies
+    one; it is `None` only for a context assembled by hand, and a capability
+    that cannot write should then stay out of the registry — the same rule
+    `documents` and `vision` already follow.
     """
 
     llm: LLMClient
     resources: Any = None
+    artifacts: ArtifactStore | None = None
 
 
 @dataclass(frozen=True)

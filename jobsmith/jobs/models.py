@@ -79,6 +79,21 @@ class Job:
         main = next((o for o in self.outputs if o.role == "main"), None)
         return main.path if main else None
 
+    def ordered_results(self) -> list[tuple[str, CapabilityResult]]:
+        """Results in PLAN order — the only deterministic order there is.
+
+        `results` is filled by parallel waves, so its insertion order is
+        arrival order (see the caveat in `core/state.py`). Anything a human
+        reads — the report's annexes, the files a step produced — must be
+        stable across two runs of the same plan, so it is ordered here once
+        rather than in each consumer. A result with no plan step (a plan that
+        never made it to the store) keeps its dict order, at the end.
+        """
+        order = [step["capability"] for step in (self.plan or {}).get("steps", [])] \
+            if self.plan else []
+        names = sorted(self.results, key=lambda n: order.index(n) if n in order else len(order))
+        return [(name, self.results[name]) for name in names]
+
     def step_usage(self, capability: str) -> dict[str, Any]:
         """What one step spent — empty when it made no LLM call, or predates
         usage tracking."""
