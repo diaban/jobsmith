@@ -1,6 +1,7 @@
 """Global agent composition: build_app + fakes run the whole product keyless."""
 from __future__ import annotations
 
+from conftest import registered_capabilities
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
@@ -23,9 +24,12 @@ async def test_default_pack_job_runs_keyless(tmp_path):
     job = await app.manager.create_job("study the topic in depth")
     done = await app.manager.run_job(job.job_id)
     assert done.status is JobStatus.DONE
-    # KeywordLLM chains every registered capability from the planner prompt
-    assert set(done.results) == {"research", "analysis", "critique"}
-    assert [s["capability"] for s in done.plan["steps"]] == ["research", "analysis", "critique"]
+    # KeywordLLM chains every registered capability from the planner prompt —
+    # and which ones those are depends on what is installed and configured
+    caps = registered_capabilities(app)
+    assert caps[:3] == ["research", "analysis", "critique"]
+    assert [s["capability"] for s in done.plan["steps"]] == caps
+    assert set(done.results) == set(caps)
     assert done.report_path is not None
 
 

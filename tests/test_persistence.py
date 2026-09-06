@@ -5,6 +5,7 @@ checkpointer/store contract but needs a server — it is exercised manually).
 """
 from __future__ import annotations
 
+from conftest import registered_capabilities
 from langchain_core.messages import HumanMessage
 
 from jobsmith.app import build_app
@@ -53,7 +54,9 @@ async def test_job_and_conversation_survive_restart(tmp_path):
     assert fetched is not None
     assert fetched.status is JobStatus.DONE
     assert fetched.session_id == session.session_id
-    assert set(fetched.results) == {"research", "analysis", "critique"}   # artifacts kept
+    # every step the fake chained is still there (the pack's registry depends
+    # on what is installed, so it is read back from the app)
+    assert set(fetched.results) == set(registered_capabilities(app2))      # results kept
     assert fetched.plan is not None                                      # meta kept
     assert [j.job_id for j in await app2.manager.list_jobs()] == [job.job_id]
 
