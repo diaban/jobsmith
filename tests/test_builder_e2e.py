@@ -14,8 +14,19 @@ from jobsmith.core.state import CapabilityResult
 class EchoCapability(Capability):
     """Single-node capability that echoes a configured payload."""
 
-    def __init__(self, name: str, payload: str, *, fail: bool = False):
-        self.spec = CapabilitySpec(name=name, description=f"echoes {payload}")
+    def __init__(
+        self,
+        name: str,
+        payload: str,
+        *,
+        fail: bool = False,
+        requires_inputs: tuple[str, ...] = (),
+    ):
+        self.spec = CapabilitySpec(
+            name=name,
+            description=f"echoes {payload}",
+            requires_inputs=requires_inputs,
+        )
         self.payload = payload
         self.fail = fail
 
@@ -161,3 +172,26 @@ async def test_registry_frozen_after_build(checkpointer, store):
     build_agent(Deps(llm=FakeLLM()), registry, checkpointer=checkpointer)
     with pytest.raises(RuntimeError, match="frozen"):
         registry.register(EchoCapability("second", "y"))
+
+
+# ---------------- Nothing to plan with (#38) ----------------
+
+async def test_empty_registry_answers_directly(checkpointer, store):
+    """An agent whose capabilities are all conditionally registered can compose
+    an empty registry. It must degrade to a direct answer, not break: before
+    #38 this reached the planner and ended in `user_error`."""
+    llm = FakeLLM(default="Both styles isolate the domain; here is the difference.")
+    graph = build_agent(Deps(llm=llm), CapabilityRegistry([]), checkpointer=checkpointer)
+    out = await graph.ainvoke(
+        {"query": "compare hexagonal and layered architectures for an LLM agent",
+         "inputs": {}, "job_id": "e7"},
+        config={"configurable": {"thread_id": "e7"}},
+    )
+    assert out["route"] == "direct"
+    assert out["terminal_kind"] == "answer"
+    assert out["final_answer"] == "Both styles isolate the domain; here is the difference."
+    # Neither triage nor planning was asked of the model.
+    systems = [llm._system_of(c["messages"]) for c in llm.calls]
+    assert not any("triage" in s or "planner" in s for s in systems)
+    # ...and the direct prompt says "none" rather than showing a blank section.
+    assert "- (none" in systems[0]

@@ -15,6 +15,13 @@ from .profile import AgentProfile
 from .registry import CapabilityRegistry
 from .state import AgentState, NodeError
 
+# What DirectResponder renders where the capability list would go when the
+# registry is empty. Not a profile message: nothing here is shown to the human,
+# and "the registry is empty" is a fact about the composition, not the domain.
+# Without it the prompt would say "describe the capabilities below" and then
+# show nothing, which reads as an invitation to invent some.
+NO_CAPABILITIES_TEXT = "- (none — this assistant has no capabilities registered)"
+
 
 class ContextMerger:
     def __init__(self, registry: CapabilityRegistry, profile: AgentProfile):
@@ -76,6 +83,10 @@ class DirectResponder:
     what the agent is able to do ("what can you do?"). It also sets
     `merged_context`, so the shared refine cycle has material if the draft
     fails output validation.
+
+    An EMPTY registry is a supported case, not an accident — the router sends
+    one here structurally (see core/router.py) — so the capability list
+    degrades to `NO_CAPABILITIES_TEXT` rather than to a blank section.
     """
 
     def __init__(self, deps: Deps, registry: CapabilityRegistry, profile: AgentProfile):
@@ -85,9 +96,8 @@ class DirectResponder:
         self.temperature = profile.generation_temperature
 
     def _capabilities_text(self) -> str:
-        return "\n".join(
-            f"- {spec.name}: {spec.description}" for spec in self.registry.specs()
-        )
+        lines = [f"- {spec.name}: {spec.description}" for spec in self.registry.specs()]
+        return "\n".join(lines) if lines else NO_CAPABILITIES_TEXT
 
     def system_prompt(self) -> str:
         return self.prompt_template.format(capabilities=self._capabilities_text())
