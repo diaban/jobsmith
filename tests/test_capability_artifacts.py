@@ -12,6 +12,7 @@ reshaping the default agent's pack.
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -324,3 +325,203 @@ async def test_the_composition_root_hands_a_capability_a_store(tmp_path):
     [_, annex] = done.outputs
     assert annex.path == str(tmp_path / done.job_id / "chart.svg")
     assert Path(annex.path).is_file()
+
+
+# ------------------------------------------------- a run that did not finish
+
+class HalfChartCapability(ChartCapability):
+    """Writes its file, then fails — the case `_emit_failure` had no channel for.
+
+    The chart is on disk exactly as if the step had succeeded; only what came
+    after it went wrong. `meta=` is what lets it say so.
+    """
+
+    spec = CapabilitySpec(name="half_chart", description="draws a chart, then breaks")
+
+    async def draw(self, state: CapabilityBaseState) -> dict:
+        self.seen_job_id = state.get("job_id", "")
+        path = await self.artifacts.write(self.seen_job_id, self.filename, SVG)
+        return self._emit_failure(
+            "the export died after the file was written",
+            meta=artifact_meta(ArtifactRef(path, title="Half a chart")),
+        )
+
+
+class SlowCapability(Capability):
+    """A step that hangs, so a run can be cancelled while it is inside one."""
+
+    spec = CapabilitySpec(name="slow", description="takes its time")
+
+    def __init__(self, delay: float = 30.0):
+        self.delay = delay
+        self.runs = 0
+
+    async def work(self, state: CapabilityBaseState) -> dict:
+        self.runs += 1
+        await asyncio.sleep(self.delay)
+        return self._emit_success({"echo": "slow"})
+
+    def render_context(self, result):
+        return "the slow step finished"
+
+    def build(self):
+        g = self.state_graph(CapabilityBaseState)
+        g.add_node("work", self.work)
+        g.set_entry_point("work")
+        g.add_edge("work", END)
+        return g.compile()
+
+
+def make_two_step_manager(store, checkpointer, tmp_path, caps, deps):
+    """A manager whose plan runs `caps` in order, with `deps` between them."""
+    llm = FakeLLM(
+        {"planner": plan_json(*[c.spec.name for c in caps], deps=deps)},
+        default="A sufficiently long final answer for the artifact test.",
+    )
+    graph = build_agent(Deps(llm=llm), CapabilityRegistry(caps), checkpointer=checkpointer)
+    return JobManager(graph, store, reports_dir=tmp_path / "artifacts")
+
+
+def test_a_failed_step_can_declare_the_file_it_wrote():
+    """The first gate: `_emit_failure` takes a `meta`, like `_emit_success`.
+
+    Without it a capability that wrote a chart and then hit an error has no
+    way to say so, and the file is orphaned at birth.
+    """
+    cap = ChartCapability(LocalArtifactStore("/nowhere"))
+    emitted = cap._emit_failure("boom", meta=artifact_meta(ArtifactRef("of/a/chart.svg")))
+    result = emitted["results"]["chart"]
+
+    assert result["ok"] is False and result["error"] == "boom"
+    assert artifact_refs(result["meta"]) == [ArtifactRef("of/a/chart.svg", format="svg")]
+
+
+async def test_a_job_that_failed_still_lists_the_files_its_steps_produced(
+    store, checkpointer, tmp_path
+):
+    """The second gate: declarations were only ever read for a DONE job.
+
+    The run never reached an answer, so there is no report — but the file is
+    on disk, and a file recorded nowhere is a file nobody can find.
+    """
+    class ExplodingGenLLM(FakeLLM):
+        """Generation cannot answer — the run ends escalated, not DONE."""
+
+        async def chat(self, messages, **kwargs):
+            if "planner" in self._system_of(messages):
+                return plan_json("half_chart")
+            raise RuntimeError("llm down")
+
+    half = HalfChartCapability(LocalArtifactStore(tmp_path / "artifacts"))
+    graph = build_agent(Deps(llm=ExplodingGenLLM()), CapabilityRegistry([half]),
+                        checkpointer=checkpointer)
+    mgr = JobManager(graph, store, reports_dir=tmp_path / "artifacts")
+    done = await mgr.run_job((await mgr.create_job("draw me something")).job_id)
+
+    assert done.status is JobStatus.FAILED and done.terminal_kind != "answer"
+    [annex] = done.outputs
+    assert (annex.role, annex.produced_by, annex.title) == ("annex", "half_chart",
+                                                            "Half a chart")
+    assert Path(annex.path).read_text() == SVG
+    # no answer means no report: no main output, and the Reporter never ran
+    assert done.report_path is None
+    assert not list((tmp_path / "artifacts").glob("*.md"))
+    # and the failure message still says why the job failed, nothing else
+    assert done.error and "chart" not in done.error
+    # persisted, so `jobsmith outputs` and GET /jobs/{id}/outputs find it
+    fetched = await mgr.get_job(done.job_id)
+    assert [(o.role, o.path) for o in fetched.outputs] == [("annex", annex.path)]
+
+
+async def test_a_cancelled_job_lists_what_its_finished_steps_produced(
+    store, checkpointer, tmp_path
+):
+    """A cancellation lands wherever the run happened to be; the steps that
+    did finish still wrote their files."""
+    chart = ChartCapability(LocalArtifactStore(tmp_path / "artifacts"))
+    slow = SlowCapability()
+    mgr = make_two_step_manager(store, checkpointer, tmp_path, [chart, slow],
+                                {"slow": ["chart"]})
+    job = await mgr.create_job("draw, then take forever")
+    mgr.start_job(job.job_id)
+    for _ in range(500):                     # wait until `slow` is actually running
+        await asyncio.sleep(0.01)
+        if slow.runs:
+            break
+    assert slow.runs == 1, "the second step never started"
+
+    stopped = await mgr.cancel_job(job.job_id)
+    assert stopped.status is JobStatus.CANCELLED
+    [annex] = stopped.outputs
+    assert (annex.role, annex.produced_by) == ("annex", "chart")
+    assert Path(annex.path).read_text() == SVG
+    assert stopped.report_path is None
+    assert [o.path for o in (await mgr.get_job(job.job_id)).outputs] == [annex.path]
+
+
+async def test_a_resumed_job_lists_each_file_exactly_once(store, checkpointer, tmp_path):
+    """`job.outputs` is assigned, never appended to: a job that collected when
+    it was cancelled must not list the same file twice when it finishes."""
+    chart = ChartCapability(LocalArtifactStore(tmp_path / "artifacts"))
+    slow = SlowCapability()
+    mgr = make_two_step_manager(store, checkpointer, tmp_path, [chart, slow],
+                                {"slow": ["chart"]})
+    job = await mgr.create_job("draw, then take forever")
+    mgr.start_job(job.job_id)
+    for _ in range(500):
+        await asyncio.sleep(0.01)
+        if slow.runs:
+            break
+    stopped = await mgr.cancel_job(job.job_id)
+    assert [o.path for o in stopped.outputs] == [
+        str(tmp_path / "artifacts" / job.job_id / "chart.svg")]
+
+    slow.delay = 0.0                          # let the interrupted step finish now
+    resumed = await mgr.resume_job(job.job_id)
+
+    assert resumed.status is JobStatus.DONE
+    assert [o.role for o in resumed.outputs] == ["main", "annex"]
+    assert [o.path for o in resumed.outputs].count(
+        str(tmp_path / "artifacts" / job.job_id / "chart.svg")) == 1
+    assert resumed.report_path.endswith(".md")
+
+
+async def test_a_run_that_blew_up_mid_stream_still_lists_what_landed(store, tmp_path):
+    """The third terminal in `_drive`: the run itself raised.
+
+    Driven through the runner port (no graph needed) because that is the one
+    terminal a real graph will not produce on demand — a node that raises is
+    routed to `escalate` instead. The file its finished step wrote is on disk
+    all the same.
+    """
+    from jobsmith.jobs.runner import PlanReady, StepFinished
+
+    chart = tmp_path / "artifacts" / "landed.svg"
+    chart.parent.mkdir(parents=True)
+    chart.write_text(SVG)
+
+    class ExplodingRunner:
+        async def stream(self, job_id, query, inputs):
+            yield PlanReady({"rationale": "r",
+                             "steps": [{"capability": "chart", "depends_on": []}]})
+            # one file that landed, one that did not — a run killed mid-write
+            yield StepFinished("chart", {"ok": True, "data": {},
+                                         "meta": artifact_meta(
+                                             ArtifactRef(str(chart)),
+                                             ArtifactRef(str(chart.parent / "half.svg")))})
+            raise RuntimeError("the graph blew up")
+
+        async def pending(self, job_id):
+            return ()
+
+    mgr = JobManager(store=store, runner=ExplodingRunner(),
+                     reports_dir=tmp_path / "artifacts")
+    done = await mgr.run_job((await mgr.create_job("draw me something")).job_id)
+
+    assert done.status is JobStatus.FAILED
+    # `job.error` still says why the run stopped, and ONLY that: on a run that
+    # did not answer, a declared file that is not there is a consequence of
+    # stopping, not the capability defect it would be on a job that answered.
+    assert done.error == "the graph blew up"
+    assert [(o.role, o.path) for o in done.outputs] == [("annex", str(chart))]
+    assert done.report_path is None

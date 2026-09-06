@@ -167,6 +167,29 @@ def test_the_notice_names_files_written_before_the_failure():
     assert "The answer." in notice
 
 
+def test_a_failed_job_announces_the_files_its_steps_left_behind():
+    """A job that stopped can still have produced files (#41). Announcing the
+    failure and saying nothing about them recreates, in the conversation, the
+    defect the DONE branch above was fixed for: a file nobody can find."""
+    job = Job(job_id="abcdef0123", status=JobStatus.FAILED, query="q",
+              error="the model refused",
+              outputs=[JobOutput(path="/tmp/abcdef0123/chart.svg", format="svg",
+                                 role="annex", produced_by="chart")])
+    notice = JobNotificationMiddleware._notice_for(job)
+
+    assert "FAILED: the model refused" in notice          # why, first
+    assert "/tmp/abcdef0123/chart.svg" in notice
+    assert "not as a report" in notice                    # what they are not
+    assert "Report file" not in notice
+
+
+def test_a_failed_job_with_no_files_is_announced_exactly_as_before():
+    job = Job(job_id="abcdef0123", status=JobStatus.FAILED, query="q",
+              error="the model refused")
+    notice = JobNotificationMiddleware._notice_for(job)
+    assert notice == "Job abcdef01 ('q') FAILED: the model refused"
+
+
 def test_the_notice_still_gives_the_path_when_there_is_one():
     job = Job(job_id="abcdef0123", status=JobStatus.DONE, query="q",
               final_answer="The answer.",

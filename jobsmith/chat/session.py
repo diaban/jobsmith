@@ -88,9 +88,23 @@ class JobNotificationMiddleware(AgentMiddleware):
         thing that survived, arrives next to a lie. So the path is stated
         when there is one, and the reason when there is not; either way the
         answer is delivered, since that is the whole point of staying DONE.
+
+        A job that did NOT reach an answer can still have left files behind
+        (#41: the manager collects them at every terminal). Announcing the
+        failure and saying nothing about them would recreate, inside the
+        conversation, the very defect the branch above was fixed for — a file
+        the user has no way to learn about. So they are named here too, as
+        what they are: partial material from a run that did not finish, never
+        a report.
         """
         if job.status is not JobStatus.DONE:
-            return f"Job {job.job_id[:8]} ({job.query[:60]!r}) FAILED: {job.error}"
+            lines = [f"Job {job.job_id[:8]} ({job.query[:60]!r}) FAILED: {job.error}"]
+            if job.outputs:
+                lines.append(
+                    "Steps of this job still produced files before it stopped — "
+                    "mention them as partial material, not as a report: "
+                    + ", ".join(o.path for o in job.outputs))
+            return "\n".join(lines)
 
         lines = [f"Job {job.job_id[:8]} ({job.query[:60]!r}) is DONE."]
         if job.report_path:

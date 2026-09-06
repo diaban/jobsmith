@@ -159,7 +159,21 @@ class Capability(ABC):
             "completed_capabilities": [self.spec.name],
         }
 
-    def _emit_failure(self, detail: str, *, recoverable: bool = True) -> dict:
+    def _emit_failure(
+        self,
+        detail: str,
+        *,
+        recoverable: bool = True,
+        meta: dict[str, Any] | None = None,
+    ) -> dict:
+        """Report this step as failed — with whatever it managed to produce.
+
+        `meta` is symmetric with `_emit_success` on purpose: a step that wrote
+        a chart and then hit an error has to be able to say so
+        (`artifact_meta(...)`, see `core/artifacts.py`), or the file it left on
+        disk is recorded nowhere. Same reasoning as the usage stamp below: a
+        failed step's evidence is exactly the evidence worth keeping.
+        """
         err: NodeError = {
             "source": self.spec.name,
             "kind": f"{self.spec.name}_fail",
@@ -168,7 +182,8 @@ class Capability(ABC):
         }
         # A failed step still burned tokens — that is exactly when the number
         # is worth having.
-        result: CapabilityResult = {"ok": False, "error": detail, "meta": self._usage_meta(None)}
+        result: CapabilityResult = {"ok": False, "error": detail,
+                                    "meta": self._usage_meta(meta)}
         return {
             "results": {self.spec.name: result},
             "completed_capabilities": [self.spec.name],
