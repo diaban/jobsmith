@@ -22,6 +22,7 @@ from typing import Any
 from ..agents import get_agent
 from ..agents.base import AgentContext, open_agent_resources
 from ..chat import ChatSession
+from ..core.artifacts import LocalArtifactStore
 from ..core.builder import AgentBuilder
 from ..core.deps import Deps
 from ..core.registry import CapabilityRegistry
@@ -98,7 +99,13 @@ async def build_app(
         if resources is None:
             resources = await open_agent_resources(definition, stack)
 
-        registry = CapabilityRegistry(definition.capabilities(AgentContext(llm, resources)))
+        # A capability that produces a file writes through this port; it is
+        # rooted where the manager keeps deliverables, so a job's annexes sit
+        # next to its report and no capability has to know that layout.
+        artifacts = LocalArtifactStore(reports_dir)
+        registry = CapabilityRegistry(
+            definition.capabilities(AgentContext(llm, resources, artifacts))
+        )
         graph = AgentBuilder(
             Deps(llm=llm), registry,
             profile=definition.profile, checkpointer=checkpointer,

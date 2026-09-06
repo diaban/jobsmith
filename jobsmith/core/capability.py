@@ -72,9 +72,17 @@ class CapabilityBaseState(CapabilityOutputState, total=False):
     was invoked with. Fields a sub-graph writes for itself (`aspects`,
     `generated_query`, ...) are NOT — they belong to the schema that declares
     them and are absent until their own node has run.
+
+    `job_id` is declared here so a capability that produces a file can name
+    the job it writes for (`ArtifactStore.write`). It is deliberately NOT
+    Required: `jobs/runner.py` invokes the graph with it, but a graph driven
+    directly (a test, a script) has no job, so it is read with `.get()` — a
+    capability with no job to write for should say so rather than invent a
+    directory.
     """
     query: Required[str]
     inputs: dict[str, Any]
+    job_id: str
 
 
 class Capability(ABC):
