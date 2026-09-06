@@ -66,7 +66,10 @@ class SuiteResult:
     #: which Reporter wrote the deliverables this run scored. Recorded so a
     #: record says what it measured — NOT part of `load_baseline`'s notion of
     #: comparable, because the report checks read through the markup and score
-    #: the same property either way.
+    #: the same property either way. That holds for every format a run can be
+    #: stored under, since it holds for every *text* format: a deliverable
+    #: whose file is bytes is refused at the entry (`deliverable.ensure_readable`)
+    #: rather than scored, so no record here was ever unreadable.
     report_format: str = "markdown"
     checks: dict[str, dict[str, int]] = field(default_factory=dict)
     metrics: dict[str, float | None] = field(default_factory=dict)
@@ -184,6 +187,16 @@ def load_baseline(
     Comparable means: same tier, same agent, same provider, same cases. A fake
     run against a Claude run, or a `--case` slice against the full set, would
     produce a delta that means nothing.
+
+    The report format is deliberately not consulted, and there is no defensive
+    skip for a stored run that could not be read: markdown and HTML measure the
+    same property (#25), and a run whose deliverable was bytes no longer
+    reaches storage at all — it is refused before the first case
+    (`deliverable.ensure_readable`, #45). A second check here would rescue a
+    record this package can no longer produce, at the price of making the guard
+    that actually holds harder to find. A stale one from before that fix says
+    `"report_format": "pdf"` in plain JSON, in a gitignored local directory:
+    delete it.
     """
     directory = Path(directory)
     if not directory.is_dir():

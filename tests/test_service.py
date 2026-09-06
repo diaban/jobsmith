@@ -15,10 +15,12 @@ from langgraph.checkpoint.memory import MemorySaver
 from test_chat import launch_call
 from test_cli import daemon_client_over, wait_done
 from test_jobs import make_manager
+from test_report_pdf import StubPdf
 
 from jobsmith.api import create_api
 from jobsmith.cli.client import DaemonClient, EmbeddedClient
-from jobsmith.service import AgentService, LocalAgentService
+from jobsmith.jobs.models import Job, JobOutput, JobStatus
+from jobsmith.service import AgentService, BinaryDeliverable, LocalAgentService
 
 
 def test_both_backings_fully_implement_the_port():
@@ -91,3 +93,52 @@ async def test_identical_answers_through_either_backing(
             "job_id": "nope", "status": "unknown", "error": "unknown job: nope"}
     finally:
         await client.aclose()
+
+
+@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
+async def test_a_binary_deliverable_is_refused_the_same_way_by_both_backings(
+    store, checkpointer, tmp_path, over_http
+):
+    """`get_report` promises a string. A PDF has no reading as one, and both
+    of the silent answers would be false — `None` says the job has no report,
+    and decoding it says nothing intelligible. So the port refuses and names
+    the download, and it must refuse in the same words whether the job ran in
+    this process or behind a daemon: over HTTP that is a 415 the client turns
+    back into the same exception.
+    """
+    service = _service_over(store, checkpointer, tmp_path)
+    service.manager.reporter = StubPdf()
+    client = daemon_client_over(create_api(service)) if over_http else service
+    try:
+        launched = await client.launch_job("print it")
+        job = await wait_done(client, launched["job_id"])
+        job_id = job["job_id"]
+        assert [(o["role"], o["format"]) for o in job["outputs"]] == [("main", "pdf")]
+
+        with pytest.raises(BinaryDeliverable) as refused:
+            await client.get_report(job_id)
+        assert str(refused.value) == (
+            f"the main deliverable of job {job_id} is pdf, which is not text "
+            f"\u2014 download it from /jobs/{job_id}/outputs/{job_id}.pdf"
+        )
+    finally:
+        await client.aclose()
+
+
+async def test_a_deliverable_declared_binary_is_refused_without_reading_it(tmp_path):
+    """The declared format is believed on its own — the refusal must not hang
+    on the bytes happening to fail a decode. A PDF whose first kilobyte is
+    valid UTF-8 would otherwise be printed to a terminal, and the job's own
+    word for what it wrote is the cheaper and the earlier answer."""
+    path = tmp_path / "j1.pdf"
+    path.write_text("this decodes perfectly well", encoding="utf-8")
+    job = Job(job_id="j1", status=JobStatus.DONE, query="q",
+              outputs=[JobOutput(path=str(path), format="pdf", role="main")])
+
+    class OneJob:
+        async def get_job(self, job_id):
+            return job if job_id == "j1" else None
+
+    service = LocalAgentService(OneJob(), None)
+    with pytest.raises(BinaryDeliverable, match=r"outputs/j1\.pdf"):
+        await service.get_report("j1")

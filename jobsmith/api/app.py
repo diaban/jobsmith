@@ -16,7 +16,8 @@ against this API.
   POST /jobs/{id}/cancel, POST /jobs/{id}/resume (restart a stopped job from
   its checkpoint; 409 when it has nothing left to run).
 - Outputs:    GET /jobs/{id}/outputs — the files the job produced for the
-  human; /outputs/{name} downloads one; /report is a shortcut to the main one.
+  human; /outputs/{name} downloads one; /report is a shortcut to the main one
+  when it is text (415 otherwise, naming the download).
 - Live:       GET /events — SSE stream of job-progress events
   (in-process pub/sub, same v1 scope as cancellation).
 
@@ -34,7 +35,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from ..jobs.models import JobStatus
-from ..service import LocalAgentService
+from ..service import BinaryDeliverable, LocalAgentService
 
 
 class SessionIn(BaseModel):
@@ -156,11 +157,21 @@ def create_api(service: LocalAgentService) -> FastAPI:
         The content type follows the format the job actually produced: an
         HTML report announced as text/markdown is shown by a browser as
         markup instead of being rendered. Text formats only — a binary
-        deliverable would be served by /outputs/{name}, which streams the
+        deliverable (PDF) is served by /outputs/{name}, which streams the
         file and infers its type from the extension.
+
+        Which is why a binary main deliverable is a 415 naming that path and
+        not a 404: this job HAS a report, and "no report" is the one answer
+        that would be false. A redirect was the alternative and would have
+        made the two endpoints one — /report would then sometimes hand back
+        a file to save rather than a page to read, and a client could no
+        longer tell the shortcut apart from the download.
         """
         job = await _job_or_404(job_id)
-        report = await service.get_report(job_id)
+        try:
+            report = await service.get_report(job_id)
+        except BinaryDeliverable as refused:
+            raise HTTPException(415, str(refused)) from refused
         if report is None:
             raise HTTPException(404, "no report for this job (not DONE yet?)")
         return Response(report, media_type=_report_media_type(job))

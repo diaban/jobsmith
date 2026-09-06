@@ -20,7 +20,7 @@ import pytest
 
 from evals import cases_for, run_suite, score
 from evals.cases import GOLDEN_CASES, EvalCase
-from evals.deliverable import extract
+from evals.deliverable import ensure_readable, extract
 from evals.harness import Observation
 from evals.results import load_baseline, render_summary, summarize, write_result
 from evals.scoring import CHECK_NAMES, step_failure_rate
@@ -225,6 +225,25 @@ def test_an_unknown_format_degrades_to_plain_text():
     assert doc.contains("just words") and doc.title == ""
 
 
+def test_a_text_format_is_readable_and_a_binary_one_is_refused():
+    """What `extract` covers, and where the line is drawn — by name, once.
+
+    `is_binary_format` is the lookup, so a Reporter added later declares
+    which side it is on and this needs no second list of what is text.
+    """
+    assert ensure_readable("markdown") == "markdown"
+    assert ensure_readable("PPTX ") == "pptx"          # unknown: read as text
+    with pytest.raises(ValueError, match="read the deliverable as text"):
+        ensure_readable("pdf")
+
+
+def test_a_binary_deliverable_is_refused_before_a_single_case_runs():
+    """Not scored-then-discarded: refused at the entry of the suite."""
+    with pytest.raises(ValueError, match="pdf"):
+        asyncio.run(run_suite(cases_for("structural"), provider="fake",
+                              report_format="pdf"))
+
+
 HTML_HEAD = "<!doctype html><html><body>"
 
 
@@ -337,6 +356,51 @@ def test_cli_runs_and_gates_the_structural_tier(capsys):
 
     assert main(["--llm", "fake", "--no-write"]) == 0
     assert "overall" in capsys.readouterr().out
+
+
+def test_the_cli_refuses_a_binary_format_and_stores_nothing(tmp_path, capsys):
+    """The refusal is worth having only because of what it does NOT leave behind.
+
+    A `--report-format pdf` run scores 2/10 — every report check failing on
+    the format rather than on the agent — and `load_baseline` matches on
+    tier/agent/provider/cases and deliberately not on the format, so that
+    record would become the next markdown run's baseline and print a
+    regression nobody caused. So the assertion that matters is the empty
+    results directory, not the message.
+    """
+    from evals.__main__ import main
+
+    code = main(["--llm", "fake", "--report-format", "pdf",
+                 "--results-dir", str(tmp_path)])
+    # First, and on purpose: what the run left on disk. A refusal that still
+    # stored its record would pass every assertion about the message.
+    assert list(tmp_path.iterdir()) == []
+    assert code == 2
+    assert "read the deliverable as text" in capsys.readouterr().err
+
+
+def test_a_refused_run_cannot_become_a_baseline(tmp_path):
+    """The same property from the other end: what the NEXT run compares against.
+
+    The refused run covers the whole golden set on the fake provider, which is
+    exactly what makes it comparable — same tier, agent, provider and cases —
+    so if it were stored, `load_baseline` would hand it to the next markdown
+    run and print a Δ of several points that no prompt caused. The earlier
+    markdown record must still be the one that comes back.
+    """
+    from evals.__main__ import main
+
+    golden = cases_for("structural")
+    earlier = _result(golden, [_obs(case_id=golden[0].id)])
+    write_result(earlier, tmp_path)
+    code = main(["--llm", "fake", "--report-format", "pdf",
+                 "--results-dir", str(tmp_path)])
+
+    baseline = load_baseline(_result(golden, [_obs(case_id=golden[0].id)]), tmp_path)
+    assert baseline is not None
+    assert baseline.report_format == "markdown"
+    assert baseline.run_id == earlier.run_id
+    assert code == 2
 
 
 def test_cli_lists_the_golden_set(capsys):

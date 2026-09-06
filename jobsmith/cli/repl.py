@@ -7,7 +7,7 @@ Commands:
   <any text>        chat (the agent may propose launching a job — approve y/N)
   /jobs             list jobs
   /job <id-prefix>  show a job's plan, artifacts and answer
-  /report <id-pfx>  print a finished job's markdown report
+  /report <id-pfx>  print a finished job's report (text formats)
   /bg <any text>    bypass the chat: run that query as a job directly
   /image <key>      attach an image input to the NEXT /bg job
   /cancel <id-pfx>  cancel a job
@@ -21,6 +21,7 @@ from typing import Any
 
 from ..core.usage import Usage
 from ..jobs.report import format_step_usage, format_usage
+from ..service import BinaryDeliverable
 from .client import AgentClient
 
 BANNER = "\n".join(
@@ -91,8 +92,11 @@ async def run_repl(client: AgentClient, session_id: str) -> None:
         elif line.startswith("/report "):
             job = await _resolve(client, line.split(maxsplit=1)[1])
             if job:
-                report = await client.get_report(job["job_id"])
-                print(report or "  no report yet (is the job done?)")
+                try:
+                    report = await client.get_report(job["job_id"])
+                    print(report or "  no report yet (is the job done?)")
+                except BinaryDeliverable as refused:
+                    print(f"  {refused}")
         elif line.startswith("/cancel "):
             job = await _resolve(client, line.split(maxsplit=1)[1])
             if job:

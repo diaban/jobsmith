@@ -19,7 +19,7 @@ from __future__ import annotations
 import sys
 from typing import TYPE_CHECKING, Any
 
-from ..service import AgentService, LocalAgentService
+from ..service import AgentService, BinaryDeliverable, LocalAgentService
 
 if TYPE_CHECKING:                      # only to name the app the embedded client owns
     from ..app.agent import AgentApp
@@ -112,6 +112,11 @@ class DaemonClient(AgentService):
 
     async def get_report(self, job_id: str) -> str | None:
         r = await self._http.get(f"/jobs/{job_id}/report")
+        if r.status_code == 415:
+            # A deliverable that is not text: the API says so with a status
+            # code, the port with an exception, and the message is the one
+            # the service built — so both backings refuse identically.
+            raise BinaryDeliverable(r.json().get("detail", ""))
         return r.text if r.status_code == 200 else None
 
 

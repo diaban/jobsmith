@@ -7,9 +7,12 @@ Two layers, so a new format never re-implements the layout:
     Reporter      serializes that document to file(s) and returns the
                   `JobOutput`s describing them
 
-`MarkdownReport` and `HtmlReport` (report_html.py) are the built-in ones:
-same document, same `build_document`, two serializers. PDF/PPTX would be more
-of them — that is the whole point of the split.
+`MarkdownReport`, `HtmlReport` (report_html.py) and `PdfReport`
+(report_pdf.py) are the built-in ones: one document, one `build_document`,
+three serializers. PPTX would be another — that is the whole point of the
+split. `PdfReport` is the case that proves it: it renders the *same page*
+`HtmlReport` does and prints it, sharing the layout as a pure function of the
+document rather than as a file another Reporter must have written first.
 
 A job can hand back **several** deliverables: `Reporter.write` returns a
 `list[JobOutput]`, and `MultiReporter` composes one Reporter per requested
@@ -204,7 +207,13 @@ class FileReporter:
     file for it, describe that file as a `JobOutput`.
 
     A subclass supplies `format`, `extension` and `render(document)` — which
-    is genuinely all that differs between two formats of the same deliverable.
+    is genuinely all that differs between two *text* formats of the same
+    deliverable. A format whose file is bytes overrides `serialize` instead:
+    that is the one step `write` delegates, so naming the file, building the
+    document and the `role="main"` decision are never copied along with it.
+
+    `binary` says which of the two a format is, for callers that must hand
+    the file back rather than write it (`is_binary_format`).
 
     `with_annexes` is a policy, not a structure: per-step material lives in
     the store and is served by the API/CLI, so the document stays a
@@ -214,6 +223,7 @@ class FileReporter:
     format = "text"
     extension = "txt"
     title = "Job report"
+    binary = False          # is the file bytes rather than text?
 
     def __init__(self, registry: Any = None, *, with_annexes: bool = False):
         self.registry = registry
@@ -223,13 +233,22 @@ class FileReporter:
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"{job.job_id}.{self.extension}"
         document = build_document(job, self.registry, with_annexes=self.with_annexes)
-        path.write_text(self.render(document), encoding="utf-8")
+        self.serialize(document, path)
         # Always "main": a lone Reporter IS the deliverable. Deciding which
         # one wins when several are asked for belongs to whoever composed
         # them, not to a format that cannot see its siblings.
         return [JobOutput(
             path=str(path), format=self.format, title=self.title, role="main"
         )]
+
+    def serialize(self, document: JobDocument, path: Path) -> None:
+        """Put the document on disk, at the path `write` decided.
+
+        The default is a text file holding `render(document)`, which is what
+        every text format wants. A binary format overrides this one method —
+        it is the only step of `write` that cares whether a file is text.
+        """
+        path.write_text(self.render(document), encoding="utf-8")
 
     def render(self, doc: JobDocument) -> str:
         raise NotImplementedError
@@ -281,6 +300,41 @@ class MarkdownReport(FileReporter):
         return "\n".join(lines) + "\n"
 
 
+def _reporter_classes() -> dict[str, type[FileReporter]]:
+    """Every format name this build knows, and the class that serves it.
+
+    A local import, not a module constant: the other Reporters build on this
+    module, so importing them at the top would be a cycle. Neither of them
+    imports its engine at module scope, so listing PDF here costs nothing to
+    someone who never asked for one — `.[pdf]` is probed when a `PdfReport`
+    is actually constructed.
+    """
+    from .report_html import HtmlReport
+    from .report_pdf import PdfReport
+
+    return {
+        "markdown": MarkdownReport, "md": MarkdownReport,
+        "html": HtmlReport, "htm": HtmlReport,
+        "pdf": PdfReport,
+    }
+
+
+def is_binary_format(report_format: str | None) -> bool:
+    """Is a deliverable of this format bytes rather than text?
+
+    Asked of a *finished job's* declared format — long after the Reporter
+    that wrote it is gone, possibly on a machine where that Reporter's extra
+    is not installed — which is why it is a lookup by name and not a question
+    put to a Reporter instance. The classes stay the single source of truth;
+    only the name travels.
+
+    An unknown format is read as text, the same benefit of the doubt
+    `REPORT_MEDIA_TYPES` and the evals' extractor already give it.
+    """
+    cls = _reporter_classes().get((report_format or "").strip().lower())
+    return bool(cls and cls.binary)
+
+
 def make_reporter(
     report_format: str = "markdown",
     registry: Any = None,
@@ -291,18 +345,12 @@ def make_reporter(
     choose what a job hands back. Unknown names fail loudly: silently writing
     markdown for someone who asked for HTML is worse than a traceback.
     """
-    # Local import: report_html builds on this module, so importing it at the
-    # top would be a cycle. Selecting a format is not a hot path.
-    from .report_html import HtmlReport
-
-    reporters: dict[str, type[FileReporter]] = {
-        "markdown": MarkdownReport, "md": MarkdownReport,
-        "html": HtmlReport, "htm": HtmlReport,
-    }
-    cls = reporters.get((report_format or "").strip().lower())
+    known = _reporter_classes()
+    cls = known.get((report_format or "").strip().lower())
     if cls is None:
         raise ValueError(
-            f"unknown report format {report_format!r} (known: markdown, html)"
+            f"unknown report format {report_format!r} "
+            f"(known: {', '.join(sorted(known))})"
         )
     return cls(registry, with_annexes=with_annexes)
 
@@ -389,8 +437,10 @@ def compose_reporters(
     - two DIFFERENT Reporters claiming one extension would write the same
       path, the second overwriting the first, and `Job.outputs` would then
       list two entries for one file. That is a composition error and raises
-      here, like an unknown name — a trap laid for whoever adds PDF or a
-      second markdown flavour, sprung at composition rather than in a job.
+      here, like an unknown name — a trap laid for whoever adds a second
+      markdown flavour, sprung at composition rather than in a job. (PDF,
+      which landed since, writes `.pdf` and collides with nobody — it is a
+      peer of the HTML Reporter, not a second rendering of it.)
     """
     names = parse_report_formats(formats) if isinstance(formats, str) else list(formats)
     reporters: list[Reporter] = []

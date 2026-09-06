@@ -171,9 +171,17 @@ def _depths(doc: JobDocument) -> dict[str, int]:
     return depth
 
 
-def dag_svg(doc: JobDocument) -> str:
+def dag_svg(doc: JobDocument, *, style: str = "") -> str:
     """The plan as an inline SVG flowchart, left to right. Empty string when
-    there is no plan to draw."""
+    there is no plan to draw.
+
+    `style` is a stylesheet carried *inside* the `<svg>`. A browser needs
+    none — the page's own sheet paints these shapes, themed and in both
+    colour schemes. A print engine is the case that does: it applies the
+    document's CSS to HTML boxes only, so `fill`/`stroke` declared out there
+    are dropped and the DAG comes out as black blocks. Empty by default, so
+    the HTML deliverable is unchanged to the byte.
+    """
     if not doc.plan:
         return ""
     depth = _depths(doc)
@@ -225,7 +233,8 @@ def dag_svg(doc: JobDocument) -> str:
     return (
         f'<svg class="dag" viewBox="0 0 {total_w} {total_h}" width="{total_w}" '
         f'height="{total_h}" role="img" aria-label="Execution plan">'
-        "<title>Execution plan</title>"
+        + (f"<style>{style}</style>" if style else "")
+        + "<title>Execution plan</title>"
         '<defs><marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" '
         'markerHeight="7" orient="auto-start-reverse">'
         '<path d="M 0 0 L 8 4 L 0 8 z"/></marker></defs>'
@@ -299,10 +308,20 @@ summary { cursor: pointer; font-weight: 600; }
 
 class HtmlReport(FileReporter):
     """The deliverable as a self-contained HTML page: same document, same
-    order (answer first, provenance after), no external resource."""
+    order (answer first, provenance after), no external resource.
+
+    `render` is a pure function of the document and of nothing else, which is
+    what lets `PdfReport` print the very same page without ever needing the
+    HTML *file* — a Reporter depending on another Reporter having run is the
+    thing the document/serializer split exists to avoid. `extra_style` is the
+    only seam it needs: paged media wants a few rules a screen does not, and
+    a fresh string is cheaper than a second layout.
+    """
 
     format = "html"
     extension = "html"
+    extra_style = ""    # appended to STYLE — see PdfReport's paged-media rules
+    dag_style = ""      # carried inside the <svg> — for a renderer without CSS
 
     def render(self, doc: JobDocument) -> str:
         parts = [
@@ -310,7 +329,7 @@ class HtmlReport(FileReporter):
             '<html lang="en"><head><meta charset="utf-8">',
             '<meta name="viewport" content="width=device-width, initial-scale=1">',
             f"<title>{escape(doc.title)}</title>",
-            f"<style>{STYLE}</style>",
+            f"<style>{STYLE}{self.extra_style}</style>",
             "</head><body><main>",
             f"<h1>{escape(doc.title)}</h1>",
             f'<section class="answer">{markdown_to_html(doc.answer)}</section>',
@@ -324,7 +343,8 @@ class HtmlReport(FileReporter):
             if doc.plan_rationale:
                 parts.append(f'<p class="rationale">{escape(doc.plan_rationale)}</p>')
             parts.append(self._steps(doc))
-            parts.append(f'<div class="scroll-x">{dag_svg(doc)}</div>')
+            parts.append(
+                f'<div class="scroll-x">{dag_svg(doc, style=self.dag_style)}</div>')
         parts.append("</section>")
         for heading, body in doc.annexes:
             parts += [

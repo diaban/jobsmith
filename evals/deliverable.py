@@ -13,9 +13,11 @@ things the checks actually ask about —
     title   what the document announces itself as
     text    everything a reader can see, markup gone
 
-— so a check is written once and holds for every Reporter. A format the
-extractor does not know is read as plain text, which degrades to today's
-behaviour instead of pretending the document has no content.
+— so a check is written once and holds for every Reporter. A *text* format
+the extractor does not know is read as plain text, which degrades to today's
+behaviour instead of pretending the document has no content. A format whose
+file is bytes has no such reading at all, and `ensure_readable` refuses it
+before a suite runs rather than letting it score zero.
 
 Deliberately **not** a parser. It never validates the markup, only strips it,
 and it is paired with `normalize()` so that the needle a check searches for
@@ -28,6 +30,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from html import unescape
+
+from jobsmith.jobs.report import is_binary_format
 
 # Markup that carries no text: dropped whole, contents included.
 _DROP_BLOCKS = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.I | re.S)
@@ -95,10 +99,42 @@ _EXTRACTORS = {"html": _from_html, "markdown": _from_markdown}
 def extract(raw: str | None, report_format: str | None) -> Deliverable:
     """Read a rendered deliverable as `(title, searchable text)`.
 
-    An unknown format is read as markdown — plain text with no markup to
-    strip is exactly what that does, so a new Reporter scores on its content
-    from day one and only its *title* waits for an extractor here.
+    Every *text* format is covered: an unknown one is read as markdown —
+    plain text with no markup to strip is exactly what that does, so a new
+    text Reporter scores on its content from day one and only its *title*
+    waits for an extractor here.
+
+    A format whose file is bytes is not covered and never arrives: there is
+    no text in it to score, so `ensure_readable` refuses it at the entry.
     """
     fmt = (report_format or "markdown").strip().lower()
     title, text = _EXTRACTORS.get(fmt, _from_markdown)(raw or "")
     return Deliverable(format=fmt, raw=raw or "", title=title, text=normalize(text))
+
+
+def ensure_readable(report_format: str) -> str:
+    """The scored format, or a refusal saying why it cannot be scored.
+
+    Asked of the *main* deliverable — the only file the checks ever read — at
+    the entry of a suite run, before a case is composed. A binary deliverable
+    fails every report check for a reason that has nothing to do with the
+    agent, and the run it would store is worse than the wasted minute: the
+    report format is deliberately not part of `load_baseline`'s notion of
+    comparable, so that record becomes the next run's baseline and prints a
+    regression nobody caused.
+
+    Loud, like `make_reporter` on an unknown name and `BinaryDeliverable` on
+    `get_report`: a refusal naming what to do instead beats a number that
+    means nothing. `is_binary_format` is the lookup, so what counts as text
+    stays defined once, by the Reporters themselves.
+    """
+    fmt = (report_format or "").strip().lower()
+    if is_binary_format(fmt):
+        raise ValueError(
+            f"cannot score a {fmt} deliverable: the report checks read the "
+            f"deliverable as text, and a {fmt} file is bytes — every one of "
+            f"them would fail for a reason that is not about the agent. Score "
+            f"a text format instead: --report-format markdown, or "
+            f"markdown,{fmt} to write the {fmt} file as well."
+        )
+    return fmt

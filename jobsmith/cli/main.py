@@ -5,7 +5,7 @@
     jobsmith run "<task>"            launch a job directly, without chatting
     jobsmith jobs [--status done]    list jobs
     jobsmith job <id-prefix>         plan, steps, artifacts, answer
-    jobsmith report <id-prefix>      print the markdown deliverable
+    jobsmith report <id-prefix>      print the deliverable (text formats)
     jobsmith outputs <id-prefix>     list the files the job produced
     jobsmith cancel <id-prefix>      cancel a running job
     jobsmith resume <id-prefix>      restart a stopped job from its checkpoint
@@ -27,6 +27,7 @@ import asyncio
 import sys
 
 from ..agents import agent_names
+from ..service import BinaryDeliverable
 from .client import DEFAULT_URL, AgentClient, open_client
 from .repl import run_repl, show_job
 
@@ -65,7 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     jobs.add_argument("--session", metavar="ID", help="only this conversation's jobs")
 
     for name, help_text in (("job", "show one job in detail"),
-                            ("report", "print a job's markdown report"),
+                            ("report", "print a job's report"),
                             ("outputs", "list the files a job produced"),
                             ("cancel", "cancel a job"),
                             ("resume", "restart a stopped job from its checkpoint")):
@@ -130,7 +131,13 @@ async def cmd_job(client: AgentClient, args) -> int:
 
 async def cmd_report(client: AgentClient, args) -> int:
     job = await client.resolve_job(args.job_id)
-    report = await client.get_report(job["job_id"]) if job else None
+    try:
+        report = await client.get_report(job["job_id"]) if job else None
+    except BinaryDeliverable as refused:
+        # A PDF has no printing on a terminal. Say where the file is — the
+        # job did produce a deliverable, which "no report" would deny.
+        print(f"{refused}\n(jobsmith outputs {args.job_id} lists the files)")
+        return 1
     if report is None:
         print("no report available (is the job done?)")
         return 1
