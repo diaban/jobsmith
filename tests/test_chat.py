@@ -190,6 +190,81 @@ def test_a_failed_job_with_no_files_is_announced_exactly_as_before():
     assert notice == "Job abcdef01 ('q') FAILED: the model refused"
 
 
+def test_a_cancelled_job_is_announced_as_cancelled_not_failed():
+    """`cancel_job` is one of the model's own tools, so the same actor stops a
+    job and reports on it. Calling that stop a failure would put an untruth in
+    the conversation; saying nothing about the files would hide them."""
+    job = Job(job_id="abcdef0123", status=JobStatus.CANCELLED, query="q",
+              error="1 file(s) a step reported producing are missing: chart → gone.svg",
+              outputs=[JobOutput(path="/tmp/abcdef0123/chart.svg", format="svg",
+                                 role="annex", produced_by="chart")])
+    notice = JobNotificationMiddleware._notice_for(job)
+
+    assert "was CANCELLED before it finished" in notice
+    assert "FAILED" not in notice
+    assert "/tmp/abcdef0123/chart.svg" in notice
+    assert "not as a report" in notice
+    # a cancelled job has no failure message, but it can have a delivery one
+    assert "gone.svg" in notice
+
+
+async def test_a_cancelled_job_reaches_the_conversation(store, checkpointer, tmp_path):
+    """A job that ends in silence is the defect the DONE branch was fixed for."""
+    session, model = make_session(store, checkpointer, tmp_path,
+                                  [AIMessage(content="I stopped that one.")])
+    job = await session.manager.create_job("crunch numbers",
+                                           session_id=session.session_id)
+    await session.manager.cancel_job(job.job_id)          # never started: tombstone
+    agent = session.build()
+
+    await agent.ainvoke({"messages": [HumanMessage("what happened to it?")]}, CFG)
+
+    (notice,) = notices(model.calls[0], NOTICE_MARKER)
+    assert job.job_id[:8] in notice.content and "CANCELLED" in notice.content
+    assert (await session.manager.get_job(job.job_id)).announced is True
+
+
+async def test_a_resumed_job_is_news_again(store, checkpointer, tmp_path):
+    """The trap in making a cancellation announceable: `announced` is set when
+    the STOP is announced, so a job resumed to DONE afterwards would be
+    filtered out of `list_finished_unannounced` and its answer would never
+    reach the conversation that asked for it. `_begin_resume` unmarks it, for
+    the same reason it clears `job.error`: a resumed job is news again."""
+    from test_jobs import CountingEcho
+
+    alpha, slow = CountingEcho("alpha"), CountingEcho("slow", delay=30.0)
+    llm = FakeLLM(
+        {"planner": plan_json("alpha", "slow", deps={"slow": ["alpha"]})},
+        default="A sufficiently long final answer for the job test.",
+    )
+    manager = make_manager(store, checkpointer, tmp_path, caps=[alpha, slow], llm=llm)
+    model = ScriptedChatModel(responses=[AIMessage(content="I stopped it."),
+                                         AIMessage(content="Here it is at last.")])
+    session = ChatSession(manager, model, checkpointer=MemorySaver())
+    job = await manager.create_job("a job worth resuming", session_id=session.session_id)
+    manager.start_job(job.job_id)
+    for _ in range(500):                       # wait until `slow` is really running
+        await asyncio.sleep(0.01)
+        if slow.runs:
+            break
+    await manager.cancel_job(job.job_id)
+    agent = session.build()
+
+    await agent.ainvoke({"messages": [HumanMessage("stop that")]}, CFG)
+    (stop_notice,) = notices(model.calls[0], NOTICE_MARKER)
+    assert "CANCELLED" in stop_notice.content
+    assert (await manager.get_job(job.job_id)).announced is True
+
+    slow.delay = 0.0                           # let the interrupted step finish
+    done = await manager.resume_job(job.job_id)
+    assert done.status is JobStatus.DONE and done.announced is False
+
+    await agent.ainvoke({"messages": [HumanMessage("and now?")]}, CFG)
+    (end_notice,) = notices(model.calls[-1], NOTICE_MARKER)
+    assert "is DONE" in end_notice.content
+    assert done.report_path in end_notice.content      # the answer finally lands
+
+
 def test_the_notice_still_gives_the_path_when_there_is_one():
     job = Job(job_id="abcdef0123", status=JobStatus.DONE, query="q",
               final_answer="The answer.",

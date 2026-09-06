@@ -54,7 +54,7 @@ class CountingEcho(SlowEcho):
         return self._emit_success({"echo": f"{self.spec.name}#{self.runs}"})
 
 
-async def cancelled_midway(store, checkpointer, tmp_path):
+async def cancelled_midway(store, checkpointer, tmp_path, *, session_id=None):
     """A job stopped *inside* its second step: one result stored, one pending.
 
     The shape every resume test needs — and the one a job really stops in,
@@ -68,7 +68,7 @@ async def cancelled_midway(store, checkpointer, tmp_path):
         default="A sufficiently long final answer for the job test.",
     )
     mgr = make_manager(store, checkpointer, tmp_path, caps=[alpha, slow], llm=llm)
-    job = await mgr.create_job("a job worth resuming")
+    job = await mgr.create_job("a job worth resuming", session_id=session_id)
     mgr.start_job(job.job_id)
     for _ in range(500):                       # wait until `slow` is actually running
         await asyncio.sleep(0.01)
@@ -326,6 +326,26 @@ async def test_session_filter_and_announcement_flow(store, checkpointer, tmp_pat
 
     await mgr.mark_announced(in_session.job_id)
     assert await mgr.list_finished_unannounced("s1") == []
+
+
+async def test_every_terminal_is_announceable_and_a_resume_unmarks_it(
+    store, checkpointer, tmp_path
+):
+    """A cancelled job has an ending too, and the chat model is what cancels
+    it — so it must reach the conversation. And announcing that stop must not
+    silence the job if it is later resumed."""
+    mgr, job, _alpha, slow = await cancelled_midway(store, checkpointer, tmp_path,
+                                                    session_id="s1")
+    pending = await mgr.list_finished_unannounced("s1")
+    assert [j.status for j in pending] == [JobStatus.CANCELLED]
+    await mgr.mark_announced(job.job_id)
+    assert await mgr.list_finished_unannounced("s1") == []
+
+    slow.delay = 0.0
+    done = await mgr.resume_job(job.job_id)
+    assert done.status is JobStatus.DONE
+    assert done.announced is False                # news again, like `error` is cleared
+    assert [j.job_id for j in await mgr.list_finished_unannounced("s1")] == [job.job_id]
 
 
 async def test_subscribe_streams_job_events(store, checkpointer, tmp_path):

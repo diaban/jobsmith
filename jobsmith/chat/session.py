@@ -91,19 +91,37 @@ class JobNotificationMiddleware(AgentMiddleware):
 
         A job that did NOT reach an answer can still have left files behind
         (#41: the manager collects them at every terminal). Announcing the
-        failure and saying nothing about them would recreate, inside the
+        end and saying nothing about them would recreate, inside the
         conversation, the very defect the branch above was fixed for — a file
         the user has no way to learn about. So they are named here too, as
         what they are: partial material from a run that did not finish, never
         a report.
+
+        And it says which ending it was. A cancelled job is not a failed one —
+        usually the model cancelled it *because the user asked* — and this
+        text is the model's instruction for what to tell the user, so calling
+        a stop a failure would put an untruth in the conversation.
         """
         if job.status is not JobStatus.DONE:
-            lines = [f"Job {job.job_id[:8]} ({job.query[:60]!r}) FAILED: {job.error}"]
+            what = job.query[:60]
+            lines = [
+                f"Job {job.job_id[:8]} ({what!r}) was CANCELLED before it "
+                f"finished, so it has no answer and no report."
+                if job.status is JobStatus.CANCELLED else
+                f"Job {job.job_id[:8]} ({what!r}) FAILED: {job.error}"
+            ]
             if job.outputs:
                 lines.append(
                     "Steps of this job still produced files before it stopped — "
                     "mention them as partial material, not as a report: "
                     + ", ".join(o.path for o in job.outputs))
+            # A cancelled job carries no failure message, but it CAN carry a
+            # delivery one (a step that declared a file it did not leave now
+            # lands in `job.error` at every terminal). Dropping it here would
+            # re-hide, in the conversation, what the manager just insisted on
+            # saying out loud.
+            if job.error and job.status is JobStatus.CANCELLED:
+                lines.append(f"Also worth passing on: {job.error}")
             return "\n".join(lines)
 
         lines = [f"Job {job.job_id[:8]} ({job.query[:60]!r}) is DONE."]
@@ -127,8 +145,9 @@ class JobNotificationMiddleware(AgentMiddleware):
             return None, []
         return SystemMessage(
             f"[job update] The following {NOTICE_MARKER}. Announce each to the "
-            "user now: a short synthesis plus the report file path, or the "
-            "reason there is no file.\n\n"
+            "user now: for one that answered, a short synthesis plus the report "
+            "file path (or the reason there is no file); for one that stopped "
+            "without answering, what happened and any file it left behind.\n\n"
             + "\n\n".join(self._notice_for(job) for job in finished)
         ), finished
 
