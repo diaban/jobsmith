@@ -241,6 +241,14 @@ report. A declared file that is not on disk is dropped rather than listed —
 an output nobody can open is worse than none — and the job says which one, the
 same way it does for a report it could not write.
 
+**And they survive a run that did not finish.** A step can declare a file it
+wrote even when it then fails, and a job that ends **failed** or **cancelled**
+still lists what its steps left on disk — those files are exactly what is
+often worth having, and a file recorded nowhere is a file nobody can find.
+Such a job gets no *report*, though: there is no answer to write one about, so
+it has no `main` output, `report_path` stays empty, and the conversation
+announces the failure **and** names the files rather than quietly keeping them.
+
 If writing a file fails (a full disk, a read-only directory), the job is
 still **done** — the answer was produced and is stored — and says so: the
 error names the format that failed, and any file that did get written is

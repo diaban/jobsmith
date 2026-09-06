@@ -195,11 +195,13 @@ class JobManager:
                     await self._apply(job, update, errors)
             except asyncio.CancelledError:
                 job.status = JobStatus.CANCELLED
+                self._collect_artifacts(job)       # the steps that did finish left files
                 await self._persist_summary(job)   # cancelled work was still paid for
                 raise
             except Exception as e:
                 job.status = JobStatus.FAILED
                 job.error = str(e)
+                self._collect_artifacts(job)
                 await self._persist_summary(job)
                 return job
 
@@ -210,15 +212,17 @@ class JobManager:
                 # The reporter reads job.usage, so settle it before writing.
                 job.usage = ledger.total().to_dict()
                 self._write_outputs(job)
+            else:
+                self._collect_artifacts(job)
             await self._persist_summary(job)
         return job
 
     def _write_outputs(self, job: Job) -> None:
-        """Produce the deliverables — and survive failing to.
+        """Produce the deliverables of a job that answered — and survive failing to.
 
         Whatever the reporter hands back IS the job's deliverables: one
         Reporter writes one file, a composed one writes several. The files a
-        capability produced for itself are appended to them as annexes, so
+        capability produced for itself are collected next to them, so
         `Job.outputs` is the whole of what this job leaves behind.
 
         A write that raises must NOT escape: this runs after the stream's
@@ -234,6 +238,10 @@ class JobManager:
         checkpoint has nothing pending and `resume_job` would refuse it).
         A separate `try` on purpose: the run's own `except` means "the graph
         blew up", which a full disk is not.
+
+        **Only a job that answered gets here.** Running the Reporter for a
+        run that stopped would write a report of nothing; `_collect_artifacts`
+        is the half that still applies, and it is called on its own there.
         """
         try:
             outputs = list(self.reporter.write(job, self.reports_dir))
@@ -242,16 +250,50 @@ class JobManager:
                 getattr(self.reporter, "format", "unknown"), e)
             outputs = failure.outputs       # keep what did make it to disk
             job.error = str(failure)
-        # Annexes come AFTER the deliverables and are never "main": #28's
-        # invariant (exactly one main, the first format asked for) is what
-        # `report_path`, `jobsmith report` and `/report` read, and a step's
-        # chart must not be able to become the thing the report points at.
-        # They are collected regardless of how the report went: they are on
+        # Annexes are collected regardless of how the report went: they are on
         # disk either way, and a file with no JobOutput is a file nobody can
         # find — the same reason `ReportWriteError` carries its outputs.
+        self._collect_artifacts(job, deliverables=outputs, answered=True)
+
+    def _collect_artifacts(
+        self,
+        job: Job,
+        *,
+        deliverables: list[JobOutput] | None = None,
+        answered: bool = False,
+    ) -> None:
+        """Record the files the steps left behind, as this job's annexes.
+
+        Called for **every** terminal a run reaches, not only for an answer.
+        A chart a step produced exists whether or not the run that followed
+        it reached a conclusion, and this project has twice already chosen to
+        keep the evidence over discarding it: usage is booked for a step that
+        failed, and `ReportWriteError` carries the outputs already on disk. A
+        file recorded nowhere is "a deliverable nobody can find", which is the
+        defect #28 fixed — and for a FAILED job it is usually permanent, since
+        a run that reached `escalate`/`user_error` has an empty frontier and
+        `resume_job` refuses it.
+
+        Annexes come AFTER the deliverables and are never "main": #28's
+        invariant (exactly one main, the first format asked for) is what
+        `report_path`, `jobsmith report` and `/report` read, and a step's
+        chart must not become the thing the report points at. A job that did
+        not answer passes no deliverables at all, so it has no `main`,
+        `report_path` stays None and `/report` still 404s — the annexes are
+        offered as what they are, not dressed up as a partial success.
+
+        `job.outputs` is **assigned**, never appended to: a cancelled job that
+        collects and is then resumed keeps the earlier attempt's results (the
+        repository loads them), so the second collection re-derives the same
+        list rather than doubling it.
+        """
         annexes, missing = self._capability_outputs(job)
-        job.outputs = outputs + annexes
-        if missing:
+        job.outputs = list(deliverables or []) + annexes
+        # A promised file that is absent is only a *defect* when the run
+        # answered — see `_capability_outputs`. On a run that stopped it is an
+        # expected consequence of stopping, and `job.error` has to keep saying
+        # why the run stopped, which is what the human actually needs.
+        if missing and answered:
             job.error = "; ".join(filter(None, [job.error, missing]))
 
     def _capability_outputs(self, job: Job) -> tuple[list[JobOutput], str]:
@@ -265,12 +307,14 @@ class JobManager:
         Recording it would repeat exactly the defect #28 fixed — a JobOutput
         for a file nobody can open, offered by `jobsmith outputs` and by
         `GET /jobs/{id}/outputs/{name}` and failing there instead of here.
-        Staying silent is no better: this runs only for a job that reached
-        `answer`, so a promised file that is absent is a capability defect,
-        and the run that hid it would look perfect. It therefore lands in
-        `job.error` — the same channel, and the same reasoning, as a failed
-        report write: the job stays DONE because the work is done, and the
-        error says which part of the delivery is not.
+        Staying silent is no better *for a job that answered*: a promised file
+        that is absent is then a capability defect, and the run that hid it
+        would look perfect. So the drop is reported back and `_collect_artifacts`
+        decides what to do with it — into `job.error` when the run answered
+        (the same channel, and the same reasoning, as a failed report write:
+        the job stays DONE because the work is done, and the error says which
+        part of the delivery is not), silently when the run stopped, where a
+        half-written file is a consequence of stopping rather than a defect.
 
         Two capabilities that wrote the same path are recorded once: the
         second would list one file twice in `Job.outputs`, which is the same
@@ -382,6 +426,15 @@ class JobManager:
         alive, a RUNNING record can only be a leftover. They are marked FAILED
         while their checkpoint is retained, so a resume stays possible later.
         QUEUED jobs are left alone — they never started and can still be run.
+
+        The fourth terminal, and the one that does NOT collect artifacts
+        (`_collect_artifacts`), for two reasons that point the same way. It
+        works from index summaries, which carry neither the plan nor the
+        results — collecting would mean re-loading every stale record in full
+        at startup to read declarations this process never saw. And it is the
+        one FAILED that keeps a live frontier: the checkpoint is retained on
+        purpose, so a resume settles through `_drive`, which collects. Nothing
+        is lost here that the next attempt cannot record.
         """
         stale = [j for j in await self.list_jobs(status=JobStatus.RUNNING, limit=1000)
                  if j.job_id not in self._tasks]

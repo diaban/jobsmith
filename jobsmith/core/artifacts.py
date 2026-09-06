@@ -23,12 +23,15 @@ never be pointed elsewhere without editing it, and a fake store makes the
 capability testable without a disk. The layout stays the composition root's
 business — a capability names its file, never its path.
 
-Two edges of the mechanism, stated rather than hidden: a declaration rides on
-a **successful** result (`_emit_failure` takes no `meta`), and the manager
-reads declarations only for a job that reached an answer. So a file written by
-a step that then failed, or by a run that was cancelled, stays on disk
-unrecorded — recording it would mean deciding what a partial deliverable is
-worth, and nothing here pretends to have decided that.
+A declaration rides on **any** result, successful or not (`_emit_failure`
+takes the same `meta`), and the manager reads declarations at every terminal a
+run reaches — DONE, FAILED, CANCELLED alike. That was the decision #41 asked
+for: a file produced by a run that did not finish is a deliverable, not
+debris. The same reasoning as usage booked for a failed step and
+`ReportWriteError` carrying what already reached disk — a file recorded
+nowhere is a deliverable nobody can find. What such a job does *not* get is a
+report: there is no answer to write one about, so its files are annexes with
+no `main` beside them and `Job.report_path` stays None.
 
 `LocalArtifactStore` is the first adapter: `<root>/<job_id>/<name>`, rooted at
 the same directory the manager writes deliverables into. The per-job directory
@@ -94,9 +97,11 @@ class ArtifactRef:
 
 
 def artifact_meta(*refs: ArtifactRef) -> dict[str, Any]:
-    """The `meta` fragment a capability passes to `_emit_success`.
+    """The `meta` fragment a capability passes when it emits.
 
         return self._emit_success(data, meta=artifact_meta(ref))
+        return self._emit_failure("the export died halfway",
+                                  meta=artifact_meta(ref))
     """
     return {ARTIFACTS_META_KEY: [ref.to_dict() for ref in refs]}
 
