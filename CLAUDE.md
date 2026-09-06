@@ -238,9 +238,15 @@ prints a table comparable with the previous run.
   opens; escaping moved the strings they searched for), and the golden set
   scored 13 checks lower in HTML purely on the format. `--report-format html`
   scores the other Reporter, and `tests/test_evals.py` pins the two runs to
-  identical per-check tallies. An unknown format is read as plain text: a new
-  Reporter is scored on its content from day one, only its *title* needs an
-  extractor here.
+  identical per-check tallies. An unknown *text* format is read as plain text:
+  a new text Reporter is scored on its content from day one, only its *title*
+  needs an extractor here. A format whose file is **bytes** has no such
+  reading, so it is refused at the entry (`deliverable.ensure_readable`, the
+  lookup being `is_binary_format` — evals grows no second list of what is
+  text) rather than scoring ~2/10 on the format and storing a record the next
+  run would pick up as its baseline (#45). It is asked of the *first* format,
+  which is the `main` output and therefore the only file the checks read, so
+  `--report-format markdown,pdf` still scores markdown honestly.
 - **Two tiers.** `structural` runs on `KeywordLLM` — no key, no variance — and
   is expected to be 100%: `tests/test_evals.py` asserts exactly that, so a
   prompt edit that breaks the machinery fails `make check`. `llm` needs a real
@@ -261,7 +267,9 @@ prints a table comparable with the previous run.
   rendered as a Δ column. A `--case` slice is therefore never a baseline for the
   full set. The report format is recorded but deliberately NOT part of that
   match: the checks score the same property either way, so an HTML run is a
-  legitimate baseline for a markdown one.
+  legitimate baseline for a markdown one — which stays true only because every
+  run that reaches storage scored a text deliverable, the refusal above being
+  what guarantees it.
 - Adding a case is one `EvalCase` in `cases.py`; adding a property is one
   function in `scoring.py` plus its name in `CHECK_NAMES` (a test pins the two
   together). Cases stay **domain-neutral** — `make leak-check` scans `evals/`

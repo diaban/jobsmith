@@ -465,7 +465,9 @@ the terminal it should, every planned step ran and reported success, and the
 deliverable carries a title, the answer and its provenance. Wording may vary
 freely; structure may not — and neither does the deliverable's format: the
 report checks read the file through a markup stripper, so a markdown run and an
-HTML one score identically.
+HTML one score identically. A format whose file is bytes (`pdf`) is refused
+before the first case runs: there is no text in it to score, and a run that
+failed every report check on the format would become the next run's baseline.
 
 Two tiers, because only one of them can be trusted to gate anything:
 
