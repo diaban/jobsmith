@@ -244,8 +244,9 @@ def test_make_reporter_picks_a_format_and_refuses_an_unknown_one():
     assert isinstance(make_reporter("markdown"), MarkdownReport)
     assert isinstance(make_reporter("HTML"), HtmlReport)
     assert make_reporter("html", "reg", with_annexes=True).registry == "reg"
+    # "pdf" is a known format since #34 — an unknown one is still a traceback
     with pytest.raises(ValueError, match="unknown report format"):
-        make_reporter("pdf")
+        make_reporter("pptx")
 
 
 def test_pick_report_formats_prefers_the_argument_then_the_env(monkeypatch):
@@ -375,9 +376,9 @@ def test_two_formats_claiming_one_extension_refuse_to_compose(monkeypatch):
 
 def test_an_unknown_name_anywhere_in_the_list_still_fails_loudly():
     with pytest.raises(ValueError, match="unknown report format"):
-        compose_reporters("markdown,pdf")
+        compose_reporters("markdown,pptx")
     with pytest.raises(ValueError, match="unknown report format"):
-        compose_reporters("pdf,markdown")
+        compose_reporters("pptx,markdown")
     with pytest.raises(ValueError, match="at least one reporter"):
         MultiReporter([])
 
