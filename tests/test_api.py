@@ -13,6 +13,7 @@ from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
 from test_chat import launch_call
 from test_jobs import make_manager
+from test_report_pdf import StubPdf
 
 from jobsmith.api import create_api
 from jobsmith.chat import ChatSession
@@ -103,6 +104,29 @@ async def test_report_content_type_follows_the_deliverable_format(
         report = await client.get(f"/jobs/{job['job_id']}/report")
         assert report.headers["content-type"].startswith("text/html")
         assert report.text.startswith("<!doctype html>")
+
+
+async def test_a_binary_deliverable_is_refused_by_report_and_offered_by_outputs(
+    store, checkpointer, tmp_path
+):
+    """/report serves text inline. A PDF main deliverable is neither servable
+    that way nor absent, so it is a 415 that names the download — a 404 would
+    say the job has no report, which is the one thing that is false. The bytes
+    are on /outputs/{name}, and this asserts they really are."""
+    app, manager = make_app(store, checkpointer, tmp_path, [AIMessage(content="hi")])
+    manager.reporter = StubPdf()
+
+    async with client_for(app) as client:
+        job = await wait_done(client, (await client.post(
+            "/jobs", json={"query": "a printed run"})).json()["job_id"])
+
+        report = await client.get(f"/jobs/{job['job_id']}/report")
+        assert report.status_code == 415
+        name = f"{job['job_id']}.pdf"
+        assert report.json()["detail"].endswith(f"/jobs/{job['job_id']}/outputs/{name}")
+
+        download = await client.get(f"/jobs/{job['job_id']}/outputs/{name}")
+        assert download.status_code == 200 and download.content.startswith(b"%PDF-")
 
 
 async def test_every_deliverable_is_listed_and_downloadable(store, checkpointer, tmp_path):

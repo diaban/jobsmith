@@ -17,12 +17,40 @@ so the local and remote backings are indistinguishable to a caller.
 """
 from __future__ import annotations
 
-import contextlib
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
+from .jobs.report import is_binary_format
+
 # ------------------------------------------------------------------ the port
+
+
+class BinaryDeliverable(RuntimeError):
+    """`get_report` was asked for a deliverable that is not text.
+
+    It is a refusal, not a failure. `get_report` promises a string — the
+    report `jobsmith report` prints and `GET /jobs/{id}/report` serves
+    inline — and a PDF has no such reading: `read_text` on it raises or, with
+    another encoding, returns mojibake. The two silent answers are both
+    false, `None` most of all: it means "this job has no report", and this
+    job has one, on disk, right where it says.
+
+    So the port says the true thing and says where the bytes are —
+    `GET /jobs/{id}/outputs/{name}`, whose `FileResponse` infers the type
+    from the extension and has always been the way to fetch a file whole.
+    Carried as an exception rather than as a value because the alternative is
+    a sentinel string, which every caller would have to know not to print.
+    The message is built once (`refusing`) and travels verbatim over HTTP, so
+    a caller cannot tell which backing refused.
+    """
+
+    @classmethod
+    def refusing(cls, job_id: str, name: str, report_format: str) -> BinaryDeliverable:
+        return cls(
+            f"the main deliverable of job {job_id} is {report_format}, which is not "
+            f"text — download it from /jobs/{job_id}/outputs/{name}"
+        )
 
 
 class AgentService(ABC):
@@ -64,7 +92,13 @@ class AgentService(ABC):
     async def resume_job(self, job_id: str) -> dict: ...
 
     @abstractmethod
-    async def get_report(self, job_id: str) -> str | None: ...
+    async def get_report(self, job_id: str) -> str | None:
+        """The main deliverable as text, or None when the job has none yet.
+
+        Raises `BinaryDeliverable` when it has one and it is bytes — both
+        backings, same message.
+        """
+        ...
 
     async def aclose(self) -> None:
         return None
@@ -190,12 +224,28 @@ class LocalAgentService(AgentService):
         return {"job_id": job_id, "status": job.status.value}
 
     async def get_report(self, job_id: str) -> str | None:
+        """The main deliverable as text — see the port for what None means.
+
+        Two ways to learn the file is not text, and both answer the same
+        refusal: the format it declares, which is the cheap one, and the
+        decode itself, which is the true one. The second is not redundant —
+        a Reporter added later that forgets to say it is binary still gets a
+        truthful answer here instead of a traceback.
+        """
         job = await self.manager.get_job(job_id)
         if job is None or not job.report_path:
             return None
-        with contextlib.suppress(OSError):
+        main = next((o for o in job.outputs if o.role == "main"), None)
+        if main is not None and is_binary_format(main.format):
+            raise BinaryDeliverable.refusing(job_id, main.name, main.format)
+        try:
             return Path(job.report_path).read_text(encoding="utf-8")
-        return None
+        except UnicodeDecodeError as not_text:
+            fmt = main.format if main else "an unknown format"
+            name = main.name if main else Path(job.report_path).name
+            raise BinaryDeliverable.refusing(job_id, name, fmt) from not_text
+        except OSError:                 # gone from disk since the job finished
+            return None
 
     # -- in-process only (the HTTP adapter re-exposes these) --
 

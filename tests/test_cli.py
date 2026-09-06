@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
 from test_chat import launch_call
 from test_jobs import make_manager
+from test_report_pdf import StubPdf
 
 from jobsmith.api import create_api
 from jobsmith.app.providers import KeywordChatModel, KeywordLLM
@@ -175,3 +176,28 @@ async def test_resume_command_restarts_a_stopped_job(store, checkpointer, tmp_pa
     assert await cmd_resume(client, SimpleNamespace(job_id=job.job_id[:8])) == 1
     assert "cannot resume" in capsys.readouterr().out
     assert await cmd_resume(client, SimpleNamespace(job_id="zzzz")) == 1
+
+
+async def test_report_on_a_binary_deliverable_says_where_the_file_is(tmp_path, capsys):
+    """`jobsmith report` prints text and a PDF is not any, but the job did
+    produce a deliverable — so the command names it instead of claiming there
+    is none, which is what a bare `None` from the port would have printed."""
+    from types import SimpleNamespace
+
+    from jobsmith.cli.main import cmd_report
+
+    client = await embedded(tmp_path)
+    try:
+        client.manager.reporter = StubPdf()
+        launched = await client.launch_job("print it")
+        job_id = launched["job_id"]
+        await wait_done(client, job_id)
+
+        rc = await cmd_report(client, SimpleNamespace(job_id=job_id))
+        printed = capsys.readouterr().out
+        assert rc == 1
+        assert "is pdf, which is not text" in printed
+        assert f"/jobs/{job_id}/outputs/{job_id}.pdf" in printed
+        assert "no report available" not in printed
+    finally:
+        await client.aclose()
