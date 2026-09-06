@@ -130,8 +130,9 @@ Every graph step is a class instance owning its deps and config. Node logic is *
 ### Graph flow
 
 ```
-validate_input → router ─(direct)→ direct_answer ────────────────┐
-                   └(plan)→ planner → executor_dispatch ⇄ {cap_<name> × registry}
+validate_input → router ─(direct | empty registry)→ direct_answer ┐
+                   └(plan)→ planner ─(nothing applicable)→ ───────┤
+                              └→ executor_dispatch ⇄ {cap_<name> × registry}
                                 ↓ (all done)                     ↓
                           merge_results → generation → validate_output
                                               ↑ refine ←┘ (≤ max_refine)  → post_process → END
@@ -141,6 +142,7 @@ errors: execution_error → escalate (some ok result) | user_error (none) → EN
 - **Router** (`core/router.py`) is a dedicated triage node — the planner never decides *whether* to plan. LLM picks a route from `Router.routes` (`"plan"` → planner, `"direct"` → `DirectResponder`, which renders the registry into its prompt so "what can you do?" is answerable, then joins at `validate_output`). **Fail-open**: any LLM/parse error or unknown route falls back to `"plan"`. New route = entry in `Router.routes` + node + `AgentBuilder.route_targets` entry before `.build()`.
   - **Fail-open holds only while there is something to plan with.** An **empty registry** is routed `"direct"` *structurally* — before the LLM call, so it is deterministic and free — and the fallback goes there too (#38): `"plan"` against nothing is not a wider door but a wall, the planner can only raise and the run ends in `user_error`. That is not hypothetical, it is the price of the rule below that a capability nothing can serve stays out of the registry: an agent whose capabilities are **all** conditionally registered composes an empty one legitimately.
 - **Planner** (`core/planner.py`) renders its prompt from `registry.specs()`, validates the LLM's JSON DAG: names against the registry, drops steps whose `is_applicable(state)` is false (generalizes "vision only if image" via `spec.requires_inputs`), **prunes dropped names from surviving `depends_on`**, Kahn cycle check.
+  - Validation answers one of three things: a plan with steps, an **empty plan**, or an unrecoverable `NodeError` — never two at once. Empty is reachable only by every step being dropped as inapplicable (every other defect raises, and `{"steps": []}` straight from the model is still an error — indistinguishable from a truncated response). That is a fact about the request, not a broken plan, so it travels as data and **`AgentBuilder._route_after_planner` sends it to `direct_answer`**: the decision lives in the path map, never as a rescue inside the planner. Note the executor would *also* reach a terminal on an empty plan (`_all_done` is vacuously true) — but through the generator, whose prompt forbids answering outside the context it was given, so "no context" there means "I cannot answer". Which node answers is the point of the edge.
 - **Executor** (`core/executor.py`) is a pass-through node + router: computes ready capabilities each wave and returns `list[Send]`; capability nodes edge back to `executor_dispatch`. This executes an arbitrary DAG without a baked-in schedule.
 - **Two error channels**: `NodeError.recoverable=False` (planner/generation failures) hard-stops into `execution_error`; capability failures are recoverable — they land in `results` with `ok: False` and the run degrades gracefully.
 

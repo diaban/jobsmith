@@ -243,8 +243,9 @@ still listed as an output.
 ### The graph
 
 ```
-validate_input → router ─(direct)→ direct_answer ────────────────┐
-                   └(plan)→ planner → executor_dispatch ⇄ {cap_<name> × registry}
+validate_input → router ─(direct | empty registry)→ direct_answer ┐
+                   └(plan)→ planner ─(nothing applicable)→ ───────┤
+                              └→ executor_dispatch ⇄ {cap_<name> × registry}
                                 ↓ (all done)                     ↓
                           merge_results → generation → validate_output
                                               ↑ refine ←┘ (≤ max_refine)  → post_process → END
@@ -262,6 +263,8 @@ errors: execution_error → escalate (some result ok) | user_error (none) → EN
   `Send`s; capability nodes edge back to it. Any DAG, no baked-in schedule.
 - **Two error channels** — planner/generation failures hard-stop; capability
   failures land in `results` with `ok: False` and the run degrades gracefully.
+  A plan left empty because every step was inapplicable is not a failure: it
+  joins the `direct` route and the agent answers anyway.
 
 ### Object-oriented nodes
 
