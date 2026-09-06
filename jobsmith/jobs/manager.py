@@ -47,6 +47,12 @@ from .runner import GraphRunner, JobUpdate, NodeErrors, PlanReady, StepFinished,
 # Statuses a job can be resumed from — see `JobManager._begin_resume`.
 RESUMABLE = (JobStatus.CANCELLED, JobStatus.FAILED)
 
+# Statuses worth surfacing in the conversation that launched the job: every
+# terminal one. CANCELLED belongs here because `cancel_job` is one of the
+# tools the chat model holds — the same actor can stop a job and would
+# otherwise say nothing about what it produced.
+ANNOUNCEABLE = (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED)
+
 # Ledger scope carrying what previous attempts of a resumed job already spent.
 EARLIER_ATTEMPTS = "earlier attempts"
 
@@ -168,6 +174,12 @@ class JobManager:
                 f"started or already reached its last step"
             )
         job.error = None          # the stopped attempt's message is stale now
+        # ...and so is the fact that the stop was announced: a job picked back
+        # up is news again. Without this, a cancelled job announced in its
+        # session and then resumed to DONE is filtered out of
+        # `list_finished_unannounced`, and its answer never reaches the
+        # conversation that asked for it.
+        job.announced = False
         await self._begin(job)
         return job
 
@@ -463,13 +475,18 @@ class JobManager:
     # ---------------- Chat-session support ----------------
 
     async def list_finished_unannounced(self, session_id: str) -> list[Job]:
-        """Finished jobs of a session whose completion was not yet surfaced
-        in its conversation (the chat layer announces, then marks them)."""
+        """Stopped jobs of a session whose end was not yet surfaced in its
+        conversation (the chat layer announces, then marks them).
+
+        Every terminal status, not only the ones that produced an answer: a
+        job the model itself cancelled has still left results and files
+        behind, and a run that ends in silence is the defect `_notice_for`'s
+        DONE branch was fixed for. A resumed job is unmarked again by
+        `_begin_resume`, so picking one back up does not cost the
+        conversation its ending.
+        """
         jobs = await self.list_jobs(session_id=session_id, limit=100)
-        return [
-            j for j in jobs
-            if j.status in (JobStatus.DONE, JobStatus.FAILED) and not j.announced
-        ]
+        return [j for j in jobs if j.status in ANNOUNCEABLE and not j.announced]
 
     async def mark_announced(self, job_id: str) -> None:
         job = await self.get_job(job_id)
