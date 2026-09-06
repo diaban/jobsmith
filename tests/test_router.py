@@ -80,3 +80,56 @@ async def test_custom_route_accepted(registry):
     )
     assert "handoff" in router.system_prompt()
     assert await router.run({"query": "q"}) == {"route": "handoff"}
+
+
+# ---------------- Empty registry: nothing to plan with (#38) ----------------
+
+@pytest.fixture
+def empty_registry():
+    return CapabilityRegistry([])
+
+
+async def test_empty_registry_routes_direct_without_an_llm_call(empty_registry):
+    """The decision is structural: no capability can be orchestrated, so there
+    is nothing for the planner to do whatever the message says. It must cost
+    no LLM call at all — that is the whole point of deciding it here."""
+    llm = FakeLLM({"triage": json.dumps({"route": "plan"})})
+    router = Router(Deps(llm=llm), empty_registry)
+    assert await router.run({"query": "compare two architectures in depth"}) == {
+        "route": "direct"
+    }
+    assert llm.calls == []
+
+
+async def test_empty_registry_beats_the_plan_fallback(empty_registry):
+    """FALLBACK_ROUTE is "plan"; with nothing to plan with that is not failing
+    open, it is failing into the wall the planner raises against."""
+    class ExplodingLLM(FakeLLM):
+        async def chat(self, messages, **kwargs):
+            raise RuntimeError("llm down")
+
+    router = Router(Deps(llm=ExplodingLLM()), empty_registry)
+    assert await router.run({"query": "q"}) == {"route": "direct"}
+
+
+def test_empty_registry_conditional_edge_defaults_to_direct(empty_registry):
+    router = Router(Deps(llm=FakeLLM()), empty_registry)
+    assert router.route({}) == "direct"          # no decision recorded
+    assert router.route({"route": "direct"}) == "direct"
+
+
+async def test_empty_registry_without_a_direct_route_keeps_the_old_fallback(
+    empty_registry,
+):
+    """Degenerate composition: a route map with no "direct" target. There is
+    nowhere better to send the message, so the plain fallback stands."""
+    router = Router(
+        Deps(llm=FakeLLM()), empty_registry, routes={"plan": "the only route"}
+    )
+    assert await router.run({"query": "q"}) == {"route": "plan"}
+    assert router.route({}) == "plan"
+
+
+def test_non_empty_registry_fallback_is_unchanged(registry):
+    router = make_router(registry, "")
+    assert router.route({}) == "plan"

@@ -147,7 +147,9 @@ jobsmith run "compare the current LangGraph and LlamaIndex agent APIs" --wait
 
 Both are the same port with different adapters, so the capability consuming
 them is identical — and each stays out of the registry entirely when nothing
-backs it, rather than being planned and failing.
+backs it, rather than being planned and failing. An agent left with no
+capabilities at all still answers: the router sees an empty registry and
+replies directly instead of planning.
 
 ### Which agent
 
@@ -251,7 +253,9 @@ errors: execution_error → escalate (some result ok) | user_error (none) → EN
 
 - **Router** — a dedicated triage node. The planner never decides *whether* to
   plan; the router picks `plan` or `direct`, and **fails open to `plan`** on any
-  LLM or parse error. A new route is one entry in `Router.routes` plus a node.
+  LLM or parse error — except with an empty registry, where there is nothing to
+  plan with and `direct` is chosen structurally, without an LLM call. A new
+  route is one entry in `Router.routes` plus a node.
 - **Planner** — renders its prompt from the registry, validates the LLM's JSON
   DAG (names, applicability, dangling dependencies, Kahn cycle check).
 - **Executor** — computes the ready capabilities of each wave and returns
