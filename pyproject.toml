@@ -39,6 +39,11 @@ api = [
 pdf = [
     "weasyprint>=62",
 ]
+# Slide decks as a capability artifact (`slide_deck`). Pure Python, no system
+# libraries — the capability stays out of the registry when it is absent.
+pptx = [
+    "python-pptx>=1.0",
+]
 # Persistence backends (checkpointer + store). Without either, state is
 # in-memory only and nothing survives the process.
 sqlite = [
