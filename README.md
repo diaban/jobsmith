@@ -227,9 +227,19 @@ point at it, the others are the same report rendered again.
 
 A job carries a **list** of outputs (`role: main | alternate | annex`, a
 `format`, the capability that produced it): `main` is the deliverable,
-`alternate` the same report in another format, `annex` per-step material a
-capability produced. `jobsmith outputs <id>` and `GET /jobs/{id}/outputs`
-list them all.
+`alternate` the same report in another format, `annex` a **file a step
+produced** — a chart, an exported table. `jobsmith outputs <id>` and
+`GET /jobs/{id}/outputs` list them all, `/outputs/{name}` downloads one.
+
+**A capability can hand back a file.** It writes through the `ArtifactStore`
+port (`core/artifacts.py`) — `write(job_id, name, data) -> path`, backed by a
+directory today and by object storage the day that matters — and names what it
+wrote in its result's `meta`; the job records each one as an annex, attributed
+to the step. Annexes never disturb the report: they come after the
+deliverables and are never `main`, so `report_path` still points at the
+report. A declared file that is not on disk is dropped rather than listed —
+an output nobody can open is worse than none — and the job says which one, the
+same way it does for a report it could not write.
 
 If writing a file fails (a full disk, a read-only directory), the job is
 still **done** — the answer was produced and is stored — and says so: the
@@ -286,6 +296,9 @@ Adding one:
 1. Subclass `Capability`, define `spec`, write async node methods, and `build()`
    the sub-graph with `self.state_graph(...)`.
 2. Return it from an agent's capability pack in `agents/`.
+3. If it produces a **file**, take an `ArtifactStore` in the constructor
+   (`ctx.artifacts`), write with `state.get("job_id", "")` and a filename, and
+   declare it: `meta=artifact_meta(ArtifactRef(path, title="Revenue chart"))`.
 
 That is all — the planner prompt, the dispatch map and the merging step all
 derive from the registry.
