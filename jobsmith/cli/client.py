@@ -208,6 +208,10 @@ class DaemonClient(AgentService):
                         queue.put_nowait(event)
                     except asyncio.QueueFull:
                         pass            # slow consumer: drop, never block
+            # Reached when the daemon closes the stream — a shutdown looks like
+            # a stream that simply ends, which is indistinguishable from a quiet
+            # one to whoever is awaiting the queue.
+            print(f"[event stream from {self.url} closed by the daemon]", file=sys.stderr)
         except asyncio.CancelledError:
             raise
         except Exception as ended:      # daemon gone, connection dropped

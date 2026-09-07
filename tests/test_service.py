@@ -309,3 +309,21 @@ async def test_unsubscribing_releases_the_stream_the_subscription_held():
     assert queue not in client._readers
     await client.aclose()
     assert reader.cancelled() or reader.done()
+
+
+async def test_a_stream_that_ends_is_announced_rather_than_going_quiet(capsys):
+    """A stream that ends looks exactly like a stream with nothing to say.
+
+    A daemon shutting down closes `/events` without an error, and whoever is
+    awaiting the queue would wait on a connection that no longer exists. The
+    note goes to stderr, where every diagnostic in this layer goes: the queue
+    carries events, so saying it there would mean inventing one.
+    """
+    client = _scripted_client('data: {"job_id": "a"}', "")
+    try:
+        queue = client.subscribe()
+        await asyncio.wait_for(asyncio.shield(client._readers[queue]), timeout=5)
+        assert queue.get_nowait() == {"job_id": "a"}
+        assert "closed by the daemon" in capsys.readouterr().err
+    finally:
+        await client.aclose()
