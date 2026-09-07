@@ -124,3 +124,16 @@ def checkpointer():
 @pytest.fixture
 def store():
     return InMemoryStore()
+
+
+def registered_capabilities(app: Any) -> list[str]:
+    """What the composed app actually registered, in registry order.
+
+    The default pack's registry is configuration-dependent — `documents` needs
+    a directory, `web_search` a key, `slide_deck` the `.[pptx]` extra — so a
+    test that pins what `KeywordLLM` plans (it chains every registered
+    capability) asks the app what it composed instead of hardcoding the
+    environment it happened to be written in.
+    """
+    prefix = "cap_"
+    return [n[len(prefix):] for n in app.manager.graph.nodes if n.startswith(prefix)]

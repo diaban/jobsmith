@@ -244,7 +244,9 @@ def test_make_reporter_picks_a_format_and_refuses_an_unknown_one():
     assert isinstance(make_reporter("markdown"), MarkdownReport)
     assert isinstance(make_reporter("HTML"), HtmlReport)
     assert make_reporter("html", "reg", with_annexes=True).registry == "reg"
-    # "pdf" is a known format since #34 — an unknown one is still a traceback
+    # "pdf" is a known format since #34; "pptx" is deliberately not one and
+    # will not become one — a deck is a capability, because designing it is a
+    # generation and a Reporter does not think (#35)
     with pytest.raises(ValueError, match="unknown report format"):
         make_reporter("pptx")
 
@@ -276,7 +278,11 @@ async def test_the_composed_agent_can_hand_back_html(tmp_path):
         job = await app.manager.create_job("study the topic in depth")
         done = await app.manager.run_job(job.job_id)
         assert done.report_path.endswith(".html")
-        assert [(o.format, o.role) for o in done.outputs] == [("html", "main")]
+        # deliverables only: a pack that also produces a file (`slide_deck`,
+        # when `.[pptx]` is installed) adds annexes after them, which is #35's
+        # business and not this test's
+        deliverables = [o for o in done.outputs if o.role != "annex"]
+        assert [(o.format, o.role) for o in deliverables] == [("html", "main")]
         page = Path(done.report_path).read_text(encoding="utf-8")
         assert page.startswith("<!doctype html>") and "<svg" in page
     finally:
@@ -375,6 +381,8 @@ def test_two_formats_claiming_one_extension_refuse_to_compose(monkeypatch):
 
 
 def test_an_unknown_name_anywhere_in_the_list_still_fails_loudly():
+    # "pptx" again: the `slide_deck` capability writes one, and asking a
+    # Reporter for it is still the error it always was
     with pytest.raises(ValueError, match="unknown report format"):
         compose_reporters("markdown,pptx")
     with pytest.raises(ValueError, match="unknown report format"):
@@ -408,10 +416,11 @@ async def test_the_composed_agent_can_hand_back_both_formats(tmp_path):
     try:
         job = await app.manager.create_job("study the topic in depth")
         done = await app.manager.run_job(job.job_id)
-        assert [(o.format, o.role) for o in done.outputs] == [
+        deliverables = [o for o in done.outputs if o.role != "annex"]   # see above
+        assert [(o.format, o.role) for o in deliverables] == [
             ("markdown", "main"), ("html", "alternate")]
         assert done.report_path.endswith(".md")
-        paths = [Path(o.path) for o in done.outputs]
+        paths = [Path(o.path) for o in deliverables]
         assert all(p.exists() for p in paths) and len({str(p) for p in paths}) == 2
         assert paths[1].read_text(encoding="utf-8").startswith("<!doctype html>")
     finally:

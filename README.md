@@ -151,11 +151,31 @@ backs it, rather than being planned and failing. An agent left with no
 capabilities at all still answers: the router sees an empty registry and
 replies directly instead of planning.
 
+### Asking for a deck
+
+Install one extra and a `slide_deck` step joins the registry: ask for a
+presentation and the job leaves a `.pptx` next to its report.
+
+```bash
+uv pip install -e ".[pptx]"
+jobsmith run "summarise our retrieval options and give me a deck for Monday" --wait
+jobsmith outputs <id>            # the report, and the deck as an annex
+```
+
+It is a **capability, not a report format**, and the difference is the point.
+A report is prose and a Reporter only serializes it; a deck is a different
+document — sections, one idea per slide, bullets, speaker notes — so the deck
+is *designed* by the model as its own step, which is why its tokens show up in
+the plan table like every other step. The written report is still delivered:
+the deck is one more thing the job produced, never a substitute for the
+answer. Like the two above, the step is registered only when something can
+render it (`python-pptx`, pure Python, no system libraries).
+
 ### Which agent
 
 An **agent** is a pack of capabilities plus a profile — what the thing can do
-and how it speaks. Two ship: `default` (research → analysis → critique, needs
-nothing but a key) and `banking` (a domain example: document search, slide
+and how it speaks. Two ship: `default` (research → analysis → critique, plus a
+slide deck when the request asks for one, needs nothing but a key) and `banking` (a domain example: document search, slide
 vision, French). Everything else — job engine, chat, CLI, API, persistence — is
 shared, so they run on exactly the same commands:
 
@@ -251,8 +271,8 @@ that deliverable is a PDF it answers `415` naming the `/outputs/{name}` to
 download instead, because "no report" would be false — the job has one, on
 disk. `jobsmith report <id>` says the same thing in the terminal.
 
-**A capability can hand back a file.** It writes through the `ArtifactStore`
-port (`core/artifacts.py`) — `write(job_id, name, data) -> path`, backed by a
+**A capability can hand back a file** — `slide_deck` is the one that ships.
+It writes through the `ArtifactStore` port (`core/artifacts.py`) — `write(job_id, name, data) -> path`, backed by a
 directory today and by object storage the day that matters — and names what it
 wrote in its result's `meta`; the job records each one as an annex, attributed
 to the step. Annexes never disturb the report: they come after the
@@ -357,7 +377,7 @@ jobsmith/
   api/          adapter — FastAPI: sessions, jobs, outputs, SSE
   cli/          adapter — daemon, clients, REPL, argparse entrypoint
   agents/       ★ what each agent IS — a capability pack + a profile
-    default/      research → analysis → critique (LLM-only)
+    default/      research → analysis → critique, + slide_deck (a .pptx annex)
     banking/      a domain agent: its own capabilities, ports and adapters
   app/          composition: providers, persistence, build_app(agent=...)
 evals/          the golden set + the property checks that score a prompt change
@@ -400,6 +420,7 @@ handle per-provider tool formats), the job engine uses a dependency-light
 | `--agent NAME` | which agent to run — `default` or `banking` (applies to whichever process owns the engine, so pass it to `serve`) |
 | `--docs DIR` | ground jobs in the files under `DIR` (default: `$JOBSMITH_DOCS`); without it the agent runs on the model's own knowledge |
 | `TAVILY_API_KEY` | enables the `web_search` step (extra `.[web]`); absent, the capability is not registered |
+| extra `.[pptx]` | enables the `slide_deck` step — a `.pptx` annex next to the report; absent, the capability is not registered |
 | `--db memory\|<file.db>\|<postgres DSN>` | persistence (default: `$JOBSMITH_DB`, else memory) |
 | `$JOBSMITH_PRICES` | per-model prices for the cost estimate, as inline JSON or a path to a JSON file (USD per million tokens) |
 | `$JOBSMITH_REPORT_FORMAT` | `markdown` (default), `html` or `pdf` (extra `.[pdf]` + pango/cairo) — the deliverable a finished job writes; a comma-separated list (`markdown,pdf`) writes one file per format, the first being the main one |
