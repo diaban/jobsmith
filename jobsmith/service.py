@@ -17,6 +17,7 @@ so the local and remote backings are indistinguishable to a caller.
 """
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -100,6 +101,53 @@ class AgentService(ABC):
         """
         ...
 
+    # -- what the job produced, and what it is doing right now --
+
+    @abstractmethod
+    async def list_outputs(self, job_id: str) -> list[dict] | None:
+        """Every file the job produced for the human, or None if it is unknown.
+
+        Deliverables first, annexes after — the order `Job.outputs` records.
+        """
+        ...
+
+    @abstractmethod
+    async def find_output(self, job_id: str, name: str) -> str | None:
+        """Where one named output is, or None when there is no such file.
+
+        The path is on the machine that RAN the job, which is this one only
+        when the service is embedded. So it is a locator — what a UI prints
+        and what `GET /jobs/{id}/outputs/{name}` serves — and never a promise
+        that the caller can open it: a daemon writes to its own disk. A caller
+        that wants the bytes downloads them from that route.
+
+        What both backings do promise is the *answer*: None means no such
+        file, right now, on the machine that holds it. The remote backing
+        therefore asks the daemon rather than trusting the record it already
+        has, so an output deleted since the job finished reads as None on both
+        sides instead of as a path to nothing.
+        """
+        ...
+
+    @abstractmethod
+    def subscribe(self, *, max_queue: int = 256) -> asyncio.Queue:
+        """A queue of job-progress events (the `jobs/events.job_event` shape).
+
+        Sync because subscribing is not the I/O — draining the queue is. The
+        remote backing keeps an HTTP stream open behind it, so a subscription
+        is released with `unsubscribe`, not by dropping the reference.
+
+        Delivery is best-effort on both sides, by the same rule: a consumer
+        that stops draining has events dropped (`put_nowait`), never a run
+        (embedded) or a reader (remote) blocked behind it.
+        """
+        ...
+
+    @abstractmethod
+    def unsubscribe(self, queue: asyncio.Queue) -> None:
+        """Stop delivering to a queue `subscribe` returned, and release it."""
+        ...
+
     async def aclose(self) -> None:
         return None
 
@@ -120,10 +168,12 @@ class AgentService(ABC):
 class LocalAgentService(AgentService):
     """Runs the agent in this process.
 
-    It also exposes what only an in-process service can do — live event
-    subscription and access to output files. The HTTP adapter turns those into
-    endpoints (`/events`, `/jobs/{id}/outputs/...`) so remote callers get them
-    too; a remote backing consumes the port above and nothing more.
+    Live events and output files were once its private extras; they are part
+    of the port now (#48). The HTTP adapter had always republished them
+    (`/events`, `/jobs/{id}/outputs/...`), so what was missing was the other
+    half — a remote backing that consumes them — and a front-end that had to
+    ask which backing it held before it could show progress was a front-end
+    written against two ports.
 
     `mode`/`persistent` describe it as a CLI backing: used directly, jobs stop
     when this process exits. Behind a daemon the same object is long-lived —
@@ -247,10 +297,9 @@ class LocalAgentService(AgentService):
         except OSError:                 # gone from disk since the job finished
             return None
 
-    # -- in-process only (the HTTP adapter re-exposes these) --
+    # -- outputs and live progress (the HTTP adapter re-exposes these) --
 
     async def list_outputs(self, job_id: str) -> list[dict] | None:
-        """Everything the job produced for the human (deliverable + annexes)."""
         import dataclasses
 
         job = await self.manager.get_job(job_id)
@@ -259,7 +308,6 @@ class LocalAgentService(AgentService):
         return [dataclasses.asdict(o) | {"name": o.name} for o in job.outputs]
 
     async def find_output(self, job_id: str, name: str) -> str | None:
-        """Path of one named output, if it exists on disk."""
         job = await self.manager.get_job(job_id)
         if job is None:
             return None
@@ -268,8 +316,8 @@ class LocalAgentService(AgentService):
             return None
         return output.path
 
-    def subscribe(self, **kwargs: Any):
-        return self.manager.subscribe(**kwargs)
+    def subscribe(self, *, max_queue: int = 256) -> asyncio.Queue:
+        return self.manager.subscribe(max_queue=max_queue)
 
-    def unsubscribe(self, queue: Any) -> None:
+    def unsubscribe(self, queue: asyncio.Queue) -> None:
         self.manager.unsubscribe(queue)

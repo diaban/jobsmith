@@ -21,7 +21,8 @@ from jobsmith.cli.main import build_parser
 from jobsmith.service import LocalAgentService
 
 CLIENT_OPS = ("new_session", "send", "approve", "list_jobs", "get_job",
-              "cancel_job", "resume_job", "launch_job", "get_report", "resolve_job")
+              "cancel_job", "resume_job", "launch_job", "get_report", "resolve_job",
+              "list_outputs", "find_output", "subscribe", "unsubscribe")
 
 
 def daemon_client_over(app) -> DaemonClient:
