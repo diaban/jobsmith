@@ -10,7 +10,9 @@ against this API.
 - Chat tab:   POST /sessions, then POST /sessions/{id}/messages. A reply is
   either {"type": "message"} or {"type": "proposal"} (the agent wants to
   launch a background job — human-in-the-loop); the client answers with
-  POST /sessions/{id}/approval {"approved": bool}.
+  POST /sessions/{id}/approval {"approved": bool}. Both have a `/stream`
+  twin that answers the same turn as SSE, event by event, ending on that
+  same reply.
 - Jobs tab:   GET /jobs (+?session_id/?status), GET /jobs/{id} (plan/DAG,
   step timestamps, artifacts), POST /jobs (direct launch, bypassing chat),
   POST /jobs/{id}/cancel, POST /jobs/{id}/resume (restart a stopped job from
@@ -28,6 +30,7 @@ rebuildable by id, so a conversation resumes after a restart.
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -101,6 +104,31 @@ def create_api(service: LocalAgentService) -> FastAPI:
     @app.post("/sessions/{session_id}/approval")
     async def post_approval(session_id: str, body: ApprovalIn) -> dict:
         return await service.approve(session_id, body.approved)
+
+    def _turn(events: AsyncIterator[dict]) -> StreamingResponse:
+        """A turn's events as SSE — and never a token less.
+
+        The mirror image of /events below, on purpose. There a queue absorbs
+        a slow subscriber and drops what will not fit, because a run must not
+        wait on a spectator. Here there is no queue at all: the response body
+        is pulled from the turn itself, so a slow reader back-pressures
+        through the socket into the model call and the answer stays whole. A
+        buffer added here would have to choose what to lose, and the only
+        losable token is one nobody notices missing.
+        """
+        async def body() -> AsyncIterator[str]:
+            async for event in events:
+                yield f"data: {json.dumps(event)}\n\n"
+
+        return StreamingResponse(body(), media_type="text/event-stream")
+
+    @app.post("/sessions/{session_id}/messages/stream")
+    async def stream_message(session_id: str, body: MessageIn) -> StreamingResponse:
+        return _turn(service.stream(session_id, body.text))
+
+    @app.post("/sessions/{session_id}/approval/stream")
+    async def stream_approval(session_id: str, body: ApprovalIn) -> StreamingResponse:
+        return _turn(service.stream_approval(session_id, body.approved))
 
     # ---------------- jobs ----------------
 

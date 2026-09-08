@@ -252,6 +252,42 @@ async def test_progress_events_reach_either_backing(store, checkpointer, tmp_pat
             await client.aclose()
 
 
+@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
+async def test_a_turn_is_the_same_flow_through_either_backing(
+    store, checkpointer, tmp_path, over_http
+):
+    """A turn is a flow, and both backings emit the same one.
+
+    Not "both work": the same events, in the same order, ending on the same
+    terminal — because a front-end that rendered a daemon-backed turn
+    differently from an embedded one would be written against two ports. The
+    approval round trip is streamed too: a post-approval reply is a turn like
+    any other.
+    """
+    service = _service_over(store, checkpointer, tmp_path)
+    client = daemon_client_over(create_api(service)) if over_http else service
+    try:
+        session_id = await client.new_session()
+
+        proposing = [e async for e in client.stream(session_id, "please analyse it")]
+        assert {"type": "tool_started", "name": "launch_job"} in proposing
+        assert proposing[-1] == {"type": "proposal", "query": "analyse it",
+                                 "rationale": "multi-step"}
+
+        answering = [e async for e in client.stream_approval(session_id, True)]
+        assert {"type": "tool_finished", "name": "launch_job"} in answering
+        tokens = [e["text"] for e in answering if e["type"] == "token"]
+        assert len(tokens) > 1, "the answer arrived in one piece on this backing"
+        assert "".join(tokens) == "launched!"
+        assert answering[-1] == {"type": "message", "content": "launched!"}
+
+        # ...and `send` is that same flow drained, on either backing
+        assert await client.send(session_id, "anything else?") == {
+            "type": "message", "content": "launched!"}
+    finally:
+        await client.aclose()
+
+
 async def test_the_event_reader_survives_a_line_it_cannot_read():
     """One unreadable line must not end the stream.
 
