@@ -17,16 +17,100 @@ Commands:
 from __future__ import annotations
 
 import asyncio
+import sys
+from collections.abc import AsyncIterator
 from typing import Any
 
 from ..core.usage import Usage
 from ..jobs.report import format_step_usage, format_usage
-from ..service import BinaryDeliverable
+from ..service import TERMINAL_EVENTS, BinaryDeliverable, ChatStreamError
 from .client import AgentClient
 
 BANNER = "\n".join(
     line for line in (__doc__ or "").splitlines() if line.startswith(("  ", "Commands"))
 )
+
+
+# What a tool call is called in front of a human. The event carries the tool's
+# real name (`launch_job`); this is the presentation layer, so this is where it
+# becomes something worth reading — the same reason REPORT_MEDIA_TYPES lives in
+# the HTTP adapter and not in jobs/report.py. A TUI will word these its own way,
+# and neither wording belongs in chat/runner.py.
+TOOL_ACTIVITY = {
+    "launch_job": "sizing up a background job",
+    "job_status": "checking on a job",
+    "list_my_jobs": "looking up your jobs",
+    "cancel_job": "cancelling a job",
+}
+
+
+def tool_activity(name: str) -> str:
+    """Readable prose for a tool name; an unmapped tool still says something."""
+    return TOOL_ACTIVITY.get(name, f"running {name}")
+
+
+class TurnPrinter:
+    """Renders a streamed turn: the answer on stdout, the activity on stderr.
+
+    The split is this layer's standing rule (`cli/client.py`): stdout is the
+    conversation, so piping `jobsmith chat` gives the answers and nothing
+    else, while "what it is doing right now" — which is over the moment it is
+    read — goes where every other diagnostic goes.
+
+    Tokens are written as they arrive, so `flush` is not optional: a line
+    still being written has no newline to trigger one, and an unflushed
+    answer is exactly the silence this replaces.
+    """
+
+    def __init__(self, indent: str = "  "):
+        self.indent = indent
+        self._writing = False        # a line of answer is open, unterminated
+
+    def show(self, event: dict) -> None:
+        kind = event.get("type")
+        if kind == "token":
+            self._write(event.get("text") or "")
+        elif kind == "tool_started":
+            self._note(f"… {tool_activity(event.get('name') or '')}")
+        elif kind == "tool_finished":
+            self._note(f"✓ {tool_activity(event.get('name') or '')}")
+
+    def end(self) -> None:
+        """Close the answer's line. The terminal event restates the reply the
+        tokens already delivered, so printing it would print it twice."""
+        if self._writing:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            self._writing = False
+
+    def _write(self, text: str) -> None:
+        if not text:
+            return
+        if not self._writing:
+            sys.stdout.write(self.indent)
+            self._writing = True
+        sys.stdout.write(text.replace("\n", "\n" + self.indent))
+        sys.stdout.flush()
+
+    def _note(self, text: str) -> None:
+        self.end()                   # never interleave a note into a sentence
+        print(f"{self.indent}{text}", file=sys.stderr, flush=True)
+
+
+async def render_turn(events: AsyncIterator[dict], printer: TurnPrinter) -> dict:
+    """Show a turn as it happens and return the reply it ended on.
+
+    The port's `send` drains the same stream for its terminal; here the
+    events are also shown on the way past, which is the only difference
+    between a turn you wait for and a turn you watch.
+    """
+    terminal: dict = {}
+    async for event in events:
+        printer.show(event)
+        if event.get("type") in TERMINAL_EVENTS:
+            terminal = event
+    printer.end()
+    return terminal
 
 
 def show_job(job: dict, *, verbose: bool = True) -> None:
@@ -122,15 +206,24 @@ async def run_repl(client: AgentClient, session_id: str) -> None:
             print("  unknown command (try /jobs, /job, /report, /bg, /image, "
                   "/cancel, /resume, /quit)")
         else:
-            reply = await client.send(session_id, line)
-            # human-in-the-loop: the agent proposes a job, you approve or not
-            while reply.get("type") == "proposal":
-                print("\n  the agent proposes a background job:")
-                print(f"    task     : {reply.get('query')}")
-                print(f"    approach : {reply.get('rationale')}")
-                answer = await loop.run_in_executor(None, input, "  launch it? [y/N] ")
-                approved = answer.strip().lower() in ("y", "yes", "o", "oui")
-                reply = await client.approve(session_id, approved)
-            print("  " + (reply.get("content") or "").replace("\n", "\n  "))
+            printer = TurnPrinter()
+            try:
+                reply = await render_turn(client.stream(session_id, line), printer)
+                # human-in-the-loop: the agent proposes a job, you approve or not
+                while reply.get("type") == "proposal":
+                    print("\n  the agent proposes a background job:")
+                    print(f"    task     : {reply.get('query')}")
+                    print(f"    approach : {reply.get('rationale')}")
+                    answer = await loop.run_in_executor(None, input, "  launch it? [y/N] ")
+                    approved = answer.strip().lower() in ("y", "yes", "o", "oui")
+                    reply = await render_turn(
+                        client.stream_approval(session_id, approved), printer)
+            except ChatStreamError as cut_short:
+                # The turn is already half-printed, so silence would leave a
+                # truncated answer looking finished — which is the one thing
+                # the no-drop rule exists to prevent. Say it, and keep the
+                # session usable; the conversation is in the checkpointer.
+                printer.end()
+                print(f"  [the reply was cut short: {cut_short}]", file=sys.stderr)
 
     print("bye")

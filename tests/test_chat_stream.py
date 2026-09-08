@@ -35,6 +35,7 @@ from jobsmith.chat import (
 )
 from jobsmith.chat.session import NOTICE_MARKER
 from jobsmith.cli.client import DaemonClient
+from jobsmith.cli.repl import TurnPrinter, render_turn, run_repl, tool_activity
 from jobsmith.service import ChatStreamError, LocalAgentService
 
 ANSWER = "A reasonably long answer that no single chunk should carry."
@@ -203,3 +204,88 @@ async def test_a_slow_reader_loses_nothing():
         assert [e["text"] for e in seen] == [str(i) for i in range(20)]
     finally:
         await client.aclose()
+
+
+# ------------------------------------------------------- what the REPL shows
+
+
+def test_a_tool_is_named_in_prose_here_and_nowhere_else():
+    """The event carries `launch_job`; a human is not asked to read that.
+
+    The mapping lives with the presentation, so an unmapped tool still says
+    something rather than leaking a bare identifier into a sentence.
+    """
+    assert tool_activity("launch_job") == "sizing up a background job"
+    assert tool_activity("something_new") == "running something_new"
+
+
+async def test_the_answer_goes_to_stdout_and_the_activity_to_stderr(capsys):
+    """stdout is the conversation — piping `jobsmith chat` gives the answers
+    and nothing else — and "what it is doing right now" goes where every
+    other diagnostic in this layer goes."""
+    async def events():
+        for event in ({"type": "tool_started", "name": "launch_job"},
+                      {"type": "tool_finished", "name": "launch_job"},
+                      {"type": "token", "text": "all "},
+                      {"type": "token", "text": "done"},
+                      {"type": "message", "content": "all done"}):
+            yield event
+
+    terminal = await render_turn(events(), TurnPrinter())
+    out, err = capsys.readouterr()
+    assert terminal == {"type": "message", "content": "all done"}
+    assert out == "  all done\n"          # printed once, as it arrived
+    assert "… sizing up a background job" in err
+    assert "✓ sizing up a background job" in err
+
+
+async def test_the_repl_streams_a_turn_and_still_asks_for_approval(capsys, monkeypatch):
+    """The human-in-the-loop round trip survives the turn becoming a flow:
+    the proposal is still printed and answered, and the reply that follows is
+    streamed rather than waited for."""
+    typed = iter(["do the big thing", "y", "/quit"])
+    monkeypatch.setattr("builtins.input", lambda *a: next(typed))
+
+    class Client:
+        def __init__(self):
+            self.approved = None
+
+        async def stream(self, session_id, text):
+            yield {"type": "tool_started", "name": "launch_job"}
+            yield {"type": "proposal", "query": "the big thing", "rationale": "multi-step"}
+
+        async def stream_approval(self, session_id, approved):
+            self.approved = approved
+            yield {"type": "token", "text": "launched"}
+            yield {"type": "message", "content": "launched"}
+
+    client = Client()
+    await run_repl(client, "s1")           # type: ignore[arg-type]
+    out, _ = capsys.readouterr()
+    assert client.approved is True
+    assert "task     : the big thing" in out
+    assert "  launched\n" in out
+
+
+async def test_a_cut_short_turn_is_announced_and_the_repl_survives_it(capsys, monkeypatch):
+    """Half a printed answer plus silence is the defect the rule exists for.
+
+    The REPL says the turn was cut short — loudly, on stderr — and stays
+    usable, because the conversation itself is in the checkpointer.
+    """
+    typed = iter(["hello", "/quit"])
+    monkeypatch.setattr("builtins.input", lambda *a: next(typed))
+
+    class Client:
+        async def stream(self, session_id, text):
+            yield {"type": "token", "text": "half a sen"}
+            raise ChatStreamError("unreadable event in the reply")
+
+        async def stream_approval(self, session_id, approved):
+            yield {"type": "message", "content": ""}
+
+    await run_repl(Client(), "s1")         # type: ignore[arg-type]
+    out, err = capsys.readouterr()
+    assert "half a sen" in out
+    assert "cut short" in err
+    assert out.rstrip().endswith("bye")    # the loop kept going
