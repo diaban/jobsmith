@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 from html import escape
 
+from ..core.state import plan_depths
 from .report import (
     FileReporter,
     JobDocument,
@@ -156,19 +157,13 @@ CHAR_WIDTH = 7.6          # ~13px monospace, wide enough for snake_case names
 
 
 def _depths(doc: JobDocument) -> dict[str, int]:
-    """Longest-path depth per step. Relaxed to a fixpoint rather than assuming
-    the plan lists its steps in topological order — it does not have to."""
-    depth = {row.capability: 0 for row in doc.plan}
-    for _ in range(len(doc.plan)):
-        changed = False
-        for row in doc.plan:
-            for dep in row.depends_on:
-                if dep in depth and depth[dep] + 1 > depth[row.capability]:
-                    depth[row.capability] = depth[dep] + 1
-                    changed = True
-        if not changed:
-            break
-    return depth
+    """Longest-path depth per step — the column each one is drawn in.
+
+    The layout itself is `core.state.plan_depths`, shared with the terminal
+    UI: two drawings of one plan must agree on where a step belongs, and a
+    second copy of the relaxation would be where they stop agreeing.
+    """
+    return plan_depths((row.capability, row.depends_on) for row in doc.plan)
 
 
 def dag_svg(doc: JobDocument, *, style: str = "") -> str:

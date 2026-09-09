@@ -88,10 +88,37 @@ so stdout stays the conversation and nothing else. In-REPL commands:
 | `/resume <id>` | restart a stopped job from its checkpoint |
 | `/quit` | leave (jobs keep running if a daemon owns them) |
 
+### The terminal UI
+
+`jobsmith ui` (extra `.[tui]`) is the same conversation with the jobs on
+screen. It exists because the REPL cannot show them: it blocks on `input()`,
+so nothing repaints until you type and a running job is invisible until then.
+Textual owns the event loop, so the tab bar carries a live count, `F3` opens
+the job list, and the detail pane draws the plan, the per-step cost and the
+files produced.
+
+```bash
+uv pip install -e ".[tui]"
+jobsmith ui                      # F2 chat · F3 jobs · F5 refresh · F8 F8 cancel
+jobsmith ui --theme tide-dark    # or $JOBSMITH_THEME; ctrl+p switches live
+```
+
+Cancelling asks twice, and only from the jobs pane where the row is on
+screen. While a turn is being written the prompt refuses new input rather than
+cutting it, and while a job proposal waits only `y`/`n` answer it — anything
+else is handed back with the text still in the box.
+
+It sits **beside** `jobsmith chat`, never instead of it: a TUI takes the whole
+screen and cannot be piped, and every other command here keeps stdout
+pipeable. Four themes ship (`ember-dark`, `ember-light`, `tide-dark`,
+`tide-light`) and join Textual's 21 in the same `ctrl+p` picker. Without the
+extra the command prints what to install and exits.
+
 ### CLI
 
 ```bash
 jobsmith serve [--port 8000]     # the daemon: it owns the job engine
+jobsmith ui                      # the terminal UI (extra .[tui])
 jobsmith run "<task>" [--wait]   # launch a job directly, no chat
 jobsmith jobs [--status running] # list
 jobsmith job <id-prefix>         # plan, steps, results, answer
@@ -378,6 +405,7 @@ jobsmith/
   service.py    ★ the inbound port: what any front-end can ask of a running app
   api/          adapter — FastAPI: sessions, jobs, outputs, SSE
   cli/          adapter — daemon, clients, REPL, argparse entrypoint
+  tui/          adapter — Textual: chat pane, job list, job detail
   agents/       ★ what each agent IS — a capability pack + a profile
     default/      research → analysis → critique, + slide_deck (a .pptx annex)
     banking/      a domain agent: its own capabilities, ports and adapters
@@ -423,6 +451,8 @@ handle per-provider tool formats), the job engine uses a dependency-light
 | `--agent NAME` | which agent to run — `default` or `banking` (applies to whichever process owns the engine, so pass it to `serve`) |
 | `--docs DIR` | ground jobs in the files under `DIR` (default: `$JOBSMITH_DOCS`); without it the agent runs on the model's own knowledge |
 | `TAVILY_API_KEY` | enables the `web_search` step (extra `.[web]`); absent, the capability is not registered |
+| extra `.[tui]` | enables `jobsmith ui`; absent, the command says what to install |
+| `$JOBSMITH_THEME` | the UI's theme (default `ember-dark`); `--theme NAME` overrides it, `ctrl+p` switches it for the session |
 | extra `.[pptx]` | enables the `slide_deck` step — a `.pptx` annex next to the report; absent, the capability is not registered |
 | `--db memory\|<file.db>\|<postgres DSN>` | persistence (default: `$JOBSMITH_DB`, else memory) |
 | `$JOBSMITH_PRICES` | per-model prices for the cost estimate, as inline JSON or a path to a JSON file (USD per million tokens) |
@@ -559,5 +589,11 @@ Honest v1 boundaries:
 - **`/report` serves text only.** A binary deliverable is fetched whole from
   `/jobs/{id}/outputs/{name}`; the shortcut refuses with a `415` that names
   it rather than pretending the job has no report.
+- **The terminal UI does not update live yet.** `jobsmith ui` re-reads the job
+  list on a short poll; the event stream (`subscribe`) that would drive a DAG
+  as it moves, and the artifacts pane beside it, are the next step. What it
+  shows of a job — plan, per-step status, cost, outputs — is a snapshot of the
+  record, and a step's `took` is derived from when its dependencies landed,
+  because the engine records when a step *finished* and never when it started.
 - **No web UI.** Everything is terminal or HTTP for now; the API already serves
   what a chat / jobs-DAG / artifacts interface would need.
