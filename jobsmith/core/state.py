@@ -32,6 +32,7 @@ Totality, and why `query` is the exception:
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from operator import add
 from typing import Annotated, Any, Required, TypedDict
 
@@ -45,6 +46,34 @@ class PlanStep(TypedDict):
 class Plan(TypedDict):
     steps: list[PlanStep]
     rationale: str          # for observability / debugging
+
+
+def plan_depths(steps: Iterable[tuple[str, Iterable[str]]]) -> dict[str, int]:
+    """Longest-path depth per step — the column each one is drawn in.
+
+    It lives next to `Plan` because it is a property of the DAG rather than
+    of any one way of showing it: the HTML deliverable lays the plan out in
+    columns (`jobs/report_html.py`) and so does the terminal UI
+    (`tui/render.py`), and two copies of this would be two layouts that drift.
+
+    Relaxed to a fixpoint rather than walked in order: a plan is validated
+    acyclic but is NOT required to list its steps topologically, so reading
+    it once left-to-right would put a step in front of its dependency.
+    Dependencies on names that are not in `steps` are ignored — the planner
+    prunes those, and a drawing is not the place to discover one.
+    """
+    rows = [(name, list(deps)) for name, deps in steps]
+    depth = {name: 0 for name, _ in rows}
+    for _ in range(len(rows)):                  # at most one relaxation per edge chain
+        changed = False
+        for name, deps in rows:
+            for dep in deps:
+                if dep in depth and depth[dep] + 1 > depth[name]:
+                    depth[name] = depth[dep] + 1
+                    changed = True
+        if not changed:
+            break
+    return depth
 
 
 # ---------- Capability results ----------
