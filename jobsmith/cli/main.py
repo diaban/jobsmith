@@ -2,6 +2,7 @@
 
     jobsmith serve [--port 8000]     run the daemon: it owns the job engine
     jobsmith chat [--session ID]     converse (resume a conversation by id)
+    jobsmith ui [--session ID]       the same conversation, on screen [.[tui]]
     jobsmith run "<task>"            launch a job directly, without chatting
     jobsmith jobs [--status done]    list jobs
     jobsmith job <id-prefix>         plan, steps, artifacts, answer
@@ -57,6 +58,14 @@ def build_parser() -> argparse.ArgumentParser:
     chat = sub.add_parser("chat", help="interactive conversation (default command)")
     chat.add_argument("--session", metavar="ID", help="resume this conversation")
 
+    # Beside `chat`, never instead of it: a TUI owns the whole screen and
+    # cannot be piped, and every other command here keeps stdout pipeable.
+    ui = sub.add_parser("ui", help="terminal UI: chat, job list, job detail (needs .[tui])")
+    ui.add_argument("--session", metavar="ID", help="resume this conversation")
+    ui.add_argument("--theme", metavar="NAME",
+                    help="colour theme (default: $JOBSMITH_THEME, else ember-dark); "
+                         "ctrl+p switches it at runtime")
+
     run = sub.add_parser("run", help="launch a job directly, no chat")
     run.add_argument("task", help="what the job should do")
     run.add_argument("--wait", action="store_true", help="block until the job finishes")
@@ -80,6 +89,23 @@ async def cmd_chat(client: AgentClient, args) -> int:
     session_id = await client.new_session(args.session)
     print(f"[session {session_id}]")
     await run_repl(client, session_id)
+    return 0
+
+
+async def cmd_ui(client: AgentClient, args) -> int:
+    """The TUI over the same port every other command uses.
+
+    Nothing here is a use case: it opens a session and hands the service to
+    the UI, exactly as `cmd_chat` hands it to the REPL.
+    """
+    from ..tui import TuiUnavailable, run_tui
+
+    session_id = await client.new_session(args.session)
+    try:
+        await run_tui(client, session_id, theme=args.theme)
+    except TuiUnavailable as missing:
+        print(missing, file=sys.stderr)
+        return 1
     return 0
 
 
@@ -190,7 +216,7 @@ async def cmd_resume(client: AgentClient, args) -> int:
 
 
 COMMANDS = {
-    "chat": cmd_chat, "run": cmd_run, "jobs": cmd_jobs, "job": cmd_job,
+    "chat": cmd_chat, "ui": cmd_ui, "run": cmd_run, "jobs": cmd_jobs, "job": cmd_job,
     "report": cmd_report, "outputs": cmd_outputs, "cancel": cmd_cancel,
     "resume": cmd_resume,
 }

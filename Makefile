@@ -22,6 +22,7 @@ B     ?=
 ARGS ?=
 PORT ?= 8000
 T    ?=
+THEME ?=
 
 LLM_FLAG   := $(if $(LLM),--llm=$(LLM),)
 # `make eval` must cost nothing by default: the fakes unless a provider is named.
@@ -33,9 +34,9 @@ WT_DIR    := $(subst /,-,$(B))
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install install-all test coverage lint fix types check leak-check eval eval-llm \
+.PHONY: help install install-all test snapshots coverage lint fix types check leak-check eval eval-llm \
         worktree worktree-rm \
-        serve chat jobs \
+        serve chat ui jobs \
         chat-banking serve-banking demo-banking clean
 
 help: ## List available commands
@@ -48,10 +49,13 @@ install: $(VENV) ## Create the venv and install dev + API deps (fake LLMs work o
 	uv pip install -p $(PY) -e ".[dev,api]"
 
 install-all: $(VENV) ## Same + every provider and persistence backend
-	uv pip install -p $(PY) -e ".[dev,api,web,pdf,pptx,anthropic,openai,chat-anthropic,chat-openai,sqlite,postgres]"
+	uv pip install -p $(PY) -e ".[dev,api,tui,web,pdf,pptx,anthropic,openai,chat-anthropic,chat-openai,sqlite,postgres]"
 
 test: ## Run the test suite (T=<keyword> to filter, e.g. make test T=router)
 	$(PY) -m pytest tests/ -q $(TEST_ARGS)
+
+snapshots: ## Re-accept the TUI layout snapshots after an intentional layout change
+	$(PY) -m pytest tests/test_tui.py -q --snapshot-update
 
 coverage: ## Test suite with a per-module coverage report
 	$(PY) -m pytest tests/ -q --cov=jobsmith --cov-report=term-missing $(TEST_ARGS)
@@ -85,6 +89,9 @@ serve: ## Run the DAEMON: it owns the job engine, so jobs outlive their client
 chat: ## Chat with the agent (uses the daemon if one runs, else embedded)
 	$(PY) -m jobsmith $(LLM_FLAG) $(AGENT_FLAG) $(DB_FLAG) chat
 
+ui: ## Terminal UI: chat + job list + job detail (needs .[tui]; THEME=tide-dark)
+	$(PY) -m jobsmith $(LLM_FLAG) $(AGENT_FLAG) $(DB_FLAG) ui $(if $(THEME),--theme=$(THEME),)
+
 jobs: ## List jobs (add ARGS='--status running')
 	$(PY) -m jobsmith $(LLM_FLAG) $(AGENT_FLAG) $(DB_FLAG) jobs $(ARGS)
 
@@ -116,5 +123,5 @@ worktree-rm: ## Remove a worktree and its branch: make worktree-rm B=feat/1-grou
 	@echo "  gone: $(B)"
 
 clean: ## Remove caches, build junk, and generated job reports
-	rm -rf .pytest_cache .ruff_cache .coverage htmlcov dist *.egg-info artifacts
+	rm -rf .pytest_cache .ruff_cache .coverage htmlcov dist *.egg-info artifacts snapshot_report.html
 	find . -type d -name __pycache__ -not -path "./$(VENV)/*" -exec rm -rf {} +
