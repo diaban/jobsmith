@@ -73,7 +73,9 @@ agent> and which one does LangGraph itself use?
 ### Chat (the default)
 
 `jobsmith chat` is a conversation. The agent decides whether to answer or to
-propose a job; you approve. In-REPL commands:
+propose a job; you approve. The answer is printed **as it is written** and what
+the agent is doing meanwhile (`… sizing up a background job`) shows on stderr,
+so stdout stays the conversation and nothing else. In-REPL commands:
 
 | command | |
 |---|---|
@@ -405,6 +407,7 @@ handle per-provider tool formats), the job engine uses a dependency-light
 |---|---|
 | `POST /sessions` · `POST /sessions/{id}/messages` | chat; a reply is `{"type": "message"}` or `{"type": "proposal"}` |
 | `POST /sessions/{id}/approval` | answer a proposal — `{"approved": bool}` |
+| `.../messages/stream` · `.../approval/stream` | the same turn as SSE: `token`, `tool_started`, `tool_finished`, then that same reply |
 | `GET /jobs` · `GET /jobs/{id}` | listing and full detail (plan, timings, results) |
 | `POST /jobs` · `POST /jobs/{id}/cancel` | direct launch, cancellation |
 | `GET /jobs/{id}/outputs[/{name}]` · `/report` | the deliverables (`/report` is text-only: `415` on a PDF, pointing at the download) |

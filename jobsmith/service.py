@@ -13,15 +13,21 @@ in this process or in a daemon, because both answer the same port. Adding a
 UI or a bot is one more adapter, with no new use-case code.
 
 Replies are plain dicts on purpose — they are what crosses the HTTP boundary,
-so the local and remote backings are indistinguishable to a caller.
+so the local and remote backings are indistinguishable to a caller. A *turn*
+is a flow of those dicts (`stream`), and a reply is simply the one it ends on:
+`send` and `approve` are defined here over `stream`, so no backing gets to
+drive a turn its own way.
 """
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+from .chat.runner import ChatEvent, ChatRunner, Message, Proposal, Token, ToolFinished, ToolStarted
 from .jobs.report import is_binary_format
 
 # ------------------------------------------------------------------ the port
@@ -54,6 +60,58 @@ class BinaryDeliverable(RuntimeError):
         )
 
 
+class ChatStreamError(RuntimeError):
+    """A streamed turn did not arrive whole.
+
+    The opposite of the rule `/events` follows, and deliberately so. A missed
+    progress tick costs nothing, so `subscribe` drops when a consumer is slow.
+    A missed **token** is a lie: the sentence arrives shorter than the model
+    wrote it and nothing in the text says so — the reader believes an answer
+    that was never given. So the chat stream never drops. It back-pressures
+    (there is no queue between the model and the reader to overflow), and when
+    it cannot deliver — a line it cannot decode, a stream that ends before a
+    terminal — it says so here rather than handing back a truncated turn.
+    """
+
+
+# The five domain events of `chat/runner.py`, as the dicts the port carries.
+# Dicts because they cross HTTP: the two backings must be indistinguishable,
+# and a front-end deserializing a dataclass would be a third implementation.
+# The two terminal shapes are byte-for-byte what `send`/`approve` have always
+# returned, which is what lets `send` be *defined* as draining this stream.
+_EVENT_TYPES: dict[type, str] = {
+    Token: "token",
+    ToolStarted: "tool_started",
+    ToolFinished: "tool_finished",
+    Message: "message",
+    Proposal: "proposal",
+}
+
+TERMINAL_EVENTS = ("message", "proposal")
+
+
+def as_event(event: ChatEvent) -> dict:
+    """One flow event as the dict the port carries."""
+    return {"type": _EVENT_TYPES[type(event)]} | dataclasses.asdict(event)
+
+
+async def terminal_of(events: AsyncIterator[dict]) -> dict:
+    """Drain a turn's events and return the reply it ended on.
+
+    The whole of `send`/`approve`: there is one implementation of a turn, and
+    it is the stream. A stream that ends without a terminal is refused rather
+    than answered with the last thing seen — see `ChatStreamError`.
+    """
+    terminal = None
+    async for event in events:
+        if event.get("type") in TERMINAL_EVENTS:
+            terminal = event
+    if terminal is None:
+        raise ChatStreamError(
+            "the turn ended without a reply — the stream was cut short")
+    return terminal
+
+
 class AgentService(ABC):
     """What any front-end needs. Dict shapes match the HTTP API."""
 
@@ -66,10 +124,35 @@ class AgentService(ABC):
     async def new_session(self, session_id: str | None = None) -> str: ...
 
     @abstractmethod
-    async def send(self, session_id: str, text: str) -> dict: ...
+    def stream(self, session_id: str, text: str) -> AsyncIterator[dict]:
+        """One turn, as it happens: the events of `chat/runner.py`, as dicts.
+
+        The primitive, not a variant of `send`. A turn is a flow — tokens,
+        tool activity, then exactly one terminal — and `send` is that flow
+        drained, so the two can never disagree about what a turn produced.
+
+        Never drops. Where `subscribe` sheds events under back-pressure, this
+        one blocks the producer or raises `ChatStreamError`: a progress tick
+        nobody saw is invisible, a token nobody saw is a shorter sentence that
+        reads as complete.
+        """
+        ...
 
     @abstractmethod
-    async def approve(self, session_id: str, approved: bool) -> dict: ...
+    def stream_approval(self, session_id: str, approved: bool) -> AsyncIterator[dict]:
+        """Answer a pending proposal and stream the turn that follows."""
+        ...
+
+    async def send(self, session_id: str, text: str) -> dict:
+        """The turn's reply: a message, or a proposal to approve.
+
+        Concrete, on the port itself, so both backings answer from the same
+        code — the stream is the only place a turn is driven.
+        """
+        return await terminal_of(self.stream(session_id, text))
+
+    async def approve(self, session_id: str, approved: bool) -> dict:
+        return await terminal_of(self.stream_approval(session_id, approved))
 
     # -- jobs --
 
@@ -195,42 +278,33 @@ class LocalAgentService(AgentService):
 
     # -- conversation --
 
-    def _agent(self, session_id: str) -> tuple[Any, dict]:
+    def _runner(self, session_id: str) -> ChatRunner:
         """Sessions are rebuildable: this registry is only a cache, the actual
         conversation lives in the checkpointer under thread_id=session_id. So a
         client can keep chatting on its session id across a daemon restart."""
         if session_id not in self._sessions:
             self._sessions[session_id] = self.session_factory(session_id).build()
-        return self._sessions[session_id], {"configurable": {"thread_id": session_id}}
-
-    @staticmethod
-    def _reply(result: dict) -> dict:
-        """Chat result → reply: a plain message, or a job proposal to approve."""
-        if "__interrupt__" in result:
-            proposal = result["__interrupt__"][0].value
-            return {
-                "type": "proposal",
-                "query": proposal.get("query"),
-                "rationale": proposal.get("rationale"),
-            }
-        return {"type": "message", "content": result["messages"][-1].content}
+        return ChatRunner(self._sessions[session_id])
 
     async def new_session(self, session_id: str | None = None) -> str:
         session = self.session_factory(session_id) if session_id else self.session_factory()
         self._sessions[session.session_id] = session.build()
         return session.session_id
 
-    async def send(self, session_id: str, text: str) -> dict:
-        from langchain_core.messages import HumanMessage
+    async def stream(self, session_id: str, text: str) -> AsyncIterator[dict]:
+        """Nothing between the runner and the caller — no queue, no buffer.
 
-        agent, config = self._agent(session_id)
-        return self._reply(await agent.ainvoke({"messages": [HumanMessage(text)]}, config))
+        Which IS the no-drop rule: an async generator delivers at the pace it
+        is consumed, so a slow reader slows the turn instead of losing part of
+        it. `subscribe` needs a queue because a job runs whether anyone
+        watches or not; a turn has exactly one reader, and it is waiting.
+        """
+        async for event in self._runner(session_id).stream(session_id, text):
+            yield as_event(event)
 
-    async def approve(self, session_id: str, approved: bool) -> dict:
-        from langgraph.types import Command
-
-        agent, config = self._agent(session_id)
-        return self._reply(await agent.ainvoke(Command(resume={"approved": approved}), config))
+    async def stream_approval(self, session_id: str, approved: bool) -> AsyncIterator[dict]:
+        async for event in self._runner(session_id).resume(session_id, approved):
+            yield as_event(event)
 
     # -- jobs --
 

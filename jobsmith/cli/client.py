@@ -19,9 +19,10 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from ..service import AgentService, BinaryDeliverable, LocalAgentService
+from ..service import AgentService, BinaryDeliverable, ChatStreamError, LocalAgentService
 
 if TYPE_CHECKING:                      # only to name the app the embedded client owns
     from ..app.agent import AgentApp
@@ -83,17 +84,45 @@ class DaemonClient(AgentService):
         r.raise_for_status()
         return r.json()["session_id"]
 
-    async def send(self, session_id: str, text: str) -> dict:
-        r = await self._http.post(f"/sessions/{session_id}/messages", json={"text": text})
-        r.raise_for_status()
-        return r.json()
+    async def stream(self, session_id: str, text: str) -> AsyncIterator[dict]:
+        async for event in self._turn(
+            f"/sessions/{session_id}/messages/stream", {"text": text}
+        ):
+            yield event
 
-    async def approve(self, session_id: str, approved: bool) -> dict:
-        r = await self._http.post(
-            f"/sessions/{session_id}/approval", json={"approved": approved}
-        )
-        r.raise_for_status()
-        return r.json()
+    async def stream_approval(self, session_id: str, approved: bool) -> AsyncIterator[dict]:
+        async for event in self._turn(
+            f"/sessions/{session_id}/approval/stream", {"approved": approved}
+        ):
+            yield event
+
+    async def _turn(self, path: str, body: dict) -> AsyncIterator[dict]:
+        """Decode one turn's SSE into events — losing none of them.
+
+        Read `_read_events` below next to this: same transport, opposite
+        rule, and the difference is the whole point. There, a line nobody can
+        decode is skipped and a full queue drops, because a progress tick is
+        replaced by the next one a second later. Here every event is a piece
+        of a sentence: a skipped line would shorten the answer and nothing in
+        the resulting text would say so, so an undecodable line raises.
+
+        And nothing buffers: the events are yielded straight from the socket,
+        so a caller that renders slowly slows the daemon's write instead of
+        losing what it could not keep up with. `send()` on the port drains
+        this, which is why a truncated turn cannot reach a caller as a reply
+        either — a stream that ends before its terminal raises there.
+        """
+        async with self._http.stream("POST", path, json=body, timeout=None) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line.startswith("data:"):
+                    continue          # blank separators and SSE comments
+                try:
+                    yield json.loads(line[len("data:"):])
+                except json.JSONDecodeError as unreadable:
+                    raise ChatStreamError(
+                        f"unreadable event in the reply from {self.url}: {line!r}"
+                    ) from unreadable
 
     async def list_jobs(self, *, status=None, session_id=None) -> list[dict]:
         params = {k: v for k, v in (("status", status), ("session_id", session_id)) if v}

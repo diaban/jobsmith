@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
 from pydantic import Field
@@ -60,10 +60,22 @@ class ScriptedChatModel(BaseChatModel):
     Pops `responses` in order (last one repeats); records every model input in
     `calls` so tests can assert on injected messages. `bind_tools` is a no-op —
     scripted responses carry their own `tool_calls`.
+
+    **It streams, and that is not a detail.** A model implementing `_generate`
+    only makes LangChain fall back to an `astream` that yields the whole
+    answer as ONE chunk — so every streaming test would pass while proving
+    nothing about streaming. `_astream` cuts each scripted response into
+    `chunk_size` pieces, which is what makes "the answer arrives in several
+    Tokens" a claim a test can falsify. LangGraph reaches this path on its
+    own: `_should_stream` is true as soon as a streaming callback handler is
+    attached, which is exactly what `stream_mode="messages"` installs, so
+    `ainvoke` still goes through `_generate` and the non-streaming tests are
+    untouched.
     """
 
     responses: list[AIMessage]
     calls: list[list[BaseMessage]] = Field(default_factory=list)
+    chunk_size: int = 5
 
     @property
     def _llm_type(self) -> str:
@@ -72,10 +84,29 @@ class ScriptedChatModel(BaseChatModel):
     def bind_tools(self, tools: Any, **kwargs: Any) -> ScriptedChatModel:
         return self
 
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+    def _next(self, messages: list[BaseMessage]) -> AIMessage:
         self.calls.append(list(messages))
-        msg = self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
-        return ChatResult(generations=[ChatGeneration(message=msg)])
+        return self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+        return ChatResult(generations=[ChatGeneration(message=self._next(messages))])
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        msg = self._next(messages)
+        text = msg.text if isinstance(msg.text, str) else ""
+        pieces = [text[i:i + self.chunk_size] for i in range(0, len(text), self.chunk_size)]
+        for piece in pieces or [""]:
+            yield ChatGenerationChunk(message=AIMessageChunk(content=piece))
+        # Tool calls travel as `tool_call_chunks`, the only form the chunk
+        # merger reassembles into a real `tool_calls` list — a chunk carrying
+        # `tool_calls=` directly is dropped on aggregation and the agent then
+        # never calls the tool.
+        if msg.tool_calls:
+            yield ChatGenerationChunk(message=AIMessageChunk(content="", tool_call_chunks=[
+                {"name": call["name"], "args": json.dumps(call["args"]),
+                 "id": call["id"], "index": index, "type": "tool_call_chunk"}
+                for index, call in enumerate(msg.tool_calls)
+            ]))
 
 
 class FakeSearch:
