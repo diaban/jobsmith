@@ -23,8 +23,15 @@ class TuiUnavailable(RuntimeError):
 
 async def run_tui(service: Any, session_id: str, *, theme: str | None = None) -> None:
     """Run the UI against a composed service until the user leaves it."""
+    # Only the extra's own import is answered with the install line. Wrapping
+    # `from .app import ...` instead would catch the whole transitive import
+    # of this package and the ones it reads — so a symbol renamed in
+    # `service.py` would be reported as a missing dependency, and the person
+    # reading that message would install something that was never absent.
     try:
-        from .app import JobsmithApp
-    except ImportError as missing:      # textual absent
+        import textual  # noqa: F401
+    except ImportError as missing:
         raise TuiUnavailable(MISSING) from missing
+    from .app import JobsmithApp
+
     await JobsmithApp(service, session_id, theme=theme).run_async()

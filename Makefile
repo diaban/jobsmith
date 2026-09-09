@@ -71,7 +71,7 @@ types: ## Type-check jobsmith/ with pyright (same [tool.pyright] config the edit
 
 leak-check: ## Domain-leakage gate: shared code, the default agent and the eval set must contain no banking-specific strings
 	@! grep -rin --include="*.py" "banking\|banquier\|votre\|analyste" \
-		jobsmith/core jobsmith/jobs jobsmith/chat jobsmith/api jobsmith/app jobsmith/cli \
+		jobsmith/core jobsmith/jobs jobsmith/chat jobsmith/api jobsmith/app jobsmith/cli jobsmith/tui \
 		jobsmith/agents/default jobsmith/agents/base.py evals \
 		&& echo "leak-check: OK (shared code is domain-clean)"
 

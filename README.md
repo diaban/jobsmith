@@ -99,9 +99,14 @@ files produced.
 
 ```bash
 uv pip install -e ".[tui]"
-jobsmith ui                      # F2 chat · F3 jobs · F5 refresh · F8 cancel
+jobsmith ui                      # F2 chat · F3 jobs · F5 refresh · F8 F8 cancel
 jobsmith ui --theme tide-dark    # or $JOBSMITH_THEME; ctrl+p switches live
 ```
+
+Cancelling asks twice, and only from the jobs pane where the row is on
+screen. While a turn is being written the prompt refuses new input rather than
+cutting it, and while a job proposal waits only `y`/`n` answer it — anything
+else is handed back with the text still in the box.
 
 It sits **beside** `jobsmith chat`, never instead of it: a TUI takes the whole
 screen and cannot be piped, and every other command here keeps stdout

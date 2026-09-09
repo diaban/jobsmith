@@ -48,10 +48,15 @@ from .themes import DEFAULT_THEME, THEMES, pick_theme
 # types would be the very defect this layer exists to fix.
 POLL_SECONDS = 2.0
 
-# What counts as "yes" to a proposal — the REPL's own set, so the same answer
-# means the same thing in both front-ends. Anything else declines, which is
-# what the `[y/N]` prompt says.
+# What answers a proposal. The approvals are the REPL's own set, so the same
+# word means the same thing in both front-ends. The refusals are spelt out
+# rather than being "everything else": the REPL can afford that reading
+# because its prompt accepts one line and then returns to the conversation,
+# while here the same box carries both, and "actually, narrow it to macOS"
+# read as a decline would decline the job AND lose the sentence. Anything
+# that is neither is refused, and the text stays in the box.
 APPROVALS = ("y", "yes", "o", "oui")
+REFUSALS = ("n", "no", "non")
 
 
 class Bubble(Static):
@@ -158,6 +163,7 @@ class JobsmithApp(App[None]):
         Binding("f3", "show('jobs')", "jobs"),
         Binding("f5", "reload", "refresh"),
         Binding("f8", "cancel_job", "cancel job"),
+        Binding("escape", "dismiss_cancel", "", show=False),
         # Function keys, and not the obvious control letters, because the
         # prompt has first refusal on every key it is focused for: `Input`
         # binds ctrl+x, ctrl+k, ctrl+w, ctrl+u and ctrl+d for editing, so
@@ -182,6 +188,9 @@ class JobsmithApp(App[None]):
         self._selected: str | None = None      # job_id, so a refresh keeps the row
         self._awaiting_approval = False
         self._answer: Bubble | None = None     # the bubble the tokens land in
+        self._streaming = False                # a turn is being rendered right now
+        self._reloading = False                # a job refresh is in flight
+        self._cancel_armed: str | None = None  # job id F8 has asked about once
 
     # ------------------------------------------------------------- assembly
 
@@ -208,9 +217,9 @@ class JobsmithApp(App[None]):
             + ("" if self.service.persistent else " · jobs stop when you exit")
         )
         self._paint_tabs()
-        self.reload()
+        self.refresh_jobs()
         if self._poll_seconds:
-            self.set_interval(self._poll_seconds, self.reload)
+            self.set_interval(self._poll_seconds, self.refresh_jobs)
         self.query_one("#prompt", Input).focus()
 
     # ---------------------------------------------------------------- chrome
@@ -239,19 +248,38 @@ class JobsmithApp(App[None]):
             # polls a job can have finished, and a plan that was accurate a
             # second ago is exactly the stale picture this layer exists to
             # replace.
-            self.reload()
+            self.refresh_jobs()
             self.query_one("#job-list", ListView).focus()
 
     # ----------------------------------------------------------------- chat
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
+        """One turn at a time, and a proposal is answered before anything else.
+
+        Both refusals keep the typed text in the box, because the alternative
+        is losing a sentence the user wrote. Sending while a turn streams used
+        to cancel it mid-sentence (`@work(exclusive=True)`), which left half an
+        answer on screen with nothing saying it was cut — and, if the cancelled
+        turn was about to propose a job, a thread interrupted in the
+        checkpointer that the next message would not have answered.
+        """
         text = event.value.strip()
-        event.input.value = ""
+        if self._awaiting_approval:
+            answer = text.lower()
+            if answer in APPROVALS or answer in REFUSALS or not text:
+                event.input.value = ""
+                self._answer_proposal(answer in APPROVALS)   # bare Enter = the N
+            else:
+                self.notify("answer the proposal first — y to launch it, n to decline",
+                            severity="warning")
+            return
         if not text:
             return
-        if self._awaiting_approval:
-            self._answer_proposal(text.lower() in APPROVALS)
+        if self._streaming:
+            self.notify("still writing — the turn has to finish first",
+                        severity="warning")
             return
+        event.input.value = ""
         self._say("you", "$foreground", text)
         self._turn(text=text)
 
@@ -280,6 +308,7 @@ class JobsmithApp(App[None]):
         events = (self.service.stream(self.session_id, text) if text is not None
                   else self.service.stream_approval(self.session_id, bool(approved)))
         self._answer = None
+        self._streaming = True
         terminal: dict[str, Any] = {}
         try:
             async for event in events:
@@ -291,11 +320,15 @@ class JobsmithApp(App[None]):
             # one thing the no-drop rule exists to prevent. Say it, and keep
             # the session usable — the conversation is in the checkpointer.
             self._say("jobsmith", render.FAILED, f"the reply was cut short: {cut_short}")
-        self._activity("")
+        finally:
+            # Also the path a cancellation takes (the app shutting down): the
+            # activity line must not be left saying something is happening.
+            self._streaming = False
+            self._activity("")
         self._answer = None
         if terminal.get("type") == "proposal":
             self._propose(terminal)
-        self.reload()
+        self.refresh_jobs()
 
     def _show_event(self, event: dict[str, Any]) -> None:
         kind = event.get("type")
@@ -324,9 +357,32 @@ class JobsmithApp(App[None]):
 
     # ----------------------------------------------------------------- jobs
 
+    def refresh_jobs(self) -> None:
+        """Ask for a refresh, unless one is already on its way.
+
+        The poll re-arms every `POLL_SECONDS`, and a refresh is two calls
+        (`list_jobs`, then `get_job` for the highlighted row) — two HTTP round
+        trips against a daemon. Left to `exclusive=True`, a pair slower than
+        the interval would have every tick cancel the previous worker, so the
+        list would never finish repopulating and a cancellation landing on
+        `clear()` would leave it empty. Skipping is the right answer because
+        the work is idempotent: the tick that is already running is fetching
+        exactly what this one would.
+        """
+        if self._reloading:
+            return
+        self.reload()
+
     @work(exclusive=True, group="jobs")
     async def reload(self) -> None:
         """Re-read the job list, and the highlighted job's detail with it."""
+        self._reloading = True
+        try:
+            await self._reload()
+        finally:
+            self._reloading = False
+
+    async def _reload(self) -> None:
         self._jobs = await self.service.list_jobs()
         listing = self.query_one("#job-list", ListView)
         index = next((i for i, job in enumerate(self._jobs)
@@ -346,6 +402,8 @@ class JobsmithApp(App[None]):
         index = event.list_view.index
         if index is None or index >= len(self._jobs):
             return
+        if self._selected != self._jobs[index]["job_id"]:
+            self._cancel_armed = None       # armed for a row nobody is on now
         self._selected = selected = self._jobs[index]["job_id"]
         await self._show_detail(selected)
 
@@ -369,12 +427,40 @@ class JobsmithApp(App[None]):
         self.query_one("#detail-answer", Static).update(body or f"[{render.DIM}]no answer yet[/]")
 
     def action_reload(self) -> None:
-        self.reload()
+        self.refresh_jobs()
 
-    @work(exclusive=True, group="cancel")
-    async def action_cancel_job(self) -> None:
+    # -------------------------------------------------------- cancelling one
+
+    def action_cancel_job(self) -> None:
+        """Cancel the highlighted job — from the jobs pane, and on the second press.
+
+        Two guards, and both come from the same fact: `_selected` defaults to
+        the first row, and `list_jobs` sorts newest first. So from the chat
+        pane a single keystroke would stop the job the user had just launched,
+        without ever having shown them which one. It is scoped to the pane
+        that displays the row, and armed by naming the job before it acts —
+        `escape`, or highlighting another row, disarms it.
+        """
+        if self.query_one("#body", ContentSwitcher).current != "jobs":
+            self.notify("open the jobs pane (F3) to cancel a job", severity="warning")
+            return
         if self._selected is None:
             return
-        answer = await self.service.cancel_job(self._selected)
-        self.notify(f"{self._selected[:8]} → {answer.get('status', 'unknown')}")
-        self.reload()
+        if self._cancel_armed != self._selected:
+            self._cancel_armed = self._selected
+            self.notify(f"press F8 again to cancel {self._selected[:8]}",
+                        severity="warning")
+            return
+        self._cancel_armed = None
+        self._cancel(self._selected)
+
+    def action_dismiss_cancel(self) -> None:
+        if self._cancel_armed is not None:
+            self._cancel_armed = None
+            self.notify("cancel dropped")
+
+    @work(exclusive=True, group="cancel")
+    async def _cancel(self, job_id: str) -> None:
+        answer = await self.service.cancel_job(job_id)
+        self.notify(f"{job_id[:8]} → {answer.get('status', 'unknown')}")
+        self.refresh_jobs()

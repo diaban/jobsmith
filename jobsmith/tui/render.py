@@ -24,6 +24,7 @@ to go on — carries both.
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from textual.markup import escape
@@ -209,7 +210,11 @@ _BOX = {
     frozenset("NEW"): "┴", frozenset("NSEW"): "┼", frozenset("E"): "─",
     frozenset("W"): "─", frozenset("N"): "│", frozenset("S"): "│",
 }
-_GAP = 6            # cells between one column's widest name and the next column
+# Space between a column's widest name and the next column: one cell of stub,
+# one vertical per member of the column (so two edges leaving the same column
+# never share a line), and two cells for the arriving edge to turn in.
+_TRUNK_PAD = 1
+_ARRIVAL_PAD = 2
 
 
 def dag(job: dict[str, Any]) -> str:
@@ -219,6 +224,27 @@ def dag(job: dict[str, Any]) -> str:
     the HTML deliverable uses, so the two drawings of one plan agree. Nodes
     are placed first; then each edge accumulates a *set of directions* per
     cell it crosses, and the box character is picked once at the end.
+
+    Two things the accumulation cannot decide on its own, because it only
+    answers "what meets here" and these are questions of routing:
+
+    * **Each source gets its own vertical.** Two steps in one column shared a
+      trunk whenever their names were the same length, and their two edges
+      then merged into a single line that read as one edge going somewhere it
+      did not.
+    * **An edge spanning more than one wave detours through the row below its
+      target.** Drawn straight it crossed the *names* of the steps in
+      between — and since a name is never overwritten, it came out looking
+      like it entered one step and left the other. Names sit on even rows
+      only, so an odd row is always free.
+
+    What is left, named rather than half-fixed: an edge *arriving* at a step
+    has to cross the band of verticals leaving that step's own column, so two
+    edges that genuinely cross there merge into one junction (`┴`) and the
+    reader cannot tell which side continues. Removing that needs lane
+    routing — a track per edge — which is a layout algorithm, not a guard. It
+    cannot arise in the shape a plan usually has (a fan-out and a fan-in,
+    drawn correctly); it needs two steps of one wave whose edges cross.
 
     Status is colour only. See the module docstring: the glyphs that would
     carry it are ambiguous-width, and one double-wide cell shifts every
@@ -234,10 +260,15 @@ def dag(job: dict[str, Any]) -> str:
         columns.setdefault(depth[row["capability"]], []).append(row)
 
     column_x: dict[int, int] = {}
+    trunk_x: dict[str, int] = {}        # capability -> the vertical its edges leave on
     x = 0
     for column in sorted(columns):
+        members = columns[column]
+        widest = max(len(row["capability"]) for row in members)
         column_x[column] = x
-        x += max(len(row["capability"]) for row in columns[column]) + _GAP
+        for index, row in enumerate(members):
+            trunk_x[row["capability"]] = x + widest + _TRUNK_PAD + index
+        x += widest + _TRUNK_PAD + len(members) + _ARRIVAL_PAD
     width = x
 
     char: dict[tuple[int, int], str] = {}
@@ -253,6 +284,20 @@ def dag(job: dict[str, Any]) -> str:
     def link(cx: int, cy: int, *directions: str) -> None:
         dirs.setdefault((cy, cx), set()).update(directions)
 
+    def hline(cy: int, x0: int, x1: int) -> None:
+        for cx in range(x0, x1 + 1):
+            link(cx, cy, "E", "W")
+
+    def vline(cx: int, y0: int, y1: int) -> None:
+        """Turns at both ends included; the caller adds where it goes next."""
+        if y0 == y1:
+            return
+        step = 1 if y1 > y0 else -1
+        link(cx, y0, "S" if step > 0 else "N")
+        for cy in range(y0 + step, y1, step):
+            link(cx, cy, "N", "S")
+        link(cx, y1, "N" if step > 0 else "S")
+
     for column, members in columns.items():
         for index, row in enumerate(members):
             name, cy = row["capability"], index * 2
@@ -260,25 +305,28 @@ def dag(job: dict[str, Any]) -> str:
             place[name] = (column_x[column], cy, len(name))
 
     for row in rows:
+        target = row["capability"]
         for dep in row["depends_on"]:
             if dep not in place:
                 continue
             ax, ay, alength = place[dep]
-            bx, by, _ = place[row["capability"]]
-            trunk = ax + alength + 2               # the vertical the edge turns on
-            for cx in range(ax + alength, trunk):
-                link(cx, ay, "E", "W")
+            bx, by, _ = place[target]
+            trunk = trunk_x[dep]
+            hline(ay, ax + alength, trunk - 1)      # stub from the name
             link(trunk, ay, "W")
-            if ay == by:
-                link(trunk, ay, "E")
+            if depth[target] - depth[dep] > 1:
+                # Spans a wave: run below the target row, where no name is.
+                detour = by + 1
+                vline(trunk, ay, detour)
+                link(trunk, detour, "E")
+                hline(detour, trunk + 1, bx - 2)
+                link(bx - 1, detour, "W")
+                vline(bx - 1, detour, by)
+                link(bx - 1, by, "E")
             else:
-                step = 1 if by > ay else -1
-                link(trunk, ay, "S" if step > 0 else "N")
-                for cy in range(ay + step, by, step):
-                    link(trunk, cy, "N", "S")
-                link(trunk, by, "N" if step > 0 else "S", "E")
-            for cx in range(trunk + 1, bx):
-                link(cx, by, "E", "W")
+                vline(trunk, ay, by)
+                link(trunk, by, "E")
+                hline(by, trunk + 1, bx - 1)
 
     for (cy, cx), directions in dirs.items():
         if (cy, cx) not in char:                   # never draw over a name
@@ -304,7 +352,15 @@ def dag(job: dict[str, Any]) -> str:
 
 
 def outputs_block(job: dict[str, Any]) -> str:
-    """The files the job produced, deliverables first — the order it records."""
+    """The files the job produced, deliverables first — the order it records.
+
+    The filename is derived from the path, and has to be: `Job.to_dict()` is
+    `dataclasses.asdict`, which serialises `JobOutput`'s fields and **drops
+    `name`, because it is a property**. Only `list_outputs` puts it back, and
+    this pane reads `get_job` — so asking for that key rendered a blank where
+    every filename should have been, and the layout snapshot then froze the
+    blank as the expected picture.
+    """
     outputs = job.get("outputs") or []
     if not outputs:
         return f"[{DIM}]no file yet[/]"
@@ -314,7 +370,7 @@ def outputs_block(job: dict[str, Any]) -> str:
         by = f" from {output['produced_by']}" if output.get("produced_by") else ""
         title = f"  {escape(str(output['title']))}" if output.get("title") else ""
         lines.append(
-            f"[{CHROME}]▸[/] [b]{escape(str(output.get('name') or ''))}[/b]"
+            f"[{CHROME}]▸[/] [b]{escape(Path(str(output.get('path') or '')).name)}[/b]"
             f"  [{DIM}]{role} {output.get('format', '')}{by}{title}[/]"
         )
     return "\n".join(lines)
