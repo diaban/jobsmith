@@ -69,11 +69,20 @@ dev = [
     "fastapi>=0.115",
     "httpx>=0.27",
     "langgraph-checkpoint-sqlite>=3.1",
-    # Snapshot testing for the TUI. It pulls textual in transitively, and is
-    # listed with it so a dev install can run the TUI's tests without also
-    # asking for the extra a *user* installs.
+    # Snapshot testing for the TUI. Textual is listed with it so a dev install
+    # can run the TUI's tests without also asking for the extra a *user*
+    # installs. The plugin is pinned EXACTLY, and that is not caution: the
+    # snapshot file names and format belong to it, so two versions of it
+    # disagree about the files committed under tests/__snapshots__. Measured —
+    # a range gave 1.1.0 here and 1.0.0 in CI, where every stored snapshot
+    # came back "unused". CI installs from pyproject and not from uv.lock, so
+    # this line is the only thing keeping the two in step. It pins
+    # `syrupy==4.8.0` itself, which caps **pytest below 9**: that is the real
+    # price, and it is preferable to the alternative the resolver reached
+    # unaided — the older plugin paired with syrupy 6, a combination it
+    # predates, which writes `.raw` files instead of the `.svg` it names.
     "textual>=1.0",
-    "pytest-textual-snapshot>=1.0",
+    "pytest-textual-snapshot==1.1.0",
 ]
 
 [project.scripts]
