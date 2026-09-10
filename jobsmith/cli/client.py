@@ -242,13 +242,36 @@ class DaemonClient(AgentService):
             # one to whoever is awaiting the queue.
             print(f"[event stream from {self.url} closed by the daemon]", file=sys.stderr)
         except asyncio.CancelledError:
+            # The consumer asked to stop (`unsubscribe`), so there is nobody to
+            # tell and the queue may already be unreferenced.
             raise
         except Exception as ended:      # daemon gone, connection dropped
-            # Diagnostics go to stderr here as everywhere in this layer: the
-            # queue carries events, so a failure reported into it would have to
-            # be an event that is not one, and silence would leave a caller
-            # waiting on a stream that no longer exists.
+            # Diagnostics go to stderr here as everywhere in this layer, and
+            # they are what a person running a command reads. They are not what
+            # a UI reads: `jobsmith ui` owns the screen, so stderr goes
+            # nowhere it can show — hence the marker below as well as this.
             print(f"[event stream from {self.url} ended: {ended}]", file=sys.stderr)
+        self._end_of_stream(queue)
+
+    @staticmethod
+    def _end_of_stream(queue: asyncio.Queue) -> None:
+        """Say on the queue itself that nothing more will arrive on it.
+
+        The drop rule above does not apply to this, and the reason is the
+        rule's own: an event is dropped because the next one supersedes it,
+        and there is no next one here. So a full queue loses its oldest tick
+        to make room — a progress line nobody read, against the difference
+        between a quiet stream and a dead one.
+        """
+        if queue.full():
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:      # drained between the two calls
+                pass
+        try:
+            queue.put_nowait(None)
+        except asyncio.QueueFull:           # refilled in between: nothing to do
+            pass
 
 
 class EmbeddedClient(LocalAgentService):

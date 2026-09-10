@@ -22,16 +22,18 @@ from `jobs/models.py` and only the timestamps are frozen, so a change to what
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import re
 import sys
+import time
 from typing import Any
 
 import pytest
-from conftest import ScriptedChatModel
+from conftest import FakeLLM, ScriptedChatModel, plan_json
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
 from test_chat import launch_call
-from test_jobs import make_manager
+from test_jobs import SlowEcho, make_manager
 from textual.widgets import Input, ListView, Static
 
 from jobsmith.chat import ChatSession
@@ -39,7 +41,7 @@ from jobsmith.core.usage import Usage
 from jobsmith.jobs.models import Job, JobOutput, JobStatus
 from jobsmith.service import AgentService, LocalAgentService
 from jobsmith.tui import MISSING, TuiUnavailable
-from jobsmith.tui.app import Bubble, JobsmithApp, ProposalCard
+from jobsmith.tui.app import LIVE_LOST, Bubble, JobsmithApp, ProposalCard
 from jobsmith.tui.render import (
     MARKUP_ROLES,
     NONE,
@@ -48,6 +50,7 @@ from jobsmith.tui.render import (
     outputs_block,
     step_states,
     steps_table,
+    where_files_are,
 )
 from jobsmith.tui.themes import DEFAULT_THEME, THEMES, pick_theme
 
@@ -129,10 +132,16 @@ class CannedService(AgentService):
 
     def __init__(self, jobs: list[Job] | None = None, events: list[dict] | None = None,
                  stream_gate: asyncio.Event | None = None,
-                 list_gate: asyncio.Event | None = None):
+                 list_gate: asyncio.Event | None = None,
+                 missing_files: set[str] | None = None):
         self.jobs = jobs if jobs is not None else canned_jobs()
         self.events = events or []
         self.cancelled: list[str] = []
+        # What `find_output` answers None for: a file recorded by the job and
+        # no longer on the disk that ran it.
+        self.missing_files = missing_files or set()
+        self.queues: list[asyncio.Queue] = []
+        self.released: list[asyncio.Queue] = []
         # A gate, when given, is awaited inside the call it names — so a test
         # can hold the UI inside work that is genuinely in flight instead of
         # racing it. Two of them, because holding a turn open must not also
@@ -176,16 +185,25 @@ class CannedService(AgentService):
         return None
 
     async def list_outputs(self, job_id: str) -> list[dict] | None:
-        return []
+        """What the real service answers: `asdict` plus the `name` property."""
+        job = next((j for j in self.jobs if j.job_id == job_id), None)
+        if job is None:
+            return None
+        return [dataclasses.asdict(o) | {"name": o.name} for o in job.outputs]
 
     async def find_output(self, job_id: str, name: str) -> str | None:
-        return None
+        outputs = await self.list_outputs(job_id) or []
+        if name in self.missing_files:
+            return None
+        return next((o["path"] for o in outputs if o["name"] == name), None)
 
     def subscribe(self, *, max_queue: int = 256) -> asyncio.Queue:
-        return asyncio.Queue(maxsize=max_queue)
+        queue: asyncio.Queue = asyncio.Queue(maxsize=max_queue)
+        self.queues.append(queue)
+        return queue
 
     def unsubscribe(self, queue: asyncio.Queue) -> None:
-        return None
+        self.released.append(queue)
 
 
 # The one measured gap in the standard vocabulary: the two ansi themes carry
@@ -205,9 +223,9 @@ PROPOSAL_TURN = [
 
 
 def canned_app(**kwargs: Any) -> JobsmithApp:
-    """The app with the poll disabled — a timer is noise in a snapshot."""
+    """The app on a service whose answers do not move, so a snapshot can."""
     service = kwargs.pop("service", None) or CannedService(events=PROPOSAL_TURN)
-    return JobsmithApp(service, SESSION, poll_seconds=0, **kwargs)
+    return JobsmithApp(service, SESSION, **kwargs)
 
 
 async def settle(pilot: Any) -> None:
@@ -238,6 +256,8 @@ def test_the_jobs_screen_looks_like_this(snap_compare):
         # survived — the baseline was generated from the bug.
         outputs = str(pilot.app.query_one("#detail-outputs", Static).content)
         assert "sixel-matrix.svg" in outputs, outputs
+        assert "/tmp/a/sixel-matrix.svg" in outputs, "the file is not located"
+        assert "on this machine" in outputs, "the pane does not say whose disk that is"
 
     assert snap_compare(canned_app(), terminal_size=(126, 38), run_before=before)
 
@@ -346,7 +366,7 @@ async def test_cancelling_asks_twice_and_only_where_the_job_is_shown():
     ctrl+u for editing, so a binding on any of those never reaches the app).
     """
     service = CannedService(events=PROPOSAL_TURN)
-    app = JobsmithApp(service, SESSION, poll_seconds=0)
+    app = JobsmithApp(service, SESSION)
     async with app.run_test(size=(126, 38)) as pilot:
         await settle(pilot)
         await pilot.press("f8", "f8")            # chat pane: refused, twice
@@ -368,7 +388,7 @@ async def test_moving_off_the_row_drops_an_armed_cancel():
     """Armed for a job, then highlighting another: the second press must not
     inherit the first one's intent."""
     service = CannedService(events=PROPOSAL_TURN)
-    app = JobsmithApp(service, SESSION, poll_seconds=0)
+    app = JobsmithApp(service, SESSION)
     async with app.run_test(size=(126, 38)) as pilot:
         await settle(pilot)
         await pilot.press("f3")
@@ -414,7 +434,7 @@ async def test_the_answer_is_drawn_as_it_arrives(store, checkpointer, tmp_path, 
     service, _ = make_service(store, checkpointer, tmp_path, [AIMessage(content=ANSWER)])
     session_id = await service.new_session()
 
-    app = JobsmithApp(service, session_id, poll_seconds=0)
+    app = JobsmithApp(service, session_id)
     async with app.run_test(size=(100, 30)) as pilot:
         await settle(pilot)
         await pilot.press(*"hello")
@@ -436,7 +456,7 @@ async def test_a_proposal_is_approved_through_the_ui(store, checkpointer, tmp_pa
     ])
     session_id = await service.new_session()
 
-    app = JobsmithApp(service, session_id, poll_seconds=0)
+    app = JobsmithApp(service, session_id)
     async with app.run_test(size=(100, 30)) as pilot:
         await settle(pilot)
         await pilot.press(*"look into sixel")
@@ -463,7 +483,7 @@ async def test_declining_a_proposal_creates_nothing(store, checkpointer, tmp_pat
     ])
     session_id = await service.new_session()
 
-    app = JobsmithApp(service, session_id, poll_seconds=0)
+    app = JobsmithApp(service, session_id)
     async with app.run_test(size=(100, 30)) as pilot:
         await settle(pilot)
         await pilot.press(*"look into sixel")
@@ -484,7 +504,7 @@ async def test_a_second_message_cannot_cut_the_turn_being_written():
     typed text stays in the box rather than vanishing."""
     gate = asyncio.Event()
     service = CannedService(events=PROPOSAL_TURN, stream_gate=gate)
-    app = JobsmithApp(service, SESSION, poll_seconds=0)
+    app = JobsmithApp(service, SESSION)
     async with app.run_test(size=(100, 30)) as pilot:
         await settle(pilot)
         try:
@@ -513,7 +533,7 @@ async def test_a_message_during_a_proposal_is_not_read_as_a_refusal():
     the sentence. Only the refusals decline; a real message is refused with
     the text kept, and a bare Enter is the `N` the prompt advertises."""
     service = CannedService(events=PROPOSAL_TURN)
-    app = JobsmithApp(service, SESSION, poll_seconds=0)
+    app = JobsmithApp(service, SESSION)
     async with app.run_test(size=(100, 30)) as pilot:
         await settle(pilot)
         await pilot.press(*"look into sixel")
@@ -533,26 +553,161 @@ async def test_a_message_during_a_proposal_is_not_read_as_a_refusal():
         assert not app._awaiting_approval
 
 
-async def test_the_poll_skips_a_refresh_that_is_still_running():
-    """Two HTTP round trips against a daemon can outlast the interval. Left
-    to `exclusive=True` every tick would cancel the previous worker, so the
-    list would never repopulate — and a cancellation landing on `clear()`
-    leaves it empty."""
+async def test_a_refresh_in_flight_is_joined_rather_than_cancelled_or_dropped():
+    """Two things at once, and the second only became load-bearing here.
+
+    A refresh is three calls against a daemon, and events arrive faster than
+    that when a wave lands. Left to `exclusive=True` every one would cancel
+    the previous worker, so the list would never repopulate — and a
+    cancellation landing on `clear()` leaves it empty.
+
+    Skipping alone is what the poll used to make safe: a request dropped
+    because a refresh was running came back two seconds later. Nothing
+    re-arms now, so a dropped request is a screen that stays wrong until the
+    *next* job moves — and the event most likely to be dropped is the last
+    one, the one that says the job is done. It is remembered instead.
+    """
     gate = asyncio.Event()
     service = CannedService(list_gate=gate)
-    app = JobsmithApp(service, SESSION, poll_seconds=0)
+    app = JobsmithApp(service, SESSION)
     async with app.run_test(size=(126, 38)) as pilot:
         try:
             await pilot.pause()
             assert service.listed == 1
-            for _ in range(4):                    # ticks arriving while it waits
+            for _ in range(4):                    # events arriving while it waits
                 app.refresh_jobs()
                 await pilot.pause()
-            assert service.listed == 1, "a tick cancelled the refresh already running"
+            assert service.listed == 1, "an event cancelled the refresh already running"
         finally:
             gate.set()
         await settle(pilot)
+        assert service.listed == 2, "the refresh those events asked for was dropped"
         assert len(app.query_one("#job-list", ListView)) == len(service.jobs)
+
+
+# --------------------------------------------------------------- live updates
+
+
+async def until(pilot: Any, condition: Any, timeout: float = 5.0) -> bool:
+    """Let the UI breathe until it says something, or give up saying so."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        await pilot.pause()
+        if condition():
+            return True
+        await asyncio.sleep(0.02)
+    return False
+
+
+async def test_the_screen_follows_a_job_while_it_runs(store, checkpointer, tmp_path):
+    """The claim of this whole step, and only a real run can make it.
+
+    A job is created and started on the manager — not through the UI — and
+    nothing is typed afterwards: no keystroke, no F5, no poll. What moves the
+    screen is `subscribe()`, so the plan appears while the first step is
+    still running (the manager publishes when the plan lands, precisely so a
+    DAG is not held back until a step does), the steps land one by one, and
+    the job reaches `done` on screen on its own.
+    """
+    caps = [SlowEcho(name, delay=0.4) for name in ("alpha", "beta")]
+    llm = FakeLLM(
+        {"planner": plan_json("alpha", "beta", deps={"beta": ["alpha"]})},
+        default="A sufficiently long final answer for the job test.",
+    )
+    manager = make_manager(store, checkpointer, tmp_path, caps=caps, llm=llm)
+    service = LocalAgentService(manager, lambda session_id=None: ChatSession(
+        manager, ScriptedChatModel(responses=[]), session_id=session_id,
+        checkpointer=MemorySaver()))
+
+    def dag_now() -> str:
+        return str(app.query_one("#detail-dag", Static).content)
+
+    def meta_now() -> str:
+        return str(app.query_one("#detail-meta", Static).content)
+
+    app = JobsmithApp(service, SESSION)
+    async with app.run_test(size=(126, 38)) as pilot:
+        await settle(pilot)
+        await pilot.press("f3")               # the last keystroke of this test
+        await settle(pilot)
+        assert len(app.query_one("#job-list", ListView)) == 0
+
+        job = await manager.create_job("a chain")
+        manager.start_job(job.job_id)
+
+        assert await until(pilot, lambda: len(app.query_one("#job-list", ListView)) == 1), \
+            "the job never appeared: nothing is following the stream"
+        # Before any step has landed, which is the reason the manager
+        # publishes when the plan does: with only step events, a DAG stays
+        # "no plan yet" for the whole of the first step.
+        assert await until(pilot, lambda: "alpha" in dag_now() and "0 of 2" in meta_now()), \
+            "the plan was not on screen until a step had finished"
+        assert await until(pilot, lambda: "done" in meta_now()), "the end never arrived"
+
+        steps = str(app.query_one("#detail-steps", Static).content)
+        assert "alpha" in steps and "beta" in steps
+        files = str(app.query_one("#detail-outputs", Static).content)
+        assert job.job_id in files, "the deliverable the run produced was never shown"
+
+
+async def test_the_files_a_finished_job_produced_are_named_and_located():
+    """The artifacts pane, on the two things the port actually promises.
+
+    `list_outputs` is the only call that carries a filename (`get_job` is
+    `asdict`, which drops the property), and a path is a locator on the
+    machine that ran the job — so the pane says whose disk it is.
+    """
+    service = CannedService()
+    app = JobsmithApp(service, SESSION)
+    async with app.run_test(size=(126, 38)) as pilot:
+        await settle(pilot)
+        await pilot.press("f3")
+        await settle(pilot)
+        files = str(app.query_one("#detail-outputs", Static).content)
+        assert "sixel-matrix.svg" in files, files
+        assert "from web_search" in files, "an annex does not say which step made it"
+        assert "on this machine" in files, "the pane does not say where the file is"
+
+
+async def test_a_file_that_is_no_longer_there_is_not_offered():
+    """`find_output` probes rather than trusting the record, on both
+    backings. A pane that ignored that answer would draw a path to nothing."""
+    service = CannedService(missing_files={"sixel-matrix.svg"})
+    app = JobsmithApp(service, SESSION)
+    async with app.run_test(size=(126, 38)) as pilot:
+        await settle(pilot)
+        await pilot.press("f3")
+        await settle(pilot)
+        assert "gone from disk" in str(app.query_one("#detail-outputs", Static).content)
+
+
+async def test_a_stream_that_ends_is_said_on_the_screen_that_took_the_terminal():
+    """`DaemonClient` prints it on stderr, which is right for a command and
+    unreachable here — this app owns the screen. So the end of the stream
+    travels on the queue (`None`, the port's marker) and is said where a
+    reader is looking: a screen that stopped following must not look like
+    one that is up to date."""
+    service = CannedService()
+    app = JobsmithApp(service, SESSION)
+    async with app.run_test(size=(126, 38)) as pilot:
+        await settle(pilot)
+        assert service.queues, "nothing subscribed"
+        assert LIVE_LOST not in str(app.query_one("#tabs", Static).content)
+
+        service.queues[0].put_nowait(None)           # the daemon went away
+        assert await until(pilot, lambda: app._live_lost), "the end went unnoticed"
+        assert LIVE_LOST in str(app.query_one("#tabs", Static).content)
+
+
+async def test_the_subscription_is_released_with_the_app():
+    """A subscription is a resource — behind a daemon it holds an HTTP stream
+    open — so it is unsubscribed, not dropped."""
+    service = CannedService()
+    app = JobsmithApp(service, SESSION)
+    async with app.run_test(size=(126, 38)) as pilot:
+        await settle(pilot)
+        assert len(service.queues) == 1
+    assert service.released == service.queues, "the event stream was left open"
 
 
 # ------------------------------------------------------------- what it draws
@@ -636,14 +791,41 @@ def test_a_request_cannot_open_a_tag():
 def test_the_outputs_pane_names_the_file():
     """`Job.to_dict()` is `asdict`, which drops `JobOutput.name` — it is a
     property. Reading that key gave a blank where the filename belongs, on
-    every job, in the one pane whose job is to say what was produced."""
+    every job, in the one pane whose job is to say what was produced. So the
+    pane is fed by `list_outputs`, the call that carries one."""
     job = canned_jobs()[0].to_dict()
     assert "name" not in job["outputs"][0], "the shape this guards against changed"
 
-    block = outputs_block(job)
+    outputs = [dataclasses.asdict(o) | {"name": o.name} for o in canned_jobs()[0].outputs]
+    block = outputs_block(outputs)
     assert "sixel-matrix.svg" in block
-    assert "/tmp/a/" not in block, "the pane shows a filename, not a path"
-    assert "from web_search" in block
+    assert "annex" in block and "from web_search" in block
+    assert "/tmp/a/sixel-matrix.svg" in block, "the file is not located at all"
+
+
+def test_a_file_is_located_and_never_offered():
+    """A path is where the file is, on the machine that ran the job — which
+    is the reader's own only when the service is embedded. The pane says
+    which, because a daemon's path is true and unopenable from here."""
+    outputs = [dataclasses.asdict(o) | {"name": o.name} for o in canned_jobs()[0].outputs]
+    job_id = canned_jobs()[0].job_id
+
+    here = outputs_block(outputs, where=where_files_are("embedded", job_id))
+    assert "on this machine" in here
+
+    there = outputs_block(outputs, where=where_files_are("daemon", job_id))
+    assert "the machine running the daemon" in there
+    assert f"/jobs/{job_id}/outputs/<name>" in there, "no way to fetch the bytes"
+
+
+def test_a_file_that_is_gone_is_said_to_be_gone():
+    """`find_output` answers None for a file deleted since the job finished
+    — on both backings, which is the whole point of it probing rather than
+    trusting the record. Drawn as a path, that answer would be a lie."""
+    outputs = [dataclasses.asdict(o) | {"name": o.name} for o in canned_jobs()[0].outputs]
+    block = outputs_block(outputs, missing={"sixel-matrix.svg"})
+    assert "gone from disk" in block
+    assert "sixel-matrix.svg" in block, "the file is still what the line is about"
 
 
 def test_the_step_table_shows_what_each_step_spent():

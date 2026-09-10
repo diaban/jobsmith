@@ -97,6 +97,14 @@ Textual owns the event loop, so the tab bar carries a live count, `F3` opens
 the job list, and the detail pane draws the plan, the per-step cost and the
 files produced.
 
+It follows a job **as it runs**, with no poll and nothing to press: the job
+event stream drives the repaint, so the plan appears when the planner answers
+and each step lands on screen when it lands. If that stream ends — a daemon
+shutting down — the screen says so rather than quietly going still. The files
+pane names each deliverable and annex and says whose disk it is on: against a
+daemon those paths are the daemon's, and `GET /jobs/{id}/outputs/{name}` is
+what fetches the bytes.
+
 ```bash
 uv pip install -e ".[tui]"
 jobsmith ui                      # F2 chat · F3 jobs · F5 refresh · F8 F8 cancel
@@ -589,11 +597,11 @@ Honest v1 boundaries:
 - **`/report` serves text only.** A binary deliverable is fetched whole from
   `/jobs/{id}/outputs/{name}`; the shortcut refuses with a `415` that names
   it rather than pretending the job has no report.
-- **The terminal UI does not update live yet.** `jobsmith ui` re-reads the job
-  list on a short poll; the event stream (`subscribe`) that would drive a DAG
-  as it moves, and the artifacts pane beside it, are the next step. What it
-  shows of a job — plan, per-step status, cost, outputs — is a snapshot of the
-  record, and a step's `took` is derived from when its dependencies landed,
+- **The terminal UI shows what the record holds, live.** `jobsmith ui` follows
+  the event stream, so plan, per-step status, cost and files move on their own
+  — but a step's `took` is still derived from when its dependencies landed,
   because the engine records when a step *finished* and never when it started.
+  Its file pane locates what a job produced and does not promise you can open
+  it: with a daemon, those paths are on the daemon's machine.
 - **No web UI.** Everything is terminal or HTTP for now; the API already serves
   what a chat / jobs-DAG / artifacts interface would need.

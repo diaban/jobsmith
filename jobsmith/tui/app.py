@@ -19,9 +19,11 @@ Three panes, and one rule each:
   because the tokens already delivered it.
 * **job list** — `list_jobs`, which answers with *summaries*: a row says what
   a summary knows and the detail pane loads the rest.
-* **job detail** — `get_job`: the plan drawn as a DAG, a per-step table, the
-  files produced. Static, refreshed on a poll; the live DAG driven by
-  `subscribe()` is step 3 of #48 and deliberately not here yet.
+* **job detail** — `get_job`: the plan drawn as a DAG, a per-step table, and
+  the files produced (`list_outputs`, which is the only call that carries a
+  filename). It moves on its own: `subscribe()` says a job changed and the
+  pane re-reads. Nothing here accumulates an event, because events are
+  dropped under back-pressure by design — see `_watch`.
 
 Every colour in `CSS` is a standard theme role. A stylesheet naming a
 variable the current theme does not define does not look wrong — it **fails
@@ -30,6 +32,8 @@ to parse**, and the app does not start — so this constraint is what lets all
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from typing import Any
 
 from textual import work
@@ -43,10 +47,10 @@ from ..service import TERMINAL_EVENTS, AgentService, ChatStreamError
 from . import render
 from .themes import DEFAULT_THEME, THEMES, pick_theme
 
-# How often the job list re-reads itself. A poll, and named as one: the event
-# stream is step 3 of #48, and until then a list that only moves when the user
-# types would be the very defect this layer exists to fix.
-POLL_SECONDS = 2.0
+# What the tab bar says once the event stream is over: the screen is still
+# true, it has simply stopped following. A UI has taken the terminal, so the
+# stderr note `DaemonClient` prints goes nowhere anybody can read.
+LIVE_LOST = "live updates stopped — F5 re-reads"
 
 # What answers a proposal. The approvals are the REPL's own set, so the same
 # word means the same thing in both front-ends. The refusals are spelt out
@@ -177,20 +181,23 @@ class JobsmithApp(App[None]):
         session_id: str,
         *,
         theme: str | None = None,
-        poll_seconds: float = POLL_SECONDS,
     ) -> None:
         super().__init__()
         self.service = service
         self.session_id = session_id
         self._theme_name = pick_theme(theme)
-        self._poll_seconds = poll_seconds
         self._jobs: list[dict[str, Any]] = []
         self._selected: str | None = None      # job_id, so a refresh keeps the row
         self._awaiting_approval = False
         self._answer: Bubble | None = None     # the bubble the tokens land in
         self._streaming = False                # a turn is being rendered right now
         self._reloading = False                # a job refresh is in flight
+        self._stale = False                    # ... and one more is owed after it
         self._cancel_armed: str | None = None  # job id F8 has asked about once
+        self._live: asyncio.Task | None = None  # the subscription, for its lifetime
+        self._live_lost = False                # the stream ended; the screen says so
+        self._files_of: tuple[str, tuple[str, ...]] | None = None   # probed for these
+        self._missing: set[str] = set()        # ... and these were not on disk
 
     # ------------------------------------------------------------- assembly
 
@@ -218,9 +225,69 @@ class JobsmithApp(App[None]):
         )
         self._paint_tabs()
         self.refresh_jobs()
-        if self._poll_seconds:
-            self.set_interval(self._poll_seconds, self.refresh_jobs)
+        self._live = asyncio.create_task(self._watch())
         self.query_one("#prompt", Input).focus()
+
+    async def on_unmount(self) -> None:
+        """Release the subscription — it is a resource, not a reference.
+
+        Behind a daemon it holds an HTTP stream open, and `unsubscribe` (sync,
+        as the port says) can only cancel the reader; the unwind is awaited by
+        `DaemonClient.aclose`. Here the cancelled watcher is awaited so its own
+        `finally` — the `unsubscribe` — has actually run before the app goes.
+        """
+        watcher, self._live = self._live, None
+        if watcher is not None:
+            watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watcher
+
+    # ------------------------------------------------------- live from the port
+
+    async def _watch(self) -> None:
+        """Repaint whenever a job moves, driven by `subscribe()`.
+
+        The one rule that shapes this: an event means **something changed,
+        re-read**, never a delta to apply. `subscribe` drops under
+        back-pressure on both backings — deliberately, because a missed
+        progress tick is superseded by the next one — so a UI that
+        accumulated events would be a UI whose picture is wrong exactly when
+        it was busy. Re-reading (`list_jobs`, then `get_job` for the row on
+        screen) makes a dropped event cost nothing but a slightly later
+        repaint, and a burst is coalesced into one refresh rather than one
+        each: the screen only ever shows the latest answer anyway.
+
+        `None` is the port's end-of-stream marker, and the reason it exists:
+        a daemon that goes away leaves a queue that is quiet in exactly the
+        way a calm system is quiet. The stderr note `DaemonClient` prints for
+        a person at a shell cannot reach a screen this app has taken over, so
+        the fact is carried on the queue and said on the tab bar.
+
+        Not a Textual worker on purpose: `workers.wait_for_complete()` waits
+        for every one of them, and this one is over only when the app is.
+        """
+        queue = self.service.subscribe()
+        try:
+            while True:
+                event = await queue.get()
+                while event is not None and not queue.empty():
+                    event = queue.get_nowait()      # one repaint per burst
+                if event is None:
+                    self._live_stopped()
+                    return
+                self.refresh_jobs()
+        except asyncio.CancelledError:
+            raise
+        except Exception as failed:      # a backing that broke, not a job that did
+            self._live_stopped(str(failed))
+        finally:
+            self.service.unsubscribe(queue)
+
+    def _live_stopped(self, reason: str = "") -> None:
+        """Say it, in both places a reader might be looking."""
+        self._live_lost = True
+        self._paint_tabs()
+        self.notify(f"{LIVE_LOST}{f' ({reason})' if reason else ''}", severity="warning")
 
     # ---------------------------------------------------------------- chrome
 
@@ -232,6 +299,10 @@ class JobsmithApp(App[None]):
         # defect this layer exists to remove.
         live = (f"  [{render.RUNNING}]{render.GLYPH['running']} {running} running[/]"
                 if running else "")
+        # A screen that stopped following is still true, and must not look
+        # like one that is up to date.
+        if self._live_lost:
+            live += f"  [{render.FAILED}]{LIVE_LOST}[/]"
         tabs = "  ".join(
             f"[b {render.CHROME}]{name}[/]" if name == current else f"[{render.DIM}]{name}[/]"
             for name in ("chat", "jobs")
@@ -358,18 +429,24 @@ class JobsmithApp(App[None]):
     # ----------------------------------------------------------------- jobs
 
     def refresh_jobs(self) -> None:
-        """Ask for a refresh, unless one is already on its way.
+        """Ask for a refresh; one already in flight is joined, never cancelled.
 
-        The poll re-arms every `POLL_SECONDS`, and a refresh is two calls
-        (`list_jobs`, then `get_job` for the highlighted row) — two HTTP round
-        trips against a daemon. Left to `exclusive=True`, a pair slower than
-        the interval would have every tick cancel the previous worker, so the
+        A refresh is three calls (`list_jobs`, then `get_job` and
+        `list_outputs` for the highlighted row) — round trips against a
+        daemon, and events arrive faster than that when a wave lands. Left to
+        `exclusive=True` each one would cancel the previous worker, so the
         list would never finish repopulating and a cancellation landing on
-        `clear()` would leave it empty. Skipping is the right answer because
-        the work is idempotent: the tick that is already running is fetching
-        exactly what this one would.
+        `clear()` would leave it empty.
+
+        Skipping alone is not enough either, and that is what the poll used to
+        hide: with a timer re-arming, a request dropped because a refresh was
+        running was picked up two seconds later. Nothing re-arms now, so the
+        last event of a job — the one that says it is DONE — would be the one
+        most likely to be dropped. It is remembered instead, and the refresh
+        in flight goes round once more.
         """
         if self._reloading:
+            self._stale = True
             return
         self.reload()
 
@@ -379,8 +456,11 @@ class JobsmithApp(App[None]):
         self._reloading = True
         try:
             await self._reload()
+            while self._stale:
+                self._stale = False       # anything arriving now asks again
+                await self._reload()
         finally:
-            self._reloading = False
+            self._reloading = self._stale = False
 
     async def _reload(self) -> None:
         self._jobs = await self.service.list_jobs()
@@ -415,7 +495,7 @@ class JobsmithApp(App[None]):
         self.query_one("#detail-meta", Static).update(render.job_meta(job))
         self.query_one("#detail-dag", Static).update(render.dag(job))
         self.query_one("#detail-steps", Static).update(render.steps_table(job))
-        self.query_one("#detail-outputs", Static).update(render.outputs_block(job))
+        await self._show_files(job_id)
         answer = job.get("final_answer") or ""
         error = job.get("error") or ""
         body = f"[{render.DIM}]answer[/]\n{escape(answer)}" if answer else ""
@@ -426,7 +506,45 @@ class JobsmithApp(App[None]):
             body = (body + "\n\n" if body else "") + f"[{render.FAILED}]{escape(error)}[/]"
         self.query_one("#detail-answer", Static).update(body or f"[{render.DIM}]no answer yet[/]")
 
+    async def _show_files(self, job_id: str) -> None:
+        """What the job produced — from `list_outputs`, and honest about where.
+
+        Three things this pane must not do, all of them promises the port
+        makes rather than choices made here.
+
+        It must not read the files off `get_job`: that shape is
+        `dataclasses.asdict`, which drops `JobOutput.name` because it is a
+        property, and reading the missing key is what printed a blank
+        filename on every job. `list_outputs` is the call that carries one.
+
+        It must not present a path as something to open. `find_output`
+        answers with a locator on the machine that RAN the job, so with a
+        daemon backing these are the daemon's paths — true, and unopenable
+        from here. The pane says whose disk they are on and names the
+        download route.
+
+        And it must not show a file that is no longer there: `find_output`
+        answers None for one deleted since the job finished, on both
+        backings. That answer is a round trip per file remotely, so it is
+        asked once per *set* of files — which changes when a step produces
+        one, and never between two events about the same step. F5 asks again
+        from scratch, which is what makes a file deleted later reachable.
+        """
+        outputs = await self.service.list_outputs(job_id) or []
+        names = tuple(str(o.get("name") or "") for o in outputs)
+        if self._files_of != (job_id, names):
+            self._files_of = (job_id, names)
+            self._missing = {name for name in names
+                             if await self.service.find_output(job_id, name) is None}
+        self.query_one("#detail-outputs", Static).update(render.outputs_block(
+            outputs,
+            missing=self._missing,
+            where=render.where_files_are(self.service.mode, job_id) if outputs else "",
+        ))
+
     def action_reload(self) -> None:
+        """Re-read everything, including the questions a refresh caches."""
+        self._files_of = None
         self.refresh_jobs()
 
     # -------------------------------------------------------- cancelling one

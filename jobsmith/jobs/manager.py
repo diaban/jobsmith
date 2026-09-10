@@ -365,6 +365,12 @@ class JobManager:
             case PlanReady(plan):
                 job.plan = plan
                 await self.repo.save_plan(job.job_id, plan)
+                # The plan is the first thing a watcher can see of a run, and
+                # it exists long before the first step lands. Without a
+                # summary here the event stream says nothing until then, and
+                # a UI drawing the DAG shows "no plan yet" for the whole of
+                # the first step — a picture that was stale when it was drawn.
+                await self._persist_summary(job)
             case StepFinished(capability, result):
                 job.results[capability] = result
                 job.step_finished_at[capability] = now_iso()

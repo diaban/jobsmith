@@ -213,6 +213,8 @@ def create_api(service: LocalAgentService) -> FastAPI:
             try:
                 while True:
                     event = await queue.get()
+                    if event is None:
+                        break      # the port's end-of-stream marker, not an event
                     yield f"data: {json.dumps(event)}\n\n"
             finally:
                 service.unsubscribe(queue)
