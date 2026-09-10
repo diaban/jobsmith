@@ -36,7 +36,7 @@ from jobsmith.chat import (
 from jobsmith.chat.session import NOTICE_MARKER
 from jobsmith.cli.client import DaemonClient
 from jobsmith.cli.repl import TurnPrinter, render_turn, run_repl, tool_activity
-from jobsmith.service import ChatStreamError, LocalAgentService
+from jobsmith.service import ChatStreamError, LocalAgentService, ServiceUnavailable
 
 ANSWER = "A reasonably long answer that no single chunk should carry."
 
@@ -265,6 +265,47 @@ async def test_the_repl_streams_a_turn_and_still_asks_for_approval(capsys, monke
     assert client.approved is True
     assert "task     : the big thing" in out
     assert "  launched\n" in out
+
+
+async def test_the_repl_survives_a_backing_that_went_away(capsys, monkeypatch):
+    """The REPL's half of the same narrowing the TUI uses.
+
+    One `except`, and it names the port's own exception — a broad one would
+    swallow this project's bugs to catch a daemon's absence. So a command
+    against a daemon that died says so on stderr (where every diagnostic in
+    this layer goes) and the prompt comes back; the `KeyError` below is not
+    caught, and a defect in this code still ends the loop with a traceback.
+    """
+    typed = iter(["/jobs", "hello", "/quit"])
+    monkeypatch.setattr("builtins.input", lambda *a: next(typed))
+
+    class Client:
+        async def list_jobs(self, **kwargs):
+            raise ServiceUnavailable.reaching("http://127.0.0.1:8000", ConnectionRefusedError())
+
+        async def stream(self, session_id, text):
+            raise ServiceUnavailable.reaching("http://127.0.0.1:8000", ConnectionRefusedError())
+            yield {}                       # pragma: no cover - an async generator
+
+    await run_repl(Client(), "s1")         # type: ignore[arg-type]
+    out, err = capsys.readouterr()
+    assert err.count("cannot reach the agent at http://127.0.0.1:8000") == 2
+    assert out.rstrip().endswith("bye")    # ...and the loop kept going
+
+
+async def test_a_defect_in_this_process_still_ends_the_repl_loudly(monkeypatch):
+    """The rule the narrowing has to keep: only the named exception is
+    answered. A `KeyError` from our own code is not a daemon that went away,
+    and turning it into one would hide the bug behind a reconnect message."""
+    typed = iter(["/jobs", "/quit"])
+    monkeypatch.setattr("builtins.input", lambda *a: next(typed))
+
+    class Client:
+        async def list_jobs(self, **kwargs):
+            raise KeyError("a defect in this process")
+
+    with pytest.raises(KeyError):
+        await run_repl(Client(), "s1")     # type: ignore[arg-type]
 
 
 async def test_a_cut_short_turn_is_announced_and_the_repl_survives_it(capsys, monkeypatch):
