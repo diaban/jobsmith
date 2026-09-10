@@ -39,6 +39,11 @@ class EvalCase:
     #: (a registry is agent- and configuration-dependent, so absent names are
     #: skipped rather than failed)
     must_include: tuple[str, ...] = ()
+    #: capabilities the plan must NOT contain, IF registered — the mirror of
+    #: `must_include`, and the only way to score a spec that is too easy to
+    #: reach (#61): a step planned for a request it does not serve delivers
+    #: the wrong file, and the plan is where that is visible.
+    must_exclude: tuple[str, ...] = ()
     tiers: tuple[str, ...] = BOTH
     inputs: dict = field(default_factory=dict)
     note: str = ""
@@ -117,6 +122,12 @@ GOLDEN_CASES: tuple[EvalCase, ...] = (
         ),
         expect_route="plan",
         min_steps=1,
+        must_exclude=("read_files",),
+        note=(
+            "no file was named, so the step that reads one must be dropped as "
+            "inapplicable — true of the fakes too, which chain the whole "
+            "registry and let plan validation do the dropping"
+        ),
     ),
     EvalCase(
         id="plan_survey_with_failure_modes",
@@ -126,6 +137,28 @@ GOLDEN_CASES: tuple[EvalCase, ...] = (
         ),
         expect_route="plan",
         min_steps=1,
+    ),
+
+    # ---------------- the shape of the deliverable ----------------
+    EvalCase(
+        id="plan_printable_one_pager",
+        query=(
+            "research how teams roll out feature flags safely, compare the "
+            "approaches, and give me the result as a one-page printable "
+            "summary, ready to print as a PDF"
+        ),
+        expect_route="plan",
+        min_steps=1,
+        must_exclude=("slide_deck",),
+        tiers=(LLM,),
+        note=(
+            "a document to read is not a presentation: this request was "
+            "planned as a deck and delivered a PowerPoint (#61). Only a real "
+            "model can be measured on it — the keyword fake chains whatever "
+            "is registered and would fail it for a reason that is not the "
+            "capability's description. Compound on purpose: a decision the "
+            "planner makes can only be measured on a request that reaches it"
+        ),
     ),
 
     # ---------------- a request the material cannot answer ----------------

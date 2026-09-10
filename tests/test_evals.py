@@ -114,7 +114,7 @@ def test_check_names_match_the_scorers():
 # ---------------------------------------------------------------- the checks
 
 PLAN_CASE = EvalCase(id="c", query="q", expect_route="plan", min_steps=2,
-                     must_include=("analysis",))
+                     must_include=("analysis",), must_exclude=("slide_deck",))
 
 ANSWER = "a final answer long enough to pass the length floor"
 
@@ -177,6 +177,11 @@ def test_a_clean_observation_passes_everything():
             {"capability": "research", "depends_on": []},
             {"capability": "critique", "depends_on": []},
         ]}),
+        ("plan_excluded_steps", {"plan_steps": [
+            {"capability": "research", "depends_on": []},
+            {"capability": "analysis", "depends_on": []},
+            {"capability": "slide_deck", "depends_on": []},
+        ], "registry": ("research", "analysis", "slide_deck")}),
         ("steps_all_ran", {"results": {"research": {"ok": True}}}),
         ("steps_all_ok", {"results": {"research": {"ok": True}, "analysis": {"ok": False}}}),
         ("report_written", {"report_text": None}),
