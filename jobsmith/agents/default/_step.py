@@ -1,5 +1,8 @@
 """Shared base for single-LLM-step capabilities that build on upstream results.
 
+It also carries the pack's one shared prompt fragment, `SUBJECT_ONLY_RULE`
+(see below) — the steps that produce material and `research` all append it.
+
 Reference pattern: a capability whose sub-graph is one LLM node reading the
 best available upstream `results` entry (that's why it should be planned
 `depends_on` its upstream — but it degrades to reasoning from the query
@@ -14,6 +17,22 @@ from langgraph.constants import END
 from ...core.capability import Capability, CapabilityBaseState, CapabilitySpec
 from ...core.deps import LLMClient
 from ...core.state import CapabilityResult
+
+#: Appended to the system prompt of every step of this pack (#58).
+#:
+#: A request usually carries two things: a subject, and instructions about the
+#: document to produce ("a one-page printable synthesis, with a deck for the
+#: team"). A step handed both treats both as its material and analyses the
+#: *task* — which is how a report about chairs grew a section of practical
+#: advice for building the deck, and a proposed slide structure the model had
+#: invented for it. What document is produced is the run's business: the plan
+#: decided it, the generator and `slide_deck` are told who reads it. A step
+#: producing material has only the subject to work on.
+SUBJECT_ONLY_RULE = (
+    "\nThe request may also say what document is wanted — a report, a deck, a "
+    "page, a language. That is not part of the subject: work on the subject "
+    "alone, and never design or advise on the document itself."
+)
 
 
 class StepState(CapabilityBaseState, total=False):
@@ -48,7 +67,7 @@ class SingleStepCapability(Capability):
         try:
             output = await self.llm.chat(
                 messages=[
-                    {"role": "system", "content": self.SYSTEM},
+                    {"role": "system", "content": self.SYSTEM + SUBJECT_ONLY_RULE},
                     {
                         "role": "user",
                         "content": f"Request: {state['query']}\n\n{self._material(state)}",

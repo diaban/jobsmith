@@ -186,10 +186,31 @@ def test_a_clean_observation_passes_everything():
         ("report_covers_plan", {
             "report_text": f"# t\n\n{ANSWER}\n- Job: job1\n- Request: q\n"}),
         ("run_completed", {"error": "boom"}),
+        ("report_reader_facing", {
+            "final_answer": "The comparison holds.\n\n## Next steps\n\n- confirm "
+                            "the scope with whoever asked for this"}),
     ],
 )
 def test_each_check_fires_on_its_own_violation(check, broken):
     assert _status(PLAN_CASE, _obs(**broken), check) == "fail"
+
+
+def test_report_reader_facing_catches_the_run_that_opened_it():
+    """#58, as it actually arrived: a deliverable addressed to its producer.
+
+    Both markers below are from the observed deck — a request for a printable
+    one-pager that came back as a status report on the run. The check reads
+    the *answer*, not the file: the provenance a Reporter adds is about the run
+    by design and quotes the request, so scanning the whole document would fire
+    on the scaffolding.
+    """
+    observed = ("Contraintes de livrable.\n\n## Prochaines étapes\n\n"
+                "- Option A/B selon la préférence exprimée")
+    assert _status(PLAN_CASE, _obs(final_answer=observed), "report_reader_facing") == "fail"
+    # the same words in the report's provenance, not in the answer: not a hit
+    clean = _obs(report_text=f"# t\n\n{ANSWER}\n\n- Request: prochaines étapes\n"
+                             "- Job: job1\n\n| research | analysis |\n")
+    assert _status(PLAN_CASE, clean, "report_reader_facing") == "pass"
 
 
 # --------------------------------------------------- reading a deliverable

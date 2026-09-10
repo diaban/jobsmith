@@ -2,7 +2,10 @@
 
 Every check answers a yes/no question about *structure*, never about wording:
 an LLM that phrases its answer differently must not move the score, an LLM
-that emits a plan with a cycle must.
+that emits a plan with a cycle must. One exception, and it declares itself:
+`report_reader_facing` asks WHO the deliverable is addressed to, and a
+document's register lives nowhere but in its words (#58). It is a floor under
+the prompts, not a judgement of the prose.
 
 A check reports one of three statuses:
 
@@ -29,7 +32,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from .cases import EvalCase
-from .deliverable import Deliverable, extract
+from .deliverable import Deliverable, extract, normalize
 from .harness import Observation
 
 PASS = "pass"
@@ -292,6 +295,62 @@ def check_report_covers_plan(case: EvalCase, obs: Observation) -> Check:
     return _check(name, not missing, f"unmentioned step(s): {', '.join(missing)}")
 
 
+#: Phrases that only make sense if the document is addressed to whoever
+#: PRODUCED it: a request for input, a decision left to the reader, a note on
+#: what the work still needs. Taken from the two runs that opened #58 — a
+#: deck whose slides were *Prochaines étapes* and *Option A/B selon la
+#: préférence*, handed to someone who had asked about a subject — plus their
+#: English equivalents, since the deliverable is written in the language of
+#: the request and both were observed in French.
+PRODUCER_FACING_MARKERS: tuple[str, ...] = (
+    "next steps",
+    "prochaines étapes",
+    "open questions",
+    "questions ouvertes",
+    "to be confirmed",
+    "à confirmer",
+    "please confirm",
+    "let me know",
+    "would you like",
+    "do you want me to",
+    "option a or option b",
+    "option a/b",
+    "template to fill",
+    "template prêt à remplir",
+    "share the file",
+    "partager le fichier",
+)
+
+
+def check_report_reader_facing(case: EvalCase, obs: Observation) -> Check:
+    """The deliverable is written for its reader, not for its producer.
+
+    The one check here that looks at *wording*, and it has to be: register is
+    only observable in words. What it detects is not a phrasing preference but
+    a document addressed to the wrong person — the failure of #58, where a
+    request for a printable one-pager came back as a status report on the run,
+    with next steps and an A/B option for the reader to pick. Every step
+    upstream of the deliverable writes for the run (`critique` says so in its
+    own prompt), so this is the register the prompts have to hold back, and a
+    smoke detector for it is worth more than nothing.
+
+    It reads the **answer**, not the file: the provenance the Reporter adds is
+    *about* the run by design, and it quotes the request, so scanning the whole
+    document would fire on the scaffolding and on the user's own words.
+    `check_report_answer` already pins that this text is what the deliverable
+    carries.
+
+    Honest about its limit: a marker list catches what it lists. It is a floor
+    under the prompts, not a proof of good register.
+    """
+    name = "report_reader_facing"
+    if (s := _report_applies(case, obs, name)) is not None:
+        return s
+    answer = normalize(obs.final_answer or "").lower()
+    hits = [m for m in PRODUCER_FACING_MARKERS if m in answer]
+    return _check(name, not hits, f"addressed to the producer: {', '.join(hits)}")
+
+
 CHECKS: tuple[Callable[[EvalCase, Observation], Check], ...] = (
     check_run_completed,
     check_router_route,
@@ -310,6 +369,7 @@ CHECKS: tuple[Callable[[EvalCase, Observation], Check], ...] = (
     check_report_answer,
     check_report_provenance,
     check_report_covers_plan,
+    check_report_reader_facing,
 )
 
 CHECK_NAMES: tuple[str, ...] = (
@@ -330,6 +390,7 @@ CHECK_NAMES: tuple[str, ...] = (
     "report_answer",
     "report_provenance",
     "report_covers_plan",
+    "report_reader_facing",
 )
 
 
