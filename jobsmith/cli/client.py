@@ -17,17 +17,48 @@ so out loud.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sys
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from ..service import AgentService, BinaryDeliverable, ChatStreamError, LocalAgentService
+from ..service import (
+    AgentService,
+    BinaryDeliverable,
+    ChatStreamError,
+    LocalAgentService,
+    ServiceUnavailable,
+)
 
 if TYPE_CHECKING:                      # only to name the app the embedded client owns
     from ..app.agent import AgentApp
 
 DEFAULT_URL = "http://127.0.0.1:8000"
+
+_TRANSPORT_ERRORS: tuple[type[BaseException], ...] | None = None
+
+
+def _transport_errors() -> tuple[type[BaseException], ...]:
+    """The one family of failures this layer translates: the daemon was not
+    reached, or the connection died before it answered.
+
+    `httpx.TransportError` covers exactly that — a refused connection, a
+    timeout, a server that hung up mid-response — and deliberately not
+    `HTTPStatusError`: a daemon that answered 500 is *there*, and that is a
+    bug someone should see as one. Resolved lazily and cached because httpx
+    is an optional extra; without it there is no `DaemonClient` either, so
+    the empty tuple below matches nothing and translates nothing.
+    """
+    global _TRANSPORT_ERRORS
+    if _TRANSPORT_ERRORS is None:
+        try:
+            import httpx
+        except ImportError:                       # no httpx, no remote backing
+            _TRANSPORT_ERRORS = ()
+        else:
+            _TRANSPORT_ERRORS = (httpx.TransportError,)
+    return _TRANSPORT_ERRORS
 
 # Kept as the CLI's name for the port (commands are typed against it).
 AgentClient = AgentService
@@ -79,8 +110,40 @@ class DaemonClient(AgentService):
         self._retiring.clear()
         await self._http.aclose()
 
+    # -- the only two places a request leaves this process --
+
+    async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+        """One round trip, with the port's word for "the daemon is not there".
+
+        Every non-streaming call goes through here, so the translation exists
+        once and cannot drift between methods. It is narrow on purpose (see
+        `_transport_errors`): a response that came back is handed to the
+        caller whatever its status, and every other exception surfaces as
+        itself — a bug in this process must not read as a daemon that went
+        away.
+        """
+        try:
+            return await self._http.request(method, path, **kwargs)
+        except _transport_errors() as gone:
+            raise ServiceUnavailable.reaching(self.url, gone) from gone
+
+    @contextlib.asynccontextmanager
+    async def _streaming(self, method: str, path: str, **kwargs: Any) -> AsyncIterator[Any]:
+        """The same translation, for a body read after the response opened.
+
+        The caller's `async with` block runs at the `yield`, so a connection
+        that dies halfway through a turn is translated exactly like one that
+        never opened — which is the case that matters: a daemon killed while
+        it is answering is the daemon going away, not a truncated reply.
+        """
+        try:
+            async with self._http.stream(method, path, **kwargs) as response:
+                yield response
+        except _transport_errors() as gone:
+            raise ServiceUnavailable.reaching(self.url, gone) from gone
+
     async def new_session(self, session_id: str | None = None) -> str:
-        r = await self._http.post("/sessions", json={"session_id": session_id})
+        r = await self._request("POST", "/sessions", json={"session_id": session_id})
         r.raise_for_status()
         return r.json()["session_id"]
 
@@ -112,7 +175,7 @@ class DaemonClient(AgentService):
         this, which is why a truncated turn cannot reach a caller as a reply
         either — a stream that ends before its terminal raises there.
         """
-        async with self._http.stream("POST", path, json=body, timeout=None) as response:
+        async with self._streaming("POST", path, json=body, timeout=None) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():
                 if not line.startswith("data:"):
@@ -126,21 +189,21 @@ class DaemonClient(AgentService):
 
     async def list_jobs(self, *, status=None, session_id=None) -> list[dict]:
         params = {k: v for k, v in (("status", status), ("session_id", session_id)) if v}
-        r = await self._http.get("/jobs", params=params)
+        r = await self._request("GET", "/jobs", params=params)
         r.raise_for_status()
         return r.json()
 
     async def get_job(self, job_id: str) -> dict | None:
-        r = await self._http.get(f"/jobs/{job_id}")
+        r = await self._request("GET", f"/jobs/{job_id}")
         return r.json() if r.status_code == 200 else None
 
     async def cancel_job(self, job_id: str) -> dict:
-        r = await self._http.post(f"/jobs/{job_id}/cancel")
+        r = await self._request("POST", f"/jobs/{job_id}/cancel")
         r.raise_for_status()
         return r.json()
 
     async def resume_job(self, job_id: str) -> dict:
-        r = await self._http.post(f"/jobs/{job_id}/resume")
+        r = await self._request("POST", f"/jobs/{job_id}/resume")
         if r.status_code in (404, 409):
             # The API says "refused" with a status code; the port says it with
             # an `error` key, so both backings answer a caller the same way.
@@ -152,14 +215,15 @@ class DaemonClient(AgentService):
         return r.json()
 
     async def launch_job(self, query, *, session_id=None, inputs=None) -> dict:
-        r = await self._http.post(
-            "/jobs", json={"query": query, "session_id": session_id, "inputs": inputs}
+        r = await self._request(
+            "POST", "/jobs",
+            json={"query": query, "session_id": session_id, "inputs": inputs},
         )
         r.raise_for_status()
         return r.json()
 
     async def get_report(self, job_id: str) -> str | None:
-        r = await self._http.get(f"/jobs/{job_id}/report")
+        r = await self._request("GET", f"/jobs/{job_id}/report")
         if r.status_code == 415:
             # A deliverable that is not text: the API says so with a status
             # code, the port with an exception, and the message is the one
@@ -170,7 +234,7 @@ class DaemonClient(AgentService):
     # -- outputs --
 
     async def list_outputs(self, job_id: str) -> list[dict] | None:
-        r = await self._http.get(f"/jobs/{job_id}/outputs")
+        r = await self._request("GET", f"/jobs/{job_id}/outputs")
         return r.json() if r.status_code == 200 else None
 
     async def find_output(self, job_id: str, name: str) -> str | None:
@@ -185,7 +249,7 @@ class DaemonClient(AgentService):
         The path that comes back is the daemon's, which the port is explicit
         about: it locates the file, `GET /jobs/{id}/outputs/{name}` fetches it.
         """
-        async with self._http.stream("GET", f"/jobs/{job_id}/outputs/{name}") as probe:
+        async with self._streaming("GET", f"/jobs/{job_id}/outputs/{name}") as probe:
             if probe.status_code != 200:
                 return None
         outputs = await self.list_outputs(job_id) or []
@@ -222,6 +286,12 @@ class DaemonClient(AgentService):
         reason one step further out: a consumer that stopped draining must not
         stall the reader — which would stall the socket, which would then
         stall the daemon's own publish queue.
+
+        The one place that deliberately does NOT go through `_streaming`: a
+        daemon that went away is already said here, as the end-of-stream
+        marker on the queue itself. Raising `ServiceUnavailable` into a task
+        nobody awaits would say it where there is no listener, and the queue
+        is where the listener is.
         """
         try:
             async with self._http.stream("GET", "/events", timeout=None) as response:

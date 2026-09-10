@@ -23,7 +23,7 @@ from typing import Any
 
 from ..core.usage import Usage
 from ..jobs.report import format_step_usage, format_usage
-from ..service import TERMINAL_EVENTS, BinaryDeliverable, ChatStreamError
+from ..service import TERMINAL_EVENTS, BinaryDeliverable, ChatStreamError, ServiceUnavailable
 from .client import AgentClient
 
 BANNER = "\n".join(
@@ -161,73 +161,83 @@ async def run_repl(client: AgentClient, session_id: str) -> None:
         if not line:
             continue
 
-        if line in ("/quit", "/exit", "/q"):
-            break
-        elif line == "/jobs":
-            jobs = await client.list_jobs()
-            if not jobs:
-                print("  (no jobs yet)")
-            for job in jobs:
-                show_job(job, verbose=False)
-        elif line.startswith("/job "):
-            job = await _resolve(client, line.split(maxsplit=1)[1])
-            if job:
-                show_job(job)
-        elif line.startswith("/report "):
-            job = await _resolve(client, line.split(maxsplit=1)[1])
-            if job:
+        # One `try`, and one exception: the port narrowed "the backing is not
+        # there" to a single name (`service.py`) precisely so a front-end
+        # could answer it without a broad `except` swallowing its own bugs.
+        # A KeyError from this code still ends the REPL with a traceback,
+        # which is what a defect deserves; a daemon that went away is a fact
+        # about the world, and the conversation lives in the checkpointer, so
+        # the loop says it and stays open.
+        try:
+            if line in ("/quit", "/exit", "/q"):
+                break
+            elif line == "/jobs":
+                jobs = await client.list_jobs()
+                if not jobs:
+                    print("  (no jobs yet)")
+                for job in jobs:
+                    show_job(job, verbose=False)
+            elif line.startswith("/job "):
+                job = await _resolve(client, line.split(maxsplit=1)[1])
+                if job:
+                    show_job(job)
+            elif line.startswith("/report "):
+                job = await _resolve(client, line.split(maxsplit=1)[1])
+                if job:
+                    try:
+                        report = await client.get_report(job["job_id"])
+                        print(report or "  no report yet (is the job done?)")
+                    except BinaryDeliverable as refused:
+                        print(f"  {refused}")
+            elif line.startswith("/cancel "):
+                job = await _resolve(client, line.split(maxsplit=1)[1])
+                if job:
+                    print(f"  -> {(await client.cancel_job(job['job_id']))['status']}")
+            elif line.startswith("/resume "):
+                job = await _resolve(client, line.split(maxsplit=1)[1])
+                if job:
+                    resumed = await client.resume_job(job["job_id"])
+                    print("  " + (f"cannot resume: {resumed['error']}" if resumed.get("error")
+                                  else f"-> {resumed['status']}"))
+            elif line.startswith("/image "):
+                key = line.split(maxsplit=1)[1]
+                pending_inputs["image_s3_keys"] = [key]
+                print(f"  image {key!r} will be attached to the next /bg job")
+            elif line.startswith("/bg "):
+                launched = await client.launch_job(
+                    line[4:].strip(), session_id=session_id, inputs=dict(pending_inputs) or None
+                )
+                pending_inputs.clear()
+                short = launched["job_id"][:8]
+                print(f"  started in background: {short}  (try /jobs, /job {short[:4]})")
+            elif line.startswith("/"):
+                print("  unknown command (try /jobs, /job, /report, /bg, /image, "
+                      "/cancel, /resume, /quit)")
+            else:
+                printer = TurnPrinter()
                 try:
-                    report = await client.get_report(job["job_id"])
-                    print(report or "  no report yet (is the job done?)")
-                except BinaryDeliverable as refused:
-                    print(f"  {refused}")
-        elif line.startswith("/cancel "):
-            job = await _resolve(client, line.split(maxsplit=1)[1])
-            if job:
-                print(f"  -> {(await client.cancel_job(job['job_id']))['status']}")
-        elif line.startswith("/resume "):
-            job = await _resolve(client, line.split(maxsplit=1)[1])
-            if job:
-                resumed = await client.resume_job(job["job_id"])
-                print("  " + (f"cannot resume: {resumed['error']}" if resumed.get("error")
-                              else f"-> {resumed['status']}"))
-        elif line.startswith("/image "):
-            key = line.split(maxsplit=1)[1]
-            pending_inputs["image_s3_keys"] = [key]
-            print(f"  image {key!r} will be attached to the next /bg job")
-        elif line.startswith("/bg "):
-            launched = await client.launch_job(
-                line[4:].strip(), session_id=session_id, inputs=dict(pending_inputs) or None
-            )
-            pending_inputs.clear()
-            short = launched["job_id"][:8]
-            print(f"  started in background: {short}  (try /jobs, /job {short[:4]})")
-        elif line.startswith("/"):
-            print("  unknown command (try /jobs, /job, /report, /bg, /image, "
-                  "/cancel, /resume, /quit)")
-        else:
-            printer = TurnPrinter()
-            try:
-                reply = await render_turn(client.stream(session_id, line), printer)
-                # human-in-the-loop: the agent proposes a job, you approve or not
-                while reply.get("type") == "proposal":
-                    print("\n  the agent proposes a background job:")
-                    print(f"    task     : {reply.get('query')}")
-                    print(f"    approach : {reply.get('rationale')}")
-                    # the files it would be allowed to open: approving the job
-                    # is approving this list, so it is never left unsaid
-                    if sources := reply.get("sources"):
-                        print(f"    reads    : {', '.join(sources)}")
-                    answer = await loop.run_in_executor(None, input, "  launch it? [y/N] ")
-                    approved = answer.strip().lower() in ("y", "yes", "o", "oui")
-                    reply = await render_turn(
-                        client.stream_approval(session_id, approved), printer)
-            except ChatStreamError as cut_short:
-                # The turn is already half-printed, so silence would leave a
-                # truncated answer looking finished — which is the one thing
-                # the no-drop rule exists to prevent. Say it, and keep the
-                # session usable; the conversation is in the checkpointer.
-                printer.end()
-                print(f"  [the reply was cut short: {cut_short}]", file=sys.stderr)
+                    reply = await render_turn(client.stream(session_id, line), printer)
+                    # human-in-the-loop: the agent proposes a job, you approve or not
+                    while reply.get("type") == "proposal":
+                        print("\n  the agent proposes a background job:")
+                        print(f"    task     : {reply.get('query')}")
+                        print(f"    approach : {reply.get('rationale')}")
+                        # the files it would be allowed to open: approving the job
+                        # is approving this list, so it is never left unsaid
+                        if sources := reply.get("sources"):
+                            print(f"    reads    : {', '.join(sources)}")
+                        answer = await loop.run_in_executor(None, input, "  launch it? [y/N] ")
+                        approved = answer.strip().lower() in ("y", "yes", "o", "oui")
+                        reply = await render_turn(
+                            client.stream_approval(session_id, approved), printer)
+                except ChatStreamError as cut_short:
+                    # The turn is already half-printed, so silence would leave a
+                    # truncated answer looking finished — which is the one thing
+                    # the no-drop rule exists to prevent. Say it, and keep the
+                    # session usable; the conversation is in the checkpointer.
+                    printer.end()
+                    print(f"  [the reply was cut short: {cut_short}]", file=sys.stderr)
+        except ServiceUnavailable as gone:
+            print(f"  [{gone}]", file=sys.stderr)
 
     print("bye")

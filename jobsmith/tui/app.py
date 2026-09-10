@@ -44,7 +44,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.markup import escape
 from textual.widgets import ContentSwitcher, Footer, Header, Input, ListItem, ListView, Static
 
-from ..service import TERMINAL_EVENTS, AgentService, ChatStreamError
+from ..service import TERMINAL_EVENTS, AgentService, ChatStreamError, ServiceUnavailable
 from . import render
 from .themes import DEFAULT_THEME, THEMES, pick_theme
 
@@ -52,6 +52,12 @@ from .themes import DEFAULT_THEME, THEMES, pick_theme
 # true, it has simply stopped following. A UI has taken the terminal, so the
 # stderr note `DaemonClient` prints goes nowhere anybody can read.
 LIVE_LOST = "live updates stopped — F5 re-reads"
+
+# ...and what it says when a *call* could not be answered at all. A daemon
+# that is gone is not one pane's error — nothing here will work until it is
+# back — so it is said in the same place, as the stronger of the two facts:
+# a screen that cannot even ask must not look like one that is up to date.
+UNREACHABLE = "cannot reach the agent — F5 retries"
 
 # What answers a proposal. The approvals are the REPL's own set, so the same
 # word means the same thing in both front-ends. The refusals are spelt out
@@ -202,6 +208,7 @@ class JobsmithApp(App[None]):
         self._cancel_armed: str | None = None  # job id F8 has asked about once
         self._live: asyncio.Task | None = None  # the subscription, for its lifetime
         self._live_lost = False                # the stream ended; the screen says so
+        self._unreachable = False              # ...and the last call did not get through
         self._files_of: tuple[str, tuple[str, ...]] | None = None   # probed for these
         self._missing: set[str] = set()        # ... and these were not on disk
 
@@ -295,6 +302,40 @@ class JobsmithApp(App[None]):
         self._paint_tabs()
         self.notify(f"{LIVE_LOST}{f' ({reason})' if reason else ''}", severity="warning")
 
+    def _backing_gone(self, gone: ServiceUnavailable) -> None:
+        """A call could not be answered, because the backing is not there.
+
+        The port narrowed this to one exception so a front-end could hold one
+        answer for it (`service.py`), and this is that answer: the same
+        stopped-following state #57 already draws, because the reasoning is
+        the same and the reader's situation is the same. What is on screen
+        stays on screen — it was true when it was read — and the chrome says
+        the screen is no longer being kept true. Nothing is retried on its
+        own: a reconnect loop against a daemon that is gone is a spinner
+        pretending to be progress, and F5 is one keystroke.
+
+        Said once per outage, not once per failed call: an event burst that
+        lands after the daemon dies would otherwise stack a wall of identical
+        toasts over the screen it is warning about.
+        """
+        first = not self._unreachable
+        self._unreachable = True
+        self._paint_tabs()
+        if first:
+            self.notify(f"{UNREACHABLE} ({gone})", severity="error")
+
+    def _backing_answered(self) -> None:
+        """A call got through again — so the screen stops claiming it cannot.
+
+        It does NOT clear `_live_lost`: nothing resubscribed, so the screen
+        is up to date at this instant and still not following. That is what
+        the tab bar then says.
+        """
+        if self._unreachable:
+            self._unreachable = False
+            self._paint_tabs()
+            self.notify("the agent answered again")
+
     # ---------------------------------------------------------------- chrome
 
     def _paint_tabs(self) -> None:
@@ -306,8 +347,12 @@ class JobsmithApp(App[None]):
         live = (f"  [{render.RUNNING}]{render.GLYPH['running']} {running} running[/]"
                 if running else "")
         # A screen that stopped following is still true, and must not look
-        # like one that is up to date.
-        if self._live_lost:
+        # like one that is up to date. One slot, and the two facts are not
+        # equal: "I cannot reach it at all" supersedes "it stopped telling me
+        # things", and both at once would not fit a tab bar anyway.
+        if self._unreachable:
+            live += f"  [{render.FAILED}]{UNREACHABLE}[/]"
+        elif self._live_lost:
             live += f"  [{render.FAILED}]{LIVE_LOST}[/]"
         tabs = "  ".join(
             f"[b {render.CHROME}]{name}[/]" if name == current else f"[{render.DIM}]{name}[/]"
@@ -397,6 +442,12 @@ class JobsmithApp(App[None]):
             # one thing the no-drop rule exists to prevent. Say it, and keep
             # the session usable — the conversation is in the checkpointer.
             self._say("jobsmith", render.FAILED, f"the reply was cut short: {cut_short}")
+        except ServiceUnavailable as gone:
+            # The other way a turn does not finish, and it needs saying in the
+            # conversation as well as on the chrome: the person is waiting on
+            # a sentence, and the tab bar is not where they are looking.
+            self._say("jobsmith", render.FAILED, str(gone))
+            self._backing_gone(gone)
         finally:
             # Also the path a cancellation takes (the app shutting down): the
             # activity line must not be left saying something is happening.
@@ -459,13 +510,23 @@ class JobsmithApp(App[None]):
 
     @work(exclusive=True, group="jobs")
     async def reload(self) -> None:
-        """Re-read the job list, and the highlighted job's detail with it."""
+        """Re-read the job list, and the highlighted job's detail with it.
+
+        The one worker that runs on its own — F5, an event, a finished turn —
+        so it is the one whose exception used to take the app down with it
+        (Textual reraises a failed worker into the app). It catches exactly
+        the port's word for a backing that is not there; anything else is a
+        defect in this process and still ends the app loudly, which is where
+        a defect belongs.
+        """
         self._reloading = True
         try:
             await self._reload()
             while self._stale:
                 self._stale = False       # anything arriving now asks again
                 await self._reload()
+        except ServiceUnavailable as gone:
+            self._backing_gone(gone)
         finally:
             self._reloading = self._stale = False
 
@@ -483,6 +544,7 @@ class JobsmithApp(App[None]):
             listing.index = index
             self._selected = selected = self._jobs[index]["job_id"]
             await self._show_detail(selected)
+        self._backing_answered()
         self._paint_tabs()
 
     async def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
@@ -492,7 +554,12 @@ class JobsmithApp(App[None]):
         if self._selected != self._jobs[index]["job_id"]:
             self._cancel_armed = None       # armed for a row nobody is on now
         self._selected = selected = self._jobs[index]["job_id"]
-        await self._show_detail(selected)
+        try:
+            await self._show_detail(selected)
+        except ServiceUnavailable as gone:
+            # Moving the highlight is a request too, and this one is not in a
+            # worker: an exception here comes straight out of the message pump.
+            self._backing_gone(gone)
 
     async def _show_detail(self, job_id: str) -> None:
         job = await self.service.get_job(job_id)
@@ -586,6 +653,12 @@ class JobsmithApp(App[None]):
 
     @work(exclusive=True, group="cancel")
     async def _cancel(self, job_id: str) -> None:
-        answer = await self.service.cancel_job(job_id)
+        try:
+            answer = await self.service.cancel_job(job_id)
+        except ServiceUnavailable as gone:
+            # The job is the daemon's, so an unreachable daemon means it was
+            # not cancelled — never report a stop that did not happen.
+            self._backing_gone(gone)
+            return
         self.notify(f"{job_id[:8]} → {answer.get('status', 'unknown')}")
         self.refresh_jobs()

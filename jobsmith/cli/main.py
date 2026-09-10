@@ -28,7 +28,7 @@ import asyncio
 import sys
 
 from ..agents import agent_names
-from ..service import BinaryDeliverable
+from ..service import BinaryDeliverable, ServiceUnavailable
 from .client import DEFAULT_URL, AgentClient, open_client
 from .repl import run_repl, show_job
 
@@ -243,10 +243,21 @@ async def serve(args) -> int:
 
 
 async def run_command(args) -> int:
+    """One command, over whichever backing answered.
+
+    The single `except` is the port's own word for "the backing is not there"
+    (`service.ServiceUnavailable`) — a daemon that answered `/health` and died
+    before the command reached it, which is a fact about the world and not a
+    traceback's worth of news. Nothing else is caught here: a bug in this
+    process still prints its stack, and it should.
+    """
     client = await open_client(url=args.url, force_local=args.local,
                                db=args.db, agent=args.agent)
     try:
         return await COMMANDS[args.command](client, args)
+    except ServiceUnavailable as gone:
+        print(gone, file=sys.stderr)
+        return 1
     finally:
         await client.aclose()
 
