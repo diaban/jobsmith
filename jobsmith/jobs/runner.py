@@ -6,6 +6,12 @@ names like `cap_<capability>`, terminal node names. Everything above it reacts
 to the small typed updates below, so the JobManager never parses graph output
 and a test can drive it with a fake runner.
 
+The stream is incremental: a mounted sub-graph is published at the superstep
+it completes. What it publishes is its whole output state, though — for a
+capability that means the *accumulated* `results`, since `Send` seeds it with
+the parent's — so which step just finished is read from the node name and
+never from the payload's keys.
+
 Reading progress from the stream (rather than instrumenting nodes) is what
 keeps graph nodes job-agnostic: they do not know a Job exists.
 
@@ -114,7 +120,16 @@ class GraphRunner:
                 if node == "planner" and value.get("plan"):
                     yield PlanReady(value["plan"])
                 elif node.startswith("cap_"):
-                    for capability, result in (value.get("results") or {}).items():
+                    # The NODE NAME says which step this is; the update's
+                    # `results` does not. A capability sub-graph is seeded with
+                    # the whole parent state (`Send(node, state)`) and its
+                    # output schema carries `results`, so what LangGraph
+                    # publishes here is the union of every step so far — not
+                    # this step's contribution. Reading each key of it
+                    # re-announced every earlier step on every wave (#53).
+                    capability = node[len("cap_"):]
+                    result = (value.get("results") or {}).get(capability)
+                    if result is not None:
                         yield StepFinished(capability, result)
                 elif node in _TERMINAL_NODES:
                     yield Terminal(

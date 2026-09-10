@@ -42,6 +42,7 @@ from jobsmith.tui import MISSING, TuiUnavailable
 from jobsmith.tui.app import Bubble, JobsmithApp, ProposalCard
 from jobsmith.tui.render import (
     MARKUP_ROLES,
+    NONE,
     dag,
     job_row,
     outputs_block,
@@ -691,3 +692,35 @@ async def test_the_ui_command_says_what_to_install(monkeypatch, capsys):
 
     assert code == 1
     assert ".[tui]" in capsys.readouterr().err
+
+
+async def test_took_measures_a_real_step_not_the_end_of_the_run(
+    store, checkpointer, tmp_path
+):
+    """`took` is an upper bound on a step's own time — but a bound, not zero.
+
+    Driven from a real run rather than a canned record, because what broke
+    this column (#53) was the record: every step was stamped at the instant
+    the *last* one landed, so the window between a step's dependencies
+    landing and the step landing collapsed and the whole column read `0.0s`.
+    The canned jobs above cannot catch that — they are written by hand.
+    """
+    from conftest import FakeLLM, plan_json
+    from test_jobs import SlowEcho
+
+    delay = 0.2
+    caps = [SlowEcho(n, delay=delay) for n in ("alpha", "beta", "gamma")]
+    llm = FakeLLM(
+        {"planner": plan_json("alpha", "beta", "gamma",
+                              deps={"beta": ["alpha"], "gamma": ["beta"]})},
+        default="A sufficiently long final answer for the job test.",
+    )
+    manager = make_manager(store, checkpointer, tmp_path, caps=caps, llm=llm)
+    done = await manager.run_job((await manager.create_job("a chain")).job_id)
+
+    took = {row["capability"]: row["took"] for row in step_states(done.to_dict())}
+    assert took["alpha"] != NONE and took["beta"] != NONE and took["gamma"] != NONE
+    # `alpha`'s window starts at job creation, so only the dependent steps
+    # bound their own time — and each must show roughly its own sleep.
+    for name in ("beta", "gamma"):
+        assert float(took[name].removesuffix("s")) >= delay * 0.8, took
