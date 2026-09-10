@@ -24,7 +24,12 @@ from test_report_pdf import StubPdf
 from jobsmith.api import create_api
 from jobsmith.cli.client import DaemonClient, EmbeddedClient
 from jobsmith.jobs.models import Job, JobOutput, JobStatus
-from jobsmith.service import AgentService, BinaryDeliverable, LocalAgentService
+from jobsmith.service import (
+    AgentService,
+    BinaryDeliverable,
+    LocalAgentService,
+    ServiceUnavailable,
+)
 
 
 def test_both_backings_fully_implement_the_port():
@@ -381,3 +386,92 @@ async def test_a_stream_that_ends_is_announced_rather_than_going_quiet(capsys):
         assert queue.empty()
     finally:
         await client.aclose()
+
+
+# ------------------------------------- a backing that is not there at all
+
+
+def _unreachable_client() -> DaemonClient:
+    """A DaemonClient whose every request fails to reach anything."""
+    def refused(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    return DaemonClient("http://test", httpx.AsyncClient(
+        transport=httpx.MockTransport(refused), base_url="http://test", timeout=None))
+
+
+def _port_calls(client: AgentService) -> dict:
+    """Every use case a front-end can drive, as callables. One per method, so
+    a method added to the port without a translation is a missing key here."""
+    return {
+        "new_session": lambda: client.new_session(),
+        "launch_job": lambda: client.launch_job("q"),
+        "list_jobs": lambda: client.list_jobs(),
+        "get_job": lambda: client.get_job("a"),
+        "cancel_job": lambda: client.cancel_job("a"),
+        "resume_job": lambda: client.resume_job("a"),
+        "get_report": lambda: client.get_report("a"),
+        "list_outputs": lambda: client.list_outputs("a"),
+        "find_output": lambda: client.find_output("a", "f.md"),
+        "send": lambda: client.send("s", "hello"),
+        "approve": lambda: client.approve("s", True),
+    }
+
+
+async def test_a_backing_that_cannot_be_reached_is_refused_by_the_port():
+    """Every call, one exception, and it is the port's own.
+
+    Without this the remote backing answers with `httpx.ConnectError` — a fact
+    about the transport, not about the use case — so a front-end would have to
+    know which backing it holds to catch it, or wrap every call in a broad
+    `except` that swallows its own bugs along with the daemon's absence. It is
+    asked of *every* method rather than of one, because a translation that
+    covers nine calls and misses the tenth is exactly the crash the tenth
+    caller gets.
+    """
+    client = _unreachable_client()
+    try:
+        for name, call in _port_calls(client).items():
+            with pytest.raises(ServiceUnavailable) as gone:
+                await call()
+            assert "http://test" in str(gone.value), f"{name} does not say what it cannot reach"
+    finally:
+        await client.aclose()
+
+
+async def test_a_daemon_that_answers_badly_is_not_called_unreachable():
+    """The narrowing must stay narrow: only *not reaching* the daemon is
+    translated. A 500 means the daemon is there and something in it broke —
+    a defect somebody should see as one, not a reconnect message. Anything
+    else caught here would be the broad `except` this exists to avoid."""
+    client = DaemonClient("http://test", httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda r: httpx.Response(500, text="boom")),
+        base_url="http://test", timeout=None))
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.list_jobs()
+        # ...and on the streamed path too, which is where a tuple one class
+        # too wide would actually swallow it: `raise_for_status` is called
+        # inside the `async with`, so the translation sees it.
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.send("s", "hello")
+    finally:
+        await client.aclose()
+
+
+async def test_the_local_backing_never_dresses_a_bug_as_an_absent_backing():
+    """The other half of the same rule, on the other backing.
+
+    A process cannot lose contact with itself, so `LocalAgentService` raises
+    `ServiceUnavailable` never — and a `KeyError` from our own code stays a
+    `KeyError`. Translating it would put a reconnect message where a stack
+    trace belongs, which is the failure mode the issue that asked for this
+    named first.
+    """
+    class Broken:
+        async def list_jobs(self, **kwargs):
+            raise KeyError("a defect in this process")
+
+    service = LocalAgentService(Broken(), None)
+    with pytest.raises(KeyError):
+        await service.list_jobs()

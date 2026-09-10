@@ -60,6 +60,37 @@ class BinaryDeliverable(RuntimeError):
         )
 
 
+class ServiceUnavailable(RuntimeError):
+    """The backing that answers this port could not be reached.
+
+    The third thing the port narrows, for the same reason as the other two:
+    a front-end must be able to write ONE handler for it, whichever backing
+    it holds. Without it a UI would have to know that a remote backing
+    answers with `httpx.ConnectError` — which is a fact about the transport,
+    not about the use case — and a broad `except` around every call would be
+    the only alternative, which is a stance rather than a fix: it swallows
+    our own bugs along with the daemon's absence.
+
+    So exactly one thing is translated, and it is narrow: **the request did
+    not reach the backing, or the connection died before it answered**
+    (`httpx.TransportError`). A daemon that answered — with a 500, or with a
+    body nobody can parse — is *there*, and that is a defect worth a
+    traceback: it surfaces unchanged. Nothing on the local side is
+    translated at all, because a process cannot lose contact with itself: a
+    `KeyError` from a store stays a `KeyError`, and must, or a reconnect
+    message would be where a stack trace belongs.
+
+    That asymmetry is the same one `subscribe`'s `None` marker already has —
+    embedded it never comes — and it is a fact about a backing, not a licence
+    for a caller holding the port to skip the case. What the port promises is
+    that this is the ONLY way "the agent is not there" can arrive.
+    """
+
+    @classmethod
+    def reaching(cls, where: str, cause: BaseException) -> ServiceUnavailable:
+        return cls(f"cannot reach the agent at {where}: {cause}")
+
+
 class ChatStreamError(RuntimeError):
     """A streamed turn did not arrive whole.
 
@@ -113,7 +144,20 @@ async def terminal_of(events: AsyncIterator[dict]) -> dict:
 
 
 class AgentService(ABC):
-    """What any front-end needs. Dict shapes match the HTTP API."""
+    """What any front-end needs. Dict shapes match the HTTP API.
+
+    Three exceptions are part of this interface, and they are the whole of
+    what a caller may plan for: `BinaryDeliverable` (`get_report` was asked
+    for a file that is not text), `ChatStreamError` (a turn did not arrive
+    whole) and `ServiceUnavailable` (the backing could not be reached).
+    Every one of them reads identically on both backings, which is what lets
+    a front-end handle them by name instead of guarding every call. Anything
+    else that escapes a call is a bug in this process — it is deliberately
+    not translated, so it surfaces as itself.
+
+    `subscribe` is the exception to the exception: it says the same fact as a
+    value, because a queue is what its consumer is awaiting (see below).
+    """
 
     mode: str = "local"
     persistent: bool = False   # do jobs outlive this process?

@@ -39,9 +39,9 @@ from textual.widgets import Input, ListView, Static
 from jobsmith.chat import ChatSession
 from jobsmith.core.usage import Usage
 from jobsmith.jobs.models import Job, JobOutput, JobStatus
-from jobsmith.service import AgentService, LocalAgentService
+from jobsmith.service import AgentService, LocalAgentService, ServiceUnavailable
 from jobsmith.tui import MISSING, TuiUnavailable
-from jobsmith.tui.app import LIVE_LOST, Bubble, JobsmithApp, ProposalCard
+from jobsmith.tui.app import LIVE_LOST, UNREACHABLE, Bubble, JobsmithApp, ProposalCard
 from jobsmith.tui.render import (
     MARKUP_ROLES,
     NONE,
@@ -697,6 +697,121 @@ async def test_a_stream_that_ends_is_said_on_the_screen_that_took_the_terminal()
         service.queues[0].put_nowait(None)           # the daemon went away
         assert await until(pilot, lambda: app._live_lost), "the end went unnoticed"
         assert LIVE_LOST in str(app.query_one("#tabs", Static).content)
+
+
+class GoneService(CannedService):
+    """A backing that can be taken away, the way a daemon can.
+
+    Every call goes through `_reached`, so "the daemon is gone" is one flag
+    rather than a stub per method — and it raises what the port says it
+    raises (`ServiceUnavailable`), which is the whole point: the UI is
+    written against the port, not against httpx.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.gone = False
+
+    def _reached(self) -> None:
+        if self.gone:
+            raise ServiceUnavailable.reaching("http://daemon", ConnectionRefusedError())
+
+    async def list_jobs(self, *, status=None, session_id=None) -> list[dict]:
+        self._reached()
+        return await super().list_jobs(status=status, session_id=session_id)
+
+    async def get_job(self, job_id: str) -> dict | None:
+        self._reached()
+        return await super().get_job(job_id)
+
+    async def list_outputs(self, job_id: str) -> list[dict] | None:
+        self._reached()
+        return await super().list_outputs(job_id)
+
+    async def find_output(self, job_id: str, name: str) -> str | None:
+        self._reached()
+        return await super().find_output(job_id, name)
+
+    async def cancel_job(self, job_id: str) -> dict:
+        self._reached()
+        return await super().cancel_job(job_id)
+
+    async def stream(self, session_id: str, text: str):
+        self._reached()
+        for event in self.events:
+            yield event
+
+
+async def test_a_backing_that_raises_does_not_take_the_screen_down():
+    """The defect this fixes: kill the daemon, press F5, and Textual reraises
+    the failed `reload` worker into the app — which exits while the user is
+    looking at it, taking the conversation and everything on screen with it.
+
+    A daemon that went away is not one pane's error, so the answer is #57's
+    state and not a per-call message: the app keeps what it read, and the
+    chrome says it is no longer being kept true. Asserted by name, because a
+    snapshot would bless a screen that had stopped saying anything.
+    """
+    service = GoneService()
+    app = JobsmithApp(service, SESSION)
+    async with app.run_test(size=(126, 38)) as pilot:
+        await settle(pilot)
+        rows = len(app._jobs)
+        assert rows and UNREACHABLE not in str(app.query_one("#tabs", Static).content)
+
+        service.gone = True                       # the daemon was killed
+        await pilot.press("f5")
+        await settle(pilot)
+
+        assert app.is_running, "the app went down with the backing"
+        assert app._unreachable, "the screen did not notice it cannot reach the agent"
+        assert UNREACHABLE in str(app.query_one("#tabs", Static).content)
+        assert len(app._jobs) == rows, "what it had already read was thrown away"
+
+
+async def test_a_screen_that_can_reach_the_agent_again_stops_saying_it_cannot():
+    """The other half of honesty: the note is a fact about the last call, so
+    it is cleared by a call that got through. It does NOT clear the
+    end-of-stream state — nothing resubscribed, so the screen is up to date
+    at this instant and still not following, which is what the tab bar then
+    says."""
+    service = GoneService()
+    app = JobsmithApp(service, SESSION)
+    async with app.run_test(size=(126, 38)) as pilot:
+        await settle(pilot)
+        service.gone = True
+        await pilot.press("f5")
+        await settle(pilot)
+        assert app._unreachable
+
+        service.gone = False                      # the daemon came back
+        app._live_lost = True                     # ...and nothing resubscribed
+        await pilot.press("f5")
+        await settle(pilot)
+        assert not app._unreachable
+        tabs = str(app.query_one("#tabs", Static).content)
+        assert UNREACHABLE not in tabs
+        assert LIVE_LOST in tabs, "a screen that stopped following must keep saying so"
+
+
+async def test_a_turn_against_a_backing_that_is_gone_is_answered_in_the_conversation():
+    """The person is waiting on a sentence, so the tab bar is not where they
+    are looking — and a turn that raised used to end the app instead. Said in
+    the conversation, and the prompt stays usable."""
+    service = GoneService(events=PROPOSAL_TURN)
+    app = JobsmithApp(service, SESSION)
+    async with app.run_test(size=(126, 38)) as pilot:
+        await settle(pilot)
+        service.gone = True
+        await pilot.click("#prompt")
+        await pilot.press(*"hello")
+        await pilot.press("enter")
+        await settle(pilot)
+
+        assert app.is_running, "the app went down with the backing"
+        said = [b.text for b in app.query(Bubble)]
+        assert any("cannot reach the agent at http://daemon" in t for t in said), said
+        assert not app._streaming, "the turn was left looking like it is still running"
 
 
 async def test_the_subscription_is_released_with_the_app():
