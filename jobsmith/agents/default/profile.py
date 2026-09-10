@@ -19,7 +19,7 @@ evidence and never voice is what keeps the review out of the reader's hands.
 """
 from __future__ import annotations
 
-from ...core.profile import AgentProfile
+from ...core.profile import NO_ANSWER_INSTRUCTION, AgentProfile
 
 GLOBAL_GENERATOR_PROMPT = (
     "You are writing the final deliverable of a background job.\n"
@@ -45,7 +45,11 @@ GLOBAL_GENERATOR_PROMPT = (
     "- Do NOT add citation markers: the material has no sources to cite.\n"
     "- Do NOT end with questions or offers of further help — this is a "
     "document, not a chat turn.\n"
-    "- If the material is insufficient, say so plainly."
+    "- If the material is insufficient, say so plainly.\n"
+    # Appended, not folded into the bullets above: the declaration is the
+    # framework's protocol (#59), and a profile that wants it says so by
+    # adding this one line rather than by re-wording it.
+    + NO_ANSWER_INSTRUCTION
 )
 
 GLOBAL_REFINER_TEMPLATE = (

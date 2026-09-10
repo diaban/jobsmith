@@ -26,6 +26,7 @@ from html import escape
 
 from ..core.state import plan_depths
 from .report import (
+    UNANSWERED_NOTICE,
     FileReporter,
     JobDocument,
     PlanRow,
@@ -279,6 +280,8 @@ pre code { background: none; border: 0; padding: 0; }
 .about dt { font-weight: 600; color: var(--fg); }
 .about dd { margin: 0; overflow-wrap: anywhere; }
 .rationale { font-style: italic; }
+.unanswered { border-left: 3px solid var(--failed); background: var(--card);
+  margin: 0 0 1.25rem; padding: .625rem .875rem; font-weight: 600; }
 .steps { width: 100%; border-collapse: collapse; margin: .5rem 0 1.5rem;
   font-size: .875rem; }
 .steps th, .steps td { text-align: left; padding: .375rem .5rem;
@@ -327,6 +330,12 @@ class HtmlReport(FileReporter):
             f"<style>{STYLE}{self.extra_style}</style>",
             "</head><body><main>",
             f"<h1>{escape(doc.title)}</h1>",
+        ]
+        if not doc.answered:
+            # Above the text, not inside it: the notice is a fact about the
+            # run, and `markdown_to_html` is for model output only.
+            parts.append(f'<p class="unanswered">{escape(UNANSWERED_NOTICE)}</p>')
+        parts += [
             f'<section class="answer">{markdown_to_html(doc.answer)}</section>',
             "<hr>",
             '<section class="about">',

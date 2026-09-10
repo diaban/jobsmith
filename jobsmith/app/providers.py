@@ -28,6 +28,7 @@ from langchain_core.messages import (
 )
 from langchain_core.outputs import ChatGeneration, ChatResult
 
+from ..core.profile import NO_ANSWER_MARKER
 from ..core.usage import record_usage
 
 # ---------------------------------------------------------------- env / choice
@@ -123,6 +124,12 @@ class KeywordLLM:
 
     _CAP_LINE = re.compile(r'^- "([a-z][a-z0-9_]*)"', re.MULTILINE)
     DIRECT_WORDS = ("what can you do", "who are you", "hello", "bonjour", "capabilit", "aide")
+    # A request that leans on material nobody supplied. The fake cannot judge
+    # sufficiency, so it recognises the one shape it can: a query pointing at
+    # something it was never given. That is what lets the deterministic tier
+    # exercise the "could not answer" terminal (#59) end to end, exactly as
+    # DIRECT_WORDS lets it exercise triage.
+    MISSING_MATERIAL_WORDS = ("attached", "the file i sent", "the document i gave")
     MODEL = "fake-keyword-llm"
 
     @staticmethod
@@ -166,8 +173,16 @@ class KeywordLLM:
             return "Refined: " + user.split("Context:")[-1].strip()[:300] + " [doc_0]"
         # generation-ish prompts: echo whatever context the pipeline produced
         ctx = user.split("Context:")[-1].strip()
-        if ctx == "(no context available)":
-            return "The context is insufficient to answer this query."
+        if ctx == "(no context available)" or any(
+            w in user.lower() for w in self.MISSING_MATERIAL_WORDS
+        ):
+            # Declared, not merely regretted in prose — which is the whole
+            # point of #59, and was what this branch used to do.
+            return (
+                f"{NO_ANSWER_MARKER} the material the request relies on was never "
+                "provided\n\nNothing in the gathered context covers what was asked "
+                "for, so no answer can be given without it."
+            )
         return f"Based on the produced context [doc_0]:\n{ctx[:400]}"
 
     async def vision(self, image_bytes: bytes, prompt: str, **kwargs: Any) -> str:

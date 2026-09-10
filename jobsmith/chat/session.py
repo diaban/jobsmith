@@ -22,6 +22,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import SystemMessage
 
+from ..core.state import TERMINAL_UNANSWERED
 from ..jobs.manager import JobManager
 from ..jobs.models import Job, JobStatus
 from .tools import make_job_tools, progress_line, progress_signature
@@ -100,7 +101,13 @@ class JobNotificationMiddleware(AgentMiddleware):
         And it says which ending it was. A cancelled job is not a failed one —
         usually the model cancelled it *because the user asked* — and this
         text is the model's instruction for what to tell the user, so calling
-        a stop a failure would put an untruth in the conversation.
+        a stop a failure would put an untruth in the conversation. The same
+        holds for a job that ran to the end and declared it could not answer
+        (#59): it is DONE and it has a file, but announcing it like a job that
+        answered is how someone who waited three minutes finds out only by
+        reading the report. It gets its own branch, before the DONE one, and
+        the instruction says plainly what the file is — an explanation of what
+        was missing, not a result.
         """
         if job.status is not JobStatus.DONE:
             what = job.query[:60]
@@ -122,6 +129,22 @@ class JobNotificationMiddleware(AgentMiddleware):
             # saying out loud.
             if job.error and job.status is JobStatus.CANCELLED:
                 lines.append(f"Also worth passing on: {job.error}")
+            return "\n".join(lines)
+
+        if job.terminal_kind == TERMINAL_UNANSWERED:
+            lines = [
+                f"Job {job.job_id[:8]} ({job.query[:60]!r}) finished but COULD NOT "
+                "ANSWER: the material it gathered does not answer the request. "
+                "Tell the user plainly that it produced no answer, then relay what "
+                "was missing — never present the text below as a result."
+            ]
+            if job.report_path:
+                lines.append(
+                    f"File explaining what was missing: {job.report_path}")
+            if len(job.outputs) > 1:
+                lines.append("Other files this job left: " + ", ".join(
+                    o.path for o in job.outputs if o.path != job.report_path))
+            lines.append(f"What it reported (summarize, do not paste):\n{job.final_answer}")
             return "\n".join(lines)
 
         lines = [f"Job {job.job_id[:8]} ({job.query[:60]!r}) is DONE."]

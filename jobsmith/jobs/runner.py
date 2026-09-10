@@ -27,7 +27,7 @@ from typing import Any
 
 from ..core.state import CapabilityResult, NodeError, Plan
 
-_TERMINAL_NODES = ("post_process", "escalate", "user_error")
+_TERMINAL_NODES = ("post_process", "unanswered", "escalate", "user_error")
 
 
 @dataclass(frozen=True)

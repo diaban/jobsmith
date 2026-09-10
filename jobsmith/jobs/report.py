@@ -35,8 +35,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from ..core.state import TERMINAL_UNANSWERED
 from ..core.usage import Usage
 from .models import Job, JobOutput
+
+# What a deliverable opens with when the run declared it could not answer
+# (#59). One sentence, above the text, in every format: a file that reads like
+# a report is exactly how a refusal went unnoticed until someone had read it
+# to the end. It is framework wording rather than a profile message on purpose
+# — it describes the run, not the domain, like the headings around it.
+UNANSWERED_NOTICE = (
+    "This run could not answer the request. What follows says what was "
+    "missing, not what was asked for."
+)
 
 
 @dataclass
@@ -63,6 +74,10 @@ class JobDocument:
     plan: list[PlanRow] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)   # the whole run's spend
     annexes: list[tuple[str, str]] = field(default_factory=list)  # (heading, markdown)
+    # Did the run answer, or declare that it could not? A Reporter renders
+    # `UNANSWERED_NOTICE` when it did not. Carried as a fact about the run
+    # rather than as rendered text, so each format words it in its own markup.
+    answered: bool = True
 
     @property
     def dag_edges(self) -> list[tuple[str, str]]:
@@ -79,6 +94,7 @@ def build_document(job: Job, registry: Any = None, *, with_annexes: bool = False
         created_at=job.created_at,
         finished_at=datetime.now(UTC).isoformat(),
         answer=job.final_answer or "_(no answer)_",
+        answered=job.terminal_kind != TERMINAL_UNANSWERED,
         plan_rationale=(job.plan or {}).get("rationale", "") if job.plan else "",
         usage=Usage.from_dict(job.usage),
     )
@@ -261,7 +277,10 @@ class MarkdownReport(FileReporter):
     extension = "md"
 
     def render(self, doc: JobDocument) -> str:
-        lines = [f"# {doc.title}", "", doc.answer, ""]
+        lines = [f"# {doc.title}", ""]
+        if not doc.answered:
+            lines += [f"> **{UNANSWERED_NOTICE}**", ""]
+        lines += [doc.answer, ""]
 
         lines += ["---", "", "## About this job", "",
                   f"- **Request**: {doc.request}",

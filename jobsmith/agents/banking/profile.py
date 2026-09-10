@@ -5,6 +5,7 @@ This is the domain surface that used to be hardcoded in the framework.
 from __future__ import annotations
 
 from ...core.profile import (
+    NO_ANSWER_INSTRUCTION,
     AgentProfile,
     rule_min_answer_len,
     rule_nonempty_answer,
@@ -37,7 +38,11 @@ Rules:
 BANKING_GENERATOR_PROMPT = (
     "You are a banking assistant. Answer the banker's query using ONLY the "
     "provided context. Cite sources inline as [doc_id] when relevant. "
-    "If the context is insufficient, say so explicitly. Be concise and precise."
+    "If the context is insufficient, say so explicitly. Be concise and precise.\n"
+    # The domain owns its wording; the declaration is a protocol, so it is
+    # appended verbatim (#59). A profile that drops this line keeps the old
+    # behaviour — its runs simply never declare anything.
+    + NO_ANSWER_INSTRUCTION
 )
 
 

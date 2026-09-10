@@ -30,7 +30,7 @@ class EvalCase:
     query: str
     #: "plan" | "direct" | None (None = the case makes no claim about triage)
     expect_route: str | None = None
-    #: "answer" | "user_error" | "escalated"
+    #: "answer" | "unanswered" | "user_error" | "escalated"
     expect_terminal: str = "answer"
     #: bounds on the planned DAG — only checked when set
     min_steps: int = 0
@@ -126,6 +126,23 @@ GOLDEN_CASES: tuple[EvalCase, ...] = (
         ),
         expect_route="plan",
         min_steps=1,
+    ),
+
+    # ---------------- a request the material cannot answer ----------------
+    EvalCase(
+        id="unanswerable_missing_material",
+        query=(
+            "summarise the attached quarterly report and list the three risks "
+            "it names"
+        ),
+        expect_route="plan",
+        expect_terminal="unanswered",
+        min_steps=1,
+        note=(
+            "nothing was attached: the run must declare that it could not "
+            "answer, rather than write a speculative report that reads like "
+            "one (#59)"
+        ),
     ),
 
     # ---------------- guards ----------------

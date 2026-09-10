@@ -116,6 +116,21 @@ CONVERSATION_INPUT_KEY = "conversation"
 SOURCE_FILES_INPUT_KEY = "source_files"
 
 
+# ---------- Terminal vocabulary ----------
+
+# What kind of ending a run reached. "answer", "user_error" and "escalated"
+# have been there since v1 and are still written as literals by the nodes that
+# own them; this one has three readers outside core (the manager's status
+# mapping, the report's notice, the chat notice), so it is named once here
+# rather than spelled out in each of them.
+#
+# `unanswered` is NOT an error: the graph ran to the end, every step reported,
+# and the generator declared — as data — that the material it was given does
+# not answer the request. The run keeps everything it produced; what changes
+# is that it no longer claims to have answered.
+TERMINAL_UNANSWERED = "unanswered"
+
+
 # ---------- Errors ----------
 
 class NodeError(TypedDict):
@@ -151,6 +166,11 @@ class AgentState(TypedDict, total=False):
     # --- Generation pipeline ---
     merged_context: str | None
     draft_answer: str | None
+    # The generator's own verdict on whether the context let it answer, read
+    # from its structural declaration (see core/generation.py). Absent means
+    # "nobody said otherwise", which is why every reader defaults it to True:
+    # a model that never declares anything runs exactly as it did before.
+    answered: bool
     output_valid: bool
     validation_issues: list[str]
     final_answer: str | None
@@ -161,5 +181,5 @@ class AgentState(TypedDict, total=False):
     max_refine: int
 
     # --- Terminal status (for routing to user_error / escalate) ---
-    terminal_kind: str | None  # "answer" | "user_error" | "escalated"
+    terminal_kind: str | None  # "answer" | "unanswered" | "user_error" | "escalated"
     user_error_message: str | None

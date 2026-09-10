@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.artifacts import artifact_refs
-from ..core.state import NodeError
+from ..core.state import TERMINAL_UNANSWERED, NodeError
 from ..core.usage import Usage, UsageLedger, current_ledger, usage_ledger
 from .events import InProcessEvents, JobEvents, job_event
 from .models import Job, JobOutput, JobStatus, now_iso
@@ -52,6 +52,17 @@ RESUMABLE = (JobStatus.CANCELLED, JobStatus.FAILED)
 # tools the chat model holds — the same actor can stop a job and would
 # otherwise say nothing about what it produced.
 ANNOUNCEABLE = (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED)
+
+# The terminals of a run that did its work and has something to hand back: it
+# answered, or it declared — as data, from the generator — that the material
+# does not answer the request (#59). Both are DONE and both get a deliverable
+# written, because nothing failed in either: the graph ran to the end, every
+# step reported, the tokens were spent and the files are on disk. Which of the
+# two it was is `terminal_kind`'s to say; making the *status* carry it would
+# either call a refusal a crash (FAILED misreports the work, and is a dead end
+# — the checkpoint has nothing pending, so `resume_job` refuses it) or add a
+# sixth status every consumer would have to learn.
+DELIVERED = ("answer", TERMINAL_UNANSWERED)
 
 # Ledger scope carrying what previous attempts of a resumed job already spent.
 EARLIER_ATTEMPTS = "earlier attempts"
@@ -219,7 +230,7 @@ class JobManager:
 
             if errors:
                 await self.repo.save_errors(job.job_id, errors)
-            job.status = JobStatus.DONE if job.terminal_kind == "answer" else JobStatus.FAILED
+            job.status = JobStatus.DONE if job.terminal_kind in DELIVERED else JobStatus.FAILED
             if job.status is JobStatus.DONE:
                 # The reporter reads job.usage, so settle it before writing.
                 job.usage = ledger.total().to_dict()
@@ -251,9 +262,11 @@ class JobManager:
         A separate `try` on purpose: the run's own `except` means "the graph
         blew up", which a full disk is not.
 
-        **Only a job that answered gets here.** Running the Reporter for a
-        run that stopped would write a report of nothing; `_collect_artifacts`
-        is the half that still applies, and it is called on its own there.
+        **Only a job that reached a DELIVERED terminal gets here** — one that
+        answered, or one that declared it could not (#59), which is a run with
+        something to hand back either way. Running the Reporter for a run that
+        *stopped* would write a report of nothing; `_collect_artifacts` is the
+        half that still applies, and it is called on its own there.
         """
         try:
             outputs = list(self.reporter.write(job, self.reports_dir))
@@ -379,7 +392,10 @@ class JobManager:
             case Terminal(terminal_kind, final_answer, user_error_message):
                 job.terminal_kind = terminal_kind
                 job.final_answer = final_answer
-                if terminal_kind != "answer":
+                if terminal_kind not in DELIVERED:
+                    # `job.error` is why the run could not serve the request.
+                    # A declared refusal has no such message: nothing went
+                    # wrong, and what was missing is in the answer itself.
                     job.error = user_error_message
 
     def start_job(self, job_id: str) -> asyncio.Task:
