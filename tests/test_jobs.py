@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from jobsmith.core.deps import Deps
 from jobsmith.core.registry import CapabilityRegistry
 from jobsmith.jobs.manager import JobManager
 from jobsmith.jobs.models import JobStatus
+from jobsmith.jobs.runner import GraphRunner, StepFinished
 
 
 class SlowEcho(Capability):
@@ -482,3 +484,52 @@ async def test_several_formats_are_all_recorded_as_deliverables(
     assert [(o.format, o.role) for o in fetched.outputs] == [
         ("markdown", "main"), ("html", "alternate")]
     assert fetched.report_path == done.report_path
+
+
+async def test_a_chain_records_when_each_step_actually_finished(
+    store, checkpointer, tmp_path
+):
+    """The timestamps of a chain must be spread over the run, not bunched at
+    its end (#53).
+
+    Deliberately NOT asserted as "strictly increasing": the stamps are written
+    in `results` iteration order, so re-stamping every finished step on every
+    wave produces increasing values too — the observed defect passed that
+    reading while every step claimed to have landed within 121µs of the
+    others. What a chain guarantees is *spacing*: `beta` cannot finish until
+    `alpha` has, so each gap must be at least the step's own sleep.
+    """
+    step = 0.15
+    caps = [SlowEcho(n, delay=step) for n in ("alpha", "beta", "gamma")]
+    llm = FakeLLM(
+        {"planner": plan_json("alpha", "beta", "gamma",
+                              deps={"beta": ["alpha"], "gamma": ["beta"]})},
+        default="A sufficiently long final answer for the job test.",
+    )
+    mgr = make_manager(store, checkpointer, tmp_path, caps=caps, llm=llm)
+    done = await mgr.run_job((await mgr.create_job("chain")).job_id)
+
+    stamps = [datetime.fromisoformat(done.step_finished_at[c.spec.name]) for c in caps]
+    gaps = [(b - a).total_seconds() for a, b in zip(stamps, stamps[1:], strict=False)]
+    assert all(g >= step * 0.8 for g in gaps), f"steps bunched together: {gaps}"
+
+
+async def test_the_runner_reports_each_step_once(store, checkpointer, tmp_path):
+    """One `StepFinished` per capability — the cause of #53.
+
+    A capability's node update carries the whole `results` channel, not its
+    own contribution: the sub-graph is seeded with the parent state by
+    `Send(node, state)` and echoes the union back. Translating every key of
+    it re-announced every earlier step on every wave, which is what
+    overwrote their timestamps (and re-saved their results, quadratically).
+    """
+    caps = [SlowEcho(n) for n in ("alpha", "beta", "gamma")]
+    llm = FakeLLM(
+        {"planner": plan_json("alpha", "beta", "gamma",
+                              deps={"beta": ["alpha"], "gamma": ["beta"]})},
+        default="A sufficiently long final answer for the job test.",
+    )
+    graph = build_agent(Deps(llm=llm), CapabilityRegistry(caps), checkpointer=checkpointer)
+    announced = [u.capability async for u in GraphRunner(graph).stream("r1", "chain", {})
+                 if isinstance(u, StepFinished)]
+    assert announced == ["alpha", "beta", "gamma"]
