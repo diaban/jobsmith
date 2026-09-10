@@ -337,6 +337,34 @@ def test_the_pptx_renderer_writes_a_real_presentation():
     assert not slides[2].has_notes_slide
 
 
+def test_a_deck_is_16_9_and_its_content_moved_with_it():
+    """#62: the stock template is 4:3, and resizing it is not a one-liner.
+
+    Every deck jobsmith produced was 10 × 7.5 in — python-pptx's default, and
+    the default nowhere else for fifteen years. Setting `slide_width` alone
+    leaves the template's placeholders where a 10-inch canvas put them, so the
+    property worth pinning is not "the slide is wide" but "the content is
+    still centred in it": measured on the naive version, a body ended 3.8
+    inches short of the right edge on every slide.
+    """
+    pytest.importorskip("pptx")
+    from pptx import Presentation
+
+    from jobsmith.agents.default.pptx_deck import PptxRenderer
+
+    data = PptxRenderer().build(Deck(
+        title="Background jobs", subtitle="what we learned",
+        slides=(Slide("The problem", ("long waits", "no feedback")), Slide("Bare"))))
+
+    deck = Presentation(BytesIO(data))
+    assert deck.slide_width / deck.slide_height == pytest.approx(16 / 9, abs=0.001)
+    assert (deck.slide_width, deck.slide_height) == (12192000, 6858000)
+    for slide in deck.slides:
+        for placeholder in slide.placeholders:
+            right = deck.slide_width - (placeholder.left + placeholder.width)
+            assert placeholder.left == right, "the content did not follow the page"
+
+
 # ---------------------------------------------------------------- in a job
 
 async def test_the_job_records_the_deck_as_an_annex(store, checkpointer, tmp_path):

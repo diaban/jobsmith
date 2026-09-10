@@ -22,17 +22,31 @@ import pptx
 from pptx.presentation import Presentation
 from pptx.shapes.autoshape import Shape
 from pptx.slide import Slide as PptxSlide
+from pptx.util import Emu, Length
 
 from .slides import Deck, Slide
 
 TITLE_LAYOUT = 0            # "Title Slide" in the default template
 CONTENT_LAYOUT = 1          # "Title and Content"
 
+# 16:9, the size PowerPoint itself creates — the stock python-pptx template is
+# 10 × 7.5 in, i.e. 4:3, which has been the default nowhere else for fifteen
+# years and is pillarboxed on any screen a deck is shown on (#62). Note the
+# HEIGHT is the template's own: PowerPoint's 16:9 is the same 7.5 inches with
+# a wider canvas, so only the width really changes.
+SLIDE_WIDTH = Emu(12192000)     # 13.333 in
+SLIDE_HEIGHT = Emu(6858000)     # 7.5 in
+
 
 class PptxRenderer:
     """`DeckRenderer` producing a .pptx file, in memory."""
 
     extension = "pptx"
+    #: The page. Class attributes rather than constants inlined below, so a
+    #: deployment that wants 4:3 back — or A4 landscape — is a subclass with
+    #: two numbers and no copied render logic.
+    slide_width: Length = SLIDE_WIDTH
+    slide_height: Length = SLIDE_HEIGHT
 
     async def render(self, deck: Deck) -> bytes:
         # to_thread for the same reason `LocalArtifactStore.write` uses it:
@@ -44,12 +58,53 @@ class PptxRenderer:
         # `pptx.Presentation` is a factory function; the class it returns lives
         # in `pptx.presentation`, which is what the annotations above name.
         presentation = pptx.Presentation()
+        self._set_page(presentation)
         self._title_slide(presentation, deck)
         for slide in deck.slides:
             self._content_slide(presentation, slide)
         buffer = BytesIO()
         presentation.save(buffer)
         return buffer.getvalue()
+
+    # -------------------- the page --------------------
+
+    def _set_page(self, presentation: Presentation) -> None:
+        """Resize the deck, and move the template's placeholders with it.
+
+        Setting `slide_width` alone is the trap, and it is why this is six
+        lines rather than one: the stock template positions its placeholders
+        for a 10-inch canvas, and they do not follow. Measured on the naive
+        version — a body placeholder ending at 8,686,800 EMU on a 12,192,000
+        EMU slide, a 3.8-inch gutter down the right of every slide, which
+        reads as a deck someone left-aligned by mistake.
+
+        So the horizontal geometry of the master and of every layout is scaled
+        by the same ratio the slide grew by. Proportional, so a margin stays a
+        margin and the columns of the multi-content layouts keep their gaps;
+        vertical geometry is untouched because the height did not change. The
+        slides added afterwards inherit from these, so nothing per-slide needs
+        to know the deck is not 4:3.
+        """
+        was = presentation.slide_width
+        presentation.slide_width = self.slide_width
+        presentation.slide_height = self.slide_height
+        if not was or was == self.slide_width:
+            return
+        ratio = self.slide_width / was
+        sources = [presentation.slide_master, *presentation.slide_layouts]
+        # Read every value first, write after. A layout placeholder with no
+        # geometry of its own reports the MASTER's, so scaling in one pass
+        # scales those a second time — measured, 457,200 → 812,800 EMU and a
+        # body 2.6 inches wider than the slide it sits on. Writing the scaled
+        # value onto such a placeholder only materialises what it was
+        # inheriting anyway.
+        geometry = [(ph, ph.left, ph.width)
+                    for source in sources for ph in source.placeholders]
+        for placeholder, left, width in geometry:
+            if left is not None:
+                placeholder.left = Emu(round(left * ratio))
+            if width is not None:
+                placeholder.width = Emu(round(width * ratio))
 
     # -------------------- slides --------------------
 
