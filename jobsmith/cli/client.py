@@ -214,11 +214,20 @@ class DaemonClient(AgentService):
         r.raise_for_status()
         return r.json()
 
-    async def launch_job(self, query, *, session_id=None, inputs=None) -> dict:
+    async def launch_job(self, query, *, session_id=None, inputs=None,
+                         document_name="", document_title="", formats=()) -> dict:
         r = await self._request(
             "POST", "/jobs",
-            json={"query": query, "session_id": session_id, "inputs": inputs},
+            json={"query": query, "session_id": session_id, "inputs": inputs,
+                  "document_name": document_name, "document_title": document_title,
+                  "formats": list(formats)},
         )
+        if r.status_code == 400:
+            # A document this deployment cannot produce — a name that is not a
+            # filename, a format nothing renders. The local backing raises
+            # `ValueError` from `create_job`; the port promises one answer, so
+            # the status code becomes that same exception with that same text.
+            raise ValueError(r.json().get("detail", ""))
         r.raise_for_status()
         return r.json()
 

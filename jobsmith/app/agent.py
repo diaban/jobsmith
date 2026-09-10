@@ -14,7 +14,7 @@ tears it all down in reverse order, including when startup itself failed.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any
@@ -119,12 +119,19 @@ async def build_app(
             Deps(llm=llm), registry,
             profile=definition.profile, checkpointer=checkpointer,
         ).build()
+        # The registry is passed so capabilities present their own results;
+        # the formats asked for are composed into one reporter, whose first
+        # name is the main deliverable. The same closure answers again for a
+        # job that requested formats of its own (#55) — the deployment's
+        # knowledge has to reach a reporter built later, or a requested PDF
+        # would come back without the registry the composed one holds.
+        def reporter_for(formats: Sequence[str]) -> Any:
+            return compose_reporters(formats, registry)
+
         manager = JobManager(
             graph, store,
-            # The registry is passed so capabilities present their own
-            # results; the formats asked for are composed into one reporter,
-            # whose first name is the main deliverable.
-            reporter=compose_reporters(pick_report_formats(report_format), registry),
+            reporter=reporter_for(pick_report_formats(report_format)),
+            reporter_factory=reporter_for,
             reports_dir=reports_dir,
         )
         # A previous process may have died mid-run: settle those jobs first.

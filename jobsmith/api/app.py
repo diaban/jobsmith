@@ -57,6 +57,10 @@ class JobIn(BaseModel):
     query: str
     inputs: dict[str, Any] | None = None
     session_id: str | None = None
+    # what the deliverable should be called, be titled and be written as (#55)
+    document_name: str = ""
+    document_title: str = ""
+    formats: list[str] = []
 
 
 # `JobOutput.format` is free-form domain vocabulary ("markdown", "html", ...);
@@ -143,8 +147,17 @@ def create_api(service: LocalAgentService) -> FastAPI:
 
     @app.post("/jobs", status_code=201)
     async def launch_job(body: JobIn) -> dict:
-        return await service.launch_job(body.query, session_id=body.session_id,
-                                        inputs=body.inputs)
+        try:
+            return await service.launch_job(
+                body.query, session_id=body.session_id, inputs=body.inputs,
+                document_name=body.document_name,
+                document_title=body.document_title, formats=body.formats)
+        except ValueError as refused:
+            # The document cannot be produced here — an unusable name, a format
+            # nothing renders. The client asked for something impossible, so it
+            # is a 400 carrying the service's own words, and `DaemonClient`
+            # maps it back to the `ValueError` the embedded backing raises.
+            raise HTTPException(status_code=400, detail=str(refused)) from refused
 
     @app.post("/jobs/{job_id}/cancel")
     async def cancel_job(job_id: str):

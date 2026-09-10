@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -202,8 +202,27 @@ class AgentService(ABC):
 
     @abstractmethod
     async def launch_job(
-        self, query: str, *, session_id: str | None = None, inputs: dict | None = None
-    ) -> dict: ...
+        self,
+        query: str,
+        *,
+        session_id: str | None = None,
+        inputs: dict | None = None,
+        document_name: str = "",
+        document_title: str = "",
+        formats: Sequence[str] = (),
+    ) -> dict:
+        """Launch a job directly — the door the chat's approval does not use.
+
+        It takes the same document decisions (#55) because the chat is one
+        caller of the port and not a privileged one; a front-end that can
+        launch a job but not name what it produces would send its users back
+        through the conversation to get a filename.
+
+        A name that is not a filename and a format nothing can render here are
+        refused as `ValueError` on BOTH backings — the remote one maps the
+        400 back — so a caller sees the same refusal whichever it holds.
+        """
+        ...
 
     @abstractmethod
     async def list_jobs(
@@ -365,8 +384,11 @@ class LocalAgentService(AgentService):
 
     # -- jobs --
 
-    async def launch_job(self, query, *, session_id=None, inputs=None) -> dict:
-        job = await self.manager.create_job(query, inputs, session_id=session_id)
+    async def launch_job(self, query, *, session_id=None, inputs=None,
+                         document_name="", document_title="", formats=()) -> dict:
+        job = await self.manager.create_job(
+            query, inputs, session_id=session_id, document_name=document_name,
+            document_title=document_title, formats=formats)
         self.manager.start_job(job.job_id)
         return {"job_id": job.job_id, "status": job.status.value}
 

@@ -212,6 +212,39 @@ or written as an absolute path to somewhere else. Nothing widens that set at
 runtime, and the files are listed in the approval before the job exists — you
 are the one handing them over.
 
+### Naming what comes out
+
+The person who knows what a document is for is the one asking for it, so the
+request decides what it is **called**, what it is **titled**, and which
+**formats** are written — and the proposal shows all three before anything
+runs:
+
+```
+you : compare the chairs for a home office, one page. Call it
+      rapport_chaises_gabarit, markdown and PDF.
+      (the agent proposes a job, and the proposal says what it will leave behind)
+      task     : compare ergonomic chairs for a home-office workstation …
+      titled   : Comparatif des chaises ergonomiques
+      writes   : rapport_chaises_gabarit.md, rapport_chaises_gabarit.pdf
+      launch it? [y/N]
+```
+
+Say nothing and nothing is silently decided for you either: the model proposes
+a short name from the subject, the title falls back to the request, and the
+formats to whatever the deployment composed. **A name is not a title and
+neither is a format** — asking for one never quietly answers the others.
+
+The name is a *filename*, never a location: no directories, no traversal, no
+absolute paths, bounded in length, refused (not flattened) when it is anything
+else. A named deliverable lands in the job's own folder next to the files its
+steps produced, so two jobs called `rapport` keep two files. And a format
+nothing can render *here* is refused at the proposal — where you can still
+ask for another one — rather than at the end of a run that spent three
+minutes first.
+
+`POST /jobs` takes the same three (`document_name`, `document_title`,
+`formats`), and refuses them the same way, with a 400.
+
 ### Asking for a deck
 
 Install one extra and a `slide_deck` step joins the registry: ask for a

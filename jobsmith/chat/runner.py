@@ -80,6 +80,13 @@ class Proposal:
     query: str | None
     rationale: str | None
     sources: list[str] = field(default_factory=list)
+    # What the job would call its deliverable, title it, and write it as
+    # (#55). Same reason as `sources`: a document named where the user cannot
+    # see the name is a second silent decision, and the name is the one thing
+    # they will look for on disk afterwards.
+    document_name: str = ""
+    document_title: str = ""
+    formats: list[str] = field(default_factory=list)
 
 
 ChatEvent = Token | ToolStarted | ToolFinished | Message | Proposal
@@ -169,7 +176,12 @@ class ChatRunner:
                         for message in value.get("messages") or []:
                             yield ToolFinished(getattr(message, "name", "") or "")
         if proposal is not None:
-            yield Proposal(proposal.get("query"), proposal.get("rationale"),
-                           list(proposal.get("sources") or []))
+            yield Proposal(
+                proposal.get("query"), proposal.get("rationale"),
+                list(proposal.get("sources") or []),
+                str(proposal.get("document_name") or ""),
+                str(proposal.get("document_title") or ""),
+                list(proposal.get("formats") or []),
+            )
         else:
             yield Message(answer)

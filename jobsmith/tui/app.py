@@ -44,6 +44,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.markup import escape
 from textual.widgets import ContentSwitcher, Footer, Header, Input, ListItem, ListView, Static
 
+from ..jobs.report import deliverable_filenames
 from ..service import TERMINAL_EVENTS, AgentService, ChatStreamError, ServiceUnavailable
 from . import render
 from .themes import DEFAULT_THEME, THEMES, pick_theme
@@ -104,17 +105,27 @@ class ProposalCard(Static):
     escaped, never summarised.
     """
 
-    def __init__(self, query: str, rationale: str, sources: Sequence[str] = ()) -> None:
+    def __init__(self, query: str, rationale: str, sources: Sequence[str] = (),
+                 document_name: str = "", document_title: str = "",
+                 formats: Sequence[str] = ()) -> None:
         super().__init__(classes="proposal")
         # The files it would be allowed to open, when there are any: approving
         # the job is approving this list, so it is shown, not summarised away.
         reads = (f"[{render.DIM}]reads {escape(', '.join(sources))}[/]\n"
                  if sources else "")
+        # ...and what it would leave behind. The name is what the user will
+        # look for on disk, so a name they never saw would be the second
+        # silent decision #55 is about.
+        written = deliverable_filenames(document_name, formats) or list(formats)
+        writes = (f"[{render.DIM}]writes {escape(', '.join(written))}[/]\n"
+                  if written else "")
+        titled = (f"[{render.DIM}]titled {escape(document_title)}[/]\n"
+                  if document_title else "")
         self.update(
             f"[{render.ATTENTION}]a background job is proposed[/]\n"
             f"[b]{escape(query)}[/b]\n"
             f"[{render.DIM}]{escape(rationale)}[/]\n"
-            f"{reads}\n"
+            f"{reads}{titled}{writes}\n"
             f"[b {render.DONE}]y[/] [{render.DIM}]launch it[/]     "
             f"[b]n[/] [{render.DIM}]not now[/]"
         )
@@ -475,9 +486,13 @@ class JobsmithApp(App[None]):
 
     def _propose(self, terminal: dict[str, Any]) -> None:
         conversation = self.query_one("#conversation", VerticalScroll)
-        conversation.mount(ProposalCard(str(terminal.get("query") or ""),
-                                        str(terminal.get("rationale") or ""),
-                                        [str(s) for s in terminal.get("sources") or []]))
+        conversation.mount(ProposalCard(
+            str(terminal.get("query") or ""),
+            str(terminal.get("rationale") or ""),
+            [str(s) for s in terminal.get("sources") or []],
+            str(terminal.get("document_name") or ""),
+            str(terminal.get("document_title") or ""),
+            [str(f) for f in terminal.get("formats") or []]))
         conversation.scroll_end(animate=False)
         self._awaiting_approval = True
         prompt = self.query_one("#prompt", Input)

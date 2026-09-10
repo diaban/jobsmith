@@ -35,6 +35,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from ..core.paths import PathRefused, safe_name
 from ..core.state import TERMINAL_UNANSWERED
 from ..core.usage import Usage
 from .models import Job, JobOutput
@@ -122,10 +123,108 @@ def document_title(request: str, *, limit: int = TITLE_MAX) -> str:
     return cut.rstrip(" ,;:.-—–") + "…"
 
 
+#: How long a requested filename may be. Nothing here is a filesystem limit
+#: (255 bytes is), it is what a filename stops being at: past this, a name is
+#: a sentence and the person who wrote it meant the title.
+NAME_MAX = 100
+
+
+def known_extensions() -> dict[str, str]:
+    """`{format name: extension}` for every Reporter that ships — one lookup.
+
+    Derived from the same registry `make_reporter` reads, so a Reporter added
+    later is known here the day it is added, with nothing to keep in step.
+    """
+    return {name: cls.extension for name, cls in _reporter_classes().items()}
+
+
+def document_stem(name: str) -> str:
+    """A requested filename, as the one path component a Reporter may use.
+
+    The caller says what the file is *called*; where it goes is this code's
+    decision, so `safe_name` refuses anything carrying a separator instead of
+    flattening it (`core/paths.py` answers that once, for annexes too).
+
+    The extension is dropped when it names a format we know: a user asking for
+    `rapport.md` and a PDF of the same thing is asking for one document under
+    two extensions, and the formats — not the name — decide those. An unknown
+    suffix is left alone: `v1.2` is a name, not a format.
+
+    Too long is refused rather than cut. A name the user chose, silently
+    shortened, is the defect #54 was about in the title; a refusal is seen by
+    whoever wrote the name while they can still write another.
+    """
+    stem = safe_name(name, "document name")
+    head, dot, suffix = stem.rpartition(".")
+    if dot and suffix.lower() in set(known_extensions().values()) and head:
+        stem = head
+    if len(stem) > NAME_MAX:
+        raise PathRefused(
+            f"document name is {len(stem)} characters, at most {NAME_MAX} "
+            f"(a filename, not a title): {name!r}")
+    return stem
+
+
+def deliverable_filenames(document_name: str, formats: Iterable[str]) -> list[str]:
+    """What the files will be called, for a front-end showing what is approved.
+
+    A fact, not a sentence: the format→extension mapping is this module's, and
+    two front-ends deriving it themselves would be two mappings. Empty when
+    the job has no name of its own — the file is then `{job_id}.{extension}`
+    and there is no job id yet at the moment this is shown, so a caller says
+    what it can honestly say: the formats.
+    """
+    if not document_name:
+        return []
+    extensions = known_extensions()
+    wanted = [f.strip().lower() for f in formats if f and f.strip()] or ["markdown"]
+    return [f"{document_name}.{extensions.get(f, f)}" for f in wanted]
+
+
+def available_formats(registry: Any = None) -> list[str]:
+    """The format names this deployment can actually render, canonical, sorted.
+
+    Not the same list as `known_extensions()`: a Reporter that ships can still
+    be unavailable here — `.[pdf]` needs pango/cairo where the daemon runs,
+    and `PdfReport` probes for it when it is constructed. So each one is built
+    and thrown away, and the answer is what survived. Read on the refusal path
+    only, where naming the alternatives is the whole point of refusing.
+    """
+    names: list[str] = []
+    for name in _reporter_classes():
+        try:
+            reporter = make_reporter(name, registry)
+        except Exception:
+            continue
+        if reporter.format not in names:
+            names.append(reporter.format)
+    return sorted(names)
+
+
+def ensure_formats_available(formats: Iterable[str], *, registry: Any = None) -> list[str]:
+    """The requested formats, or a `ValueError` saying which cannot be had.
+
+    Composing IS the check — `make_reporter` refuses an unknown name and
+    `PdfReport` probes its engine in `__init__` — so this asks the question by
+    building the answer and throwing it away. That matters for `.[pdf]`, this
+    project's one deployment constraint: a format nothing can render here must
+    be refused where the person who asked can still see it (the proposal card,
+    `create_job`), never at the end of a run that spent three minutes first.
+    """
+    names = parse_report_formats(formats) if isinstance(formats, str) else list(formats)
+    if not names:
+        return []
+    compose_reporters(names, registry)
+    return names
+
+
 def build_document(job: Job, registry: Any = None, *, with_annexes: bool = False) -> JobDocument:
     """Turn a finished Job into the document a Reporter serializes."""
     doc = JobDocument(
-        title=document_title(job.query),
+        # The name is not the title (#55): a job that asked for neither
+        # derives both from the same request, and asking for one never
+        # silently decides the other.
+        title=job.document_title.strip() or document_title(job.query),
         request=job.query,
         job_id=job.job_id,
         session_id=job.session_id,
@@ -284,8 +383,8 @@ class FileReporter:
         self.with_annexes = with_annexes
 
     def write(self, job: Job, directory: Path) -> list[JobOutput]:
-        directory.mkdir(parents=True, exist_ok=True)
-        path = directory / f"{job.job_id}.{self.extension}"
+        path = self.path_for(job, directory)
+        path.parent.mkdir(parents=True, exist_ok=True)
         document = build_document(job, self.registry, with_annexes=self.with_annexes)
         self.serialize(document, path)
         # Always "main": a lone Reporter IS the deliverable. Deciding which
@@ -294,6 +393,26 @@ class FileReporter:
         return [JobOutput(
             path=str(path), format=self.format, title=self.title, role="main"
         )]
+
+    def path_for(self, job: Job, directory: Path) -> Path:
+        """Where this job's deliverable goes, and what it is called (#55).
+
+        A job id is unique and says nothing; a requested name says everything
+        and is unique to nobody. So a named deliverable lands in the job's own
+        directory — where its annexes already are (`LocalArtifactStore`) — and
+        two jobs called `rapport` keep two files instead of the second silently
+        overwriting the first, which is the same class of defect as a
+        deliverable nobody can find (#28).
+
+        An unnamed job keeps `{job_id}.{extension}` exactly where it always
+        was: nothing about it needed a directory of its own.
+
+        The name reaching here is already one legal path component —
+        `create_job` refuses anything else, in front of whoever asked.
+        """
+        if job.document_name:
+            return directory / job.job_id / f"{job.document_name}.{self.extension}"
+        return directory / f"{job.job_id}.{self.extension}"
 
     def serialize(self, document: JobDocument, path: Path) -> None:
         """Put the document on disk, at the path `write` decided.

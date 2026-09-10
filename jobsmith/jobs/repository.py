@@ -84,6 +84,9 @@ class StoreJobRepository:
             status=JobStatus(s["status"]),
             query=s["query"],
             inputs=s.get("inputs") or {},
+            document_name=s.get("document_name") or "",
+            document_title=s.get("document_title") or "",
+            formats=list(s.get("formats") or []),   # absent on records before #55
             session_id=s.get("session_id"),
             created_at=s.get("created_at", ""),
             updated_at=s.get("updated_at", ""),
