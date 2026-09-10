@@ -242,9 +242,13 @@ async def test_progress_events_reach_either_backing(store, checkpointer, tmp_pat
             while not seen or seen[-1]["status"] not in ("done", "failed"):
                 seen.append(await asyncio.wait_for(queue.get(), timeout=10))
 
-            assert [e["status"] for e in seen] == ["queued", "running", "running", "done"]
+            assert [e["status"] for e in seen] == [
+                "queued", "running", "running", "running", "done"]
             assert all(e["job_id"] == job_id for e in seen)
-            assert [e["steps_done"] for e in seen] == [[], [], ["alpha"], ["alpha"]]
+            # Four events before a step lands, and the third is the plan: a
+            # watcher drawing the DAG sees it as soon as it exists, rather
+            # than waiting out the first step for a picture it already has.
+            assert [e["steps_done"] for e in seen] == [[], [], [], ["alpha"], ["alpha"]]
             assert seen[-1]["report_path"].endswith(f"{job_id}.md")
 
             client.unsubscribe(queue)
@@ -309,6 +313,7 @@ async def test_the_event_reader_survives_a_line_it_cannot_read():
         assert [queue.get_nowait() for _ in range(queue.qsize())] == [
             {"job_id": "a", "status": "running"},
             {"job_id": "a", "status": "done"},
+            None,                       # ... and then the stream ended
         ]
     finally:
         await client.aclose()
@@ -321,6 +326,11 @@ async def test_a_slow_consumer_loses_events_rather_than_stalling_the_reader():
     stop reading the socket, which back-pressures the daemon's own stream —
     so a UI that froze would slow the jobs it is watching. Events are dropped
     instead, exactly as they are for an in-process subscriber.
+
+    The end-of-stream marker is the one thing that is not dropped, and the
+    drop rule is why: an event is droppable because the next one supersedes
+    it, and nothing supersedes "there will be no next one". So it takes the
+    place of the oldest tick still waiting.
     """
     client = _scripted_client(*[
         line for i in range(5) for line in (f'data: {{"job_id": "{i}"}}', "")
@@ -328,8 +338,8 @@ async def test_a_slow_consumer_loses_events_rather_than_stalling_the_reader():
     try:
         queue = client.subscribe(max_queue=2)          # a consumer that never drains
         await asyncio.wait_for(asyncio.shield(client._readers[queue]), timeout=5)
-        assert queue.qsize() == 2                      # the other three were dropped
-        assert queue.get_nowait() == {"job_id": "0"}   # ...and the earliest were kept
+        assert queue.qsize() == 2                      # three events were dropped
+        assert [queue.get_nowait() for _ in range(2)] == [{"job_id": "1"}, None]
     finally:
         await client.aclose()
 
@@ -361,5 +371,11 @@ async def test_a_stream_that_ends_is_announced_rather_than_going_quiet(capsys):
         await asyncio.wait_for(asyncio.shield(client._readers[queue]), timeout=5)
         assert queue.get_nowait() == {"job_id": "a"}
         assert "closed by the daemon" in capsys.readouterr().err
+        # And on the queue as well, because stderr is the wrong place to say
+        # it to a front-end: `jobsmith ui` owns the terminal, so the note
+        # above goes nowhere it can show. `None` is the port's marker for
+        # "nothing more will arrive here", and it is the last thing carried.
+        assert queue.get_nowait() is None
+        assert queue.empty()
     finally:
         await client.aclose()

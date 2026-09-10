@@ -222,7 +222,20 @@ class AgentService(ABC):
 
         Delivery is best-effort on both sides, by the same rule: a consumer
         that stops draining has events dropped (`put_nowait`), never a run
-        (embedded) or a reader (remote) blocked behind it.
+        (embedded) or a reader (remote) blocked behind it. So an event says
+        *something changed*, never *what* changed by itself: a consumer
+        re-reads (`list_jobs`, `get_job`) rather than accumulating deltas,
+        and a dropped tick then costs nothing but a slightly later repaint.
+
+        `None` is the one value that is not an event: it means **no more will
+        arrive on this queue**, and it is the last thing the queue carries.
+        A stream that ends looks exactly like a stream with nothing to say,
+        and a front-end that cannot tell them apart freezes without saying so
+        — a diagnostic on stderr does not reach a screen a UI has taken over.
+        It is never dropped, because there is no next event to supersede it;
+        embedded it never comes (the in-process fan-out lives as long as the
+        service), which is a fact about that backing and not a licence for a
+        caller holding the port to skip the case.
         """
         ...
 

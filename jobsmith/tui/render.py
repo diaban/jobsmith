@@ -23,6 +23,7 @@ to go on — carries both.
 """
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -351,29 +352,60 @@ def dag(job: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def outputs_block(job: dict[str, Any]) -> str:
+def outputs_block(
+    outputs: list[dict[str, Any]], *, missing: Collection[str] = (), where: str = ""
+) -> str:
     """The files the job produced, deliverables first — the order it records.
 
-    The filename is derived from the path, and has to be: `Job.to_dict()` is
+    Fed from `list_outputs`, not from `get_job`: `Job.to_dict()` is
     `dataclasses.asdict`, which serialises `JobOutput`'s fields and **drops
     `name`, because it is a property**. Only `list_outputs` puts it back, and
-    this pane reads `get_job` — so asking for that key rendered a blank where
-    every filename should have been, and the layout snapshot then froze the
-    blank as the expected picture.
+    reading that key off the job rendered a blank where every filename should
+    have been — with the layout snapshot then freezing the blank as correct.
+
+    The path is shown, and `where` says whose disk it is on. That is the port
+    being taken at its word: `find_output` answers with a locator on the
+    machine that RAN the job, which is this one only when the service is
+    embedded. A daemon's path is true and unopenable, so the pane prints it
+    as a location and names the download route rather than implying a file
+    the reader can reach. `missing` is the other half of the same promise —
+    a file deleted since the job finished is said to be gone rather than
+    drawn as a path to nothing.
     """
-    outputs = job.get("outputs") or []
     if not outputs:
         return f"[{DIM}]no file yet[/]"
-    lines = []
+    lines = [f"[{DIM}]files[/]"]
     for output in outputs:
-        role = str(output.get("role", ""))
-        by = f" from {output['produced_by']}" if output.get("produced_by") else ""
-        title = f"  {escape(str(output['title']))}" if output.get("title") else ""
+        name = str(output.get("name") or Path(str(output.get("path") or "")).name)
+        facts = [str(output.get("role") or ""), str(output.get("format") or "")]
+        if output.get("produced_by"):
+            facts.append(f"from {output['produced_by']}")
+        if output.get("title"):
+            facts.append(str(output["title"]))
+        gone = name in missing
         lines.append(
-            f"[{CHROME}]▸[/] [b]{escape(Path(str(output.get('path') or '')).name)}[/b]"
-            f"  [{DIM}]{role} {output.get('format', '')}{by}{title}[/]"
+            f"[{FAILED if gone else CHROME}]▸[/] [b]{escape(name)}[/b]"
+            f"  [{DIM}]{escape(' · '.join(fact for fact in facts if fact))}[/]"
         )
+        path = escape(str(output.get("path") or NONE))
+        lines.append(f"  [{FAILED}]gone from disk[/] [{DIM}]{path}[/]" if gone
+                     else f"  [{DIM}]{path}[/]")
+    if where:
+        lines.append(f"[{DIM}]{escape(where)}[/]")
     return "\n".join(lines)
+
+
+def where_files_are(mode: str, job_id: str) -> str:
+    """One line under the files saying whose disk those paths are on.
+
+    Not decoration: with a daemon backing they are the daemon's, and a UI
+    printing them without saying so would be offering the reader a file it
+    cannot open. `mode` is on the port for exactly this kind of question.
+    """
+    if mode == "embedded":
+        return "on this machine"
+    return ("on the machine running the daemon — fetch one with "
+            f"GET /jobs/{job_id}/outputs/<name>")
 
 
 def job_headline(job: dict[str, Any]) -> str:
