@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import uuid
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +41,13 @@ from ..core.state import TERMINAL_UNANSWERED, NodeError
 from ..core.usage import Usage, UsageLedger, current_ledger, usage_ledger
 from .events import InProcessEvents, JobEvents, job_event
 from .models import Job, JobOutput, JobStatus, now_iso
-from .report import MarkdownReport, ReportWriteError
+from .report import (
+    MarkdownReport,
+    ReportWriteError,
+    compose_reporters,
+    document_stem,
+    ensure_formats_available,
+)
 from .repository import JobRepository, StoreJobRepository
 from .runner import GraphRunner, JobUpdate, NodeErrors, PlanReady, StepFinished, Terminal
 
@@ -75,6 +82,7 @@ class JobManager:
         store: Any = None,
         *,
         reporter: Any = None,
+        reporter_factory: Callable[[Sequence[str]], Any] | None = None,
         reports_dir: str | Path = "artifacts",
         repository: JobRepository | None = None,
         runner: GraphRunner | None = None,
@@ -91,6 +99,16 @@ class JobManager:
         # Producing the deliverable is a rendering concern, not the manager's:
         # swap the Reporter for another format without touching this class.
         self.reporter = reporter if reporter is not None else MarkdownReport()
+        # ...and when a JOB asked for its own formats (#55), the same concern
+        # answers again for that job. A factory rather than a second reporter:
+        # what the composition root knows — the registry, whether annexes are
+        # inlined — has to reach a reporter built later, and a manager that
+        # rebuilt one itself would be a manager that decides how a deliverable
+        # is rendered. Defaults to the plain composer, so a manager wired
+        # without one still honours a requested format, just without whatever
+        # its composition root would have added.
+        self.reporter_factory: Callable[[Sequence[str]], Any] = (
+            reporter_factory or (lambda formats: compose_reporters(formats)))
         self.reports_dir = Path(reports_dir)  # where deliverables are written
         self._tasks: dict[str, asyncio.Task] = {}  # in-process cancellation handles
 
@@ -113,12 +131,30 @@ class JobManager:
         inputs: dict[str, Any] | None = None,
         *,
         session_id: str | None = None,
+        document_name: str = "",
+        document_title: str = "",
+        formats: Sequence[str] | str = (),
     ) -> Job:
+        """Record a job, including what the requester asked the document to be.
+
+        Both document decisions are checked HERE, before a job exists, because
+        this is the last point at which whoever asked is still listening: the
+        chat tool calls it behind the approval it just showed, the API answers
+        a request, the CLI a command. A name with a separator in it and a
+        format nothing can render are the two ways to ask for a file this
+        deployment cannot produce, and both refuse in the caller's terms —
+        never three minutes later, at the write, in a run that already spent
+        its tokens.
+        """
+        wanted = list(ensure_formats_available(formats))
         job = Job(
             job_id=uuid.uuid4().hex,
             status=JobStatus.QUEUED,
             query=query,
             inputs=inputs or {},
+            document_name=document_stem(document_name) if document_name.strip() else "",
+            document_title=document_title.strip(),
+            formats=wanted,
             session_id=session_id,
             created_at=now_iso(),
         )
@@ -268,17 +304,27 @@ class JobManager:
         *stopped* would write a report of nothing; `_collect_artifacts` is the
         half that still applies, and it is called on its own there.
         """
+        reporter = self._reporter_for(job)
         try:
-            outputs = list(self.reporter.write(job, self.reports_dir))
+            outputs = list(reporter.write(job, self.reports_dir))
         except Exception as e:
             failure = e if isinstance(e, ReportWriteError) else ReportWriteError(
-                getattr(self.reporter, "format", "unknown"), e)
+                getattr(reporter, "format", "unknown"), e)
             outputs = failure.outputs       # keep what did make it to disk
             job.error = str(failure)
         # Annexes are collected regardless of how the report went: they are on
         # disk either way, and a file with no JobOutput is a file nobody can
         # find — the same reason `ReportWriteError` carries its outputs.
         self._collect_artifacts(job, deliverables=outputs)
+
+    def _reporter_for(self, job: Job) -> Any:
+        """The Reporter this job's deliverable goes through.
+
+        The composed one unless the job asked for formats of its own, which
+        `create_job` already accepted — so this cannot be where a format is
+        found wanting.
+        """
+        return self.reporter_factory(job.formats) if job.formats else self.reporter
 
     def _collect_artifacts(
         self,

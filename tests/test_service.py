@@ -51,7 +51,9 @@ def test_the_api_adds_no_use_case_of_its_own():
 def _service_over(store, checkpointer, tmp_path):
     manager = make_manager(store, checkpointer, tmp_path)
     saver = MemorySaver()
-    responses = [launch_call("analyse it", "multi-step"), AIMessage(content="launched!")]
+    responses = [launch_call("analyse it", "multi-step", document_name="chair_notes",
+                             document_title="Comparatif", formats=["markdown"]),
+                 AIMessage(content="launched!")]
 
     def session_factory(session_id=None):
         from jobsmith.chat import ChatSession
@@ -128,8 +130,13 @@ async def test_identical_answers_through_either_backing(
         assert isinstance(session_id, str) and session_id
 
         reply = await client.send(session_id, "please analyse it")
+        # what the document will be called, titled and written as rides on the
+        # terminal with the query (#55): approving is approving all of it, and
+        # a name shown only to the embedded backing would be no guarantee.
         assert reply == {"type": "proposal", "query": "analyse it",
-                         "rationale": "multi-step", "sources": []}
+                         "rationale": "multi-step", "sources": [],
+                         "document_name": "chair_notes",
+                         "document_title": "Comparatif", "formats": ["markdown"]}
 
         approved = await client.approve(session_id, True)
         assert approved["type"] == "message"
@@ -171,6 +178,36 @@ async def test_identical_answers_through_either_backing(
         # of `outputs`.
         Path(outputs[0]["path"]).unlink()
         assert await client.find_output(job["job_id"], outputs[0]["name"]) is None
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
+async def test_a_document_that_cannot_be_produced_is_refused_by_both_backings(
+    store, checkpointer, tmp_path, over_http
+):
+    """A direct launch takes the same document decisions as the chat's (#55),
+    and the same refusals: a format nothing renders here, a name that is not a
+    filename. The embedded backing raises `ValueError` out of `create_job`;
+    over HTTP that is a 400 the client turns back into the same exception, so
+    a front-end never has to ask which backing it holds — and nothing is
+    launched either way.
+    """
+    service = _service_over(store, checkpointer, tmp_path)
+    client = daemon_client_over(create_api(service)) if over_http else service
+    try:
+        with pytest.raises(ValueError, match="unknown report format"):
+            await client.launch_job("compare them", formats=["docx"])
+        with pytest.raises(ValueError, match="document name"):
+            await client.launch_job("compare them", document_name="../escape")
+        assert await client.list_jobs() == []
+
+        named = await client.launch_job(
+            "compare them", document_name="chair_notes",
+            document_title="Comparatif", formats=["markdown"])
+        finished = await wait_done(client, named["job_id"])
+        assert finished["document_name"] == "chair_notes"
+        assert finished["report_path"].endswith("chair_notes.md")
     finally:
         await client.aclose()
 
@@ -283,7 +320,10 @@ async def test_a_turn_is_the_same_flow_through_either_backing(
         # `sources` rides on the terminal and must survive the HTTP round
         # trip as the same JSON — a list on both sides, never a tuple.
         assert proposing[-1] == {"type": "proposal", "query": "analyse it",
-                                 "rationale": "multi-step", "sources": []}
+                                 "rationale": "multi-step", "sources": [],
+                                 "document_name": "chair_notes",
+                                 "document_title": "Comparatif",
+                                 "formats": ["markdown"]}
 
         answering = [e async for e in client.stream_approval(session_id, True)]
         assert {"type": "tool_finished", "name": "launch_job"} in answering

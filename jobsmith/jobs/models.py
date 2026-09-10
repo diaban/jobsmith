@@ -57,6 +57,19 @@ class Job:
     status: JobStatus
     query: str
     inputs: dict[str, Any] = field(default_factory=dict)
+    # What the requester asked the DOCUMENT to be (#55) — facts about the job,
+    # decided once and recorded, never re-derived at write time. All three are
+    # optional and each defaults on its own: a name does not decide a title,
+    # and neither decides a format.
+    #   document_name   filename stem, no extension and no separator (the
+    #                   formats decide the extensions); "" ⇒ the job id
+    #   document_title  the heading inside the document; "" ⇒ derived from the
+    #                   request (`document_title()` in report.py, #54)
+    #   formats         which Reporters render it, first one is the `main`
+    #                   deliverable; empty ⇒ whatever the deployment composed
+    document_name: str = ""
+    document_title: str = ""
+    formats: list[str] = field(default_factory=list)
     session_id: str | None = None           # chat session that launched it, if any
     created_at: str = ""                    # ISO timestamps
     updated_at: str = ""
@@ -109,6 +122,9 @@ class Job:
             "status": self.status.value,
             "query": self.query,
             "inputs": self.inputs,
+            "document_name": self.document_name,
+            "document_title": self.document_title,
+            "formats": self.formats,
             "session_id": self.session_id,
             "created_at": self.created_at,
             "updated_at": self.updated_at,

@@ -22,7 +22,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from ..core.usage import Usage
-from ..jobs.report import format_step_usage, format_usage
+from ..jobs.report import deliverable_filenames, format_step_usage, format_usage
 from ..service import TERMINAL_EVENTS, BinaryDeliverable, ChatStreamError, ServiceUnavailable
 from .client import AgentClient
 
@@ -226,6 +226,16 @@ async def run_repl(client: AgentClient, session_id: str) -> None:
                         # is approving this list, so it is never left unsaid
                         if sources := reply.get("sources"):
                             print(f"    reads    : {', '.join(sources)}")
+                        # ...and what it would leave behind: the name is the
+                        # thing they will look for on disk afterwards (#55)
+                        if title := reply.get("document_title"):
+                            print(f"    titled   : {title}")
+                        if files := deliverable_filenames(
+                                str(reply.get("document_name") or ""),
+                                reply.get("formats") or []):
+                            print(f"    writes   : {', '.join(files)}")
+                        elif formats := reply.get("formats"):
+                            print(f"    writes   : {', '.join(formats)}")
                         answer = await loop.run_in_executor(None, input, "  launch it? [y/N] ")
                         approved = answer.strip().lower() in ("y", "yes", "o", "oui")
                         reply = await render_turn(

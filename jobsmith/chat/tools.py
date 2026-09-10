@@ -36,6 +36,11 @@ from langgraph.types import interrupt
 from ..core.state import CONVERSATION_INPUT_KEY, SOURCE_FILES_INPUT_KEY
 from ..jobs.manager import JobManager
 from ..jobs.models import Job, JobStatus
+from ..jobs.report import (
+    available_formats,
+    document_stem,
+    ensure_formats_available,
+)
 
 # Bounds on the conversation excerpt attached to a launch (~400 tokens worst case).
 MAX_CONTEXT_TURNS = 6      # most recent user/assistant turns kept
@@ -179,6 +184,9 @@ def make_job_tools(manager: JobManager, session_id: str) -> list[Any]:
         runtime: ToolRuntime,
         inputs: dict[str, Any] | None = None,
         source_files: list[str] | None = None,
+        document_name: str | None = None,
+        document_title: str | None = None,
+        formats: list[str] | None = None,
     ) -> str:
         """Launch a complex task as a BACKGROUND job (research, analysis,
         anything needing several capability steps).
@@ -202,6 +210,18 @@ def make_job_tools(manager: JobManager, session_id: str) -> list[Any]:
         sees this list when approving the launch and is handing those files
         over, so a path they did not mention has no business in it.
 
+        `document_name` is what the file should be CALLED — a short filename
+        with no extension, no directory and no spaces (`chair_comparison`).
+        Use the user's own name when they gave one; when they did not, propose
+        a short one from the subject rather than leaving it: the alternative is
+        a file named after a job id. `document_title` is the heading INSIDE the
+        document, in the language of the request, and is a different decision —
+        naming one never names the other. `formats` is which files are written
+        (`["markdown"]`, `["markdown", "pdf"]`, ...); the FIRST is the main
+        deliverable. Ask for what the user asked for and nothing more, and
+        never promise a file in your own prose — only these arguments produce
+        one. The user sees all three when approving.
+
         Returns immediately; the conversation continues while the job runs.
         """
         job_inputs = dict(inputs or {})
@@ -217,10 +237,30 @@ def make_job_tools(manager: JobManager, session_id: str) -> list[Any]:
         if sources:
             job_inputs[SOURCE_FILES_INPUT_KEY] = sources
 
+        # Refused BEFORE the card, not after the run: a format nothing can
+        # render here and a name that is not a filename are both things the
+        # model can fix on the spot, and the answer goes back to it as text.
+        # `PathRefused` is a `ValueError`, so one arm covers both.
+        try:
+            wanted = ensure_formats_available(formats or [])
+            given = (document_name or "").strip()
+            name = document_stem(given) if given else ""
+        except ValueError as refused:
+            return (f"NOT launched: {refused}. Nothing ran. Tell the user what "
+                    f"is possible — formats available here: "
+                    f"{', '.join(available_formats())} — and propose a launch again.")
+        title = (document_title or "").strip()
+
         decision = interrupt({
             "action": "launch_job",
             "query": query,
             "rationale": rationale,
+            # what the document will be called, be titled, and be written as:
+            # a file promised in prose and never written is what #55 is about,
+            # and these are the only three things that produce one
+            "document_name": name,
+            "document_title": title,
+            "formats": wanted,
             # what will travel besides the query, so a front-end can show
             # exactly what the user is approving
             "context": job_inputs.get(CONVERSATION_INPUT_KEY, ""),
@@ -231,7 +271,9 @@ def make_job_tools(manager: JobManager, session_id: str) -> list[Any]:
         })
         if not (isinstance(decision, dict) and decision.get("approved")):
             return "The user DECLINED the launch. Do not launch this job; continue the conversation."
-        job = await manager.create_job(query, job_inputs, session_id=session_id)
+        job = await manager.create_job(
+            query, job_inputs, session_id=session_id,
+            document_name=name, document_title=title, formats=wanted)
         manager.start_job(job.job_id)
         return (
             f"Job {job.job_id} launched in the background (short id {job.job_id[:8]}). "
