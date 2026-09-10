@@ -14,6 +14,7 @@ from langgraph.constants import END
 from ...core.capability import Capability, CapabilityBaseState, CapabilitySpec
 from ...core.deps import LLMClient
 from ...core.state import CapabilityResult
+from ._step import SUBJECT_ONLY_RULE
 
 
 class ResearchState(CapabilityBaseState, total=False):
@@ -60,7 +61,8 @@ class ResearchCapability(Capability):
         try:
             raw = await self.llm.chat(
                 messages=[
-                    {"role": "system", "content": self.DECOMPOSE_SYSTEM},
+                    {"role": "system",
+                     "content": self.DECOMPOSE_SYSTEM + SUBJECT_ONLY_RULE},
                     {"role": "user", "content": state["query"]},
                 ],
                 response_format={"type": "json_object"},
@@ -80,7 +82,8 @@ class ResearchCapability(Capability):
         try:
             notes = await self.llm.chat(
                 messages=[
-                    {"role": "system", "content": self.NOTES_SYSTEM},
+                    {"role": "system",
+                     "content": self.NOTES_SYSTEM + SUBJECT_ONLY_RULE},
                     {
                         "role": "user",
                         "content": (

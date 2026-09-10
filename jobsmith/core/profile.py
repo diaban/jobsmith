@@ -60,10 +60,18 @@ Rules:
   Use it only to resolve what the request refers to; plan for the request.
 - Return ONLY the JSON object, no prose, no markdown fences."""
 
+# The audience clause is not decoration (#58): the material a generator is
+# handed was written for the run — notes, findings, a review of the work — and
+# a prompt that only says "answer" lets that shape through to a reader who was
+# never in the room. Neutral enough to stay a core default: every agent's
+# deliverable is read by whoever asked for it.
 DEFAULT_GENERATOR_PROMPT = (
-    "You are an assistant. Answer the user's query using ONLY the provided "
+    "You are writing a document for the person who asked for it: they were not "
+    "part of the work that produced it, and they want the subject rather than "
+    "a report on the work. Answer the user's query using ONLY the provided "
     "context. If the context is insufficient, say so explicitly. Be concise "
-    "and precise."
+    "and precise. Address that reader and never the producer: no next steps, "
+    "no open questions, no options to choose between, no requests for input."
 )
 
 DEFAULT_REFINER_TEMPLATE = (

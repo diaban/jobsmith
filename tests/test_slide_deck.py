@@ -125,9 +125,34 @@ async def test_the_deck_is_built_from_what_the_other_steps_produced():
         "documents": {"ok": False, "error": "nothing found"},
     })
     user = llm.calls[0]["messages"][-1]["content"]
-    assert user.index("[analysis]") < user.index("[research]") < user.index("[critique]")
+    assert user.index("[analysis") < user.index("[research") < user.index("[critique")
     assert "the finding" in user and "brief the board" in user
     assert "nothing found" not in user            # a failed step has no material
+
+
+async def test_the_internal_review_reaches_the_deck_labelled_as_a_review():
+    """#58: the deck is the one deliverable that reads the material directly.
+
+    `critique` is agent-facing by design — its own prompt asks it to challenge
+    the work and suggest improvements — so a block tagged only `[critique]` is
+    material the model has no reason to treat differently, and it did not: the
+    run that opened #58 shipped slides titled *État actuel et risques* and
+    *Prochaines étapes* to someone who had asked about a subject. The block now
+    carries what it *is*, and `DESIGN_SYSTEM` says what to do with a block of
+    that kind. Read off `MATERIAL` rather than retyped here: the label and the
+    prompt are the fix, and a test that copies them proves neither travelled.
+    """
+    roles = {name: role for name, _key, role in SlideDeckCapability.MATERIAL}
+    assert "OF THE WORK" in roles["critique"]
+
+    cap, llm = make_capability()
+    await run_capability(cap, job_id="job1", results={
+        "critique": {"ok": True, "data": {"critique": "the weak point"}},
+    })
+    system, user = (m["content"] for m in llm.calls[0]["messages"])
+    assert f"[critique — {roles['critique']}]" in user
+    assert "the weak point" in user
+    assert "labelled with what it is" in system     # the rule for such a block
 
 
 async def test_a_deck_with_no_material_still_gets_the_request():
@@ -254,9 +279,12 @@ async def test_the_capability_presents_its_own_deck():
     assert "1. The problem" in report and "2. What we did" in report
     assert "long waits" not in report                       # an outline, not the deck
 
+    # ...and the generator gets the fact, not the outline: a written answer
+    # handed the slide titles transcribes them instead of referring to them,
+    # and the deck's register comes with them (#58)
     context = cap.render_context(result)
-    assert "Slide deck produced" in context and "1. The problem" in context
-    assert "long waits" not in context      # the model wrote this material already
+    assert "Slide deck produced" in context and "2 slides" in context
+    assert "The problem" not in context and "long waits" not in context
     assert cap.render_report({"ok": False, "error": "boom"}) == "_boom_"
     assert cap.render_context({"ok": True, "data": {}}) is None
 

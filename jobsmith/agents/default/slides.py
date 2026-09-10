@@ -165,29 +165,53 @@ class SlideDeckCapability(Capability):
     )
 
     DESIGN_SYSTEM = (
-        "Design a slide deck that presents the provided material for the "
-        'request. Return JSON: {"title": "<deck title>", "subtitle": "<one '
-        'line>", "slides": [{"title": "<slide title>", "bullets": ["<short '
-        'phrase>", ...], "notes": "<what the presenter says>"}, ...]}.\n'
+        "Design a slide deck about the SUBJECT of the request, for the person "
+        "who asked and the room they will show it to. They were not part of "
+        'the work that produced it. Return JSON: {"title": "<deck title>", '
+        '"subtitle": "<one line>", "slides": [{"title": "<slide title>", '
+        '"bullets": ["<short phrase>", ...], "notes": "<what the presenter '
+        'says>"}, ...]}.\n'
         f"- Between 4 and {MAX_SLIDES} slides, ordered as an argument: what "
         "this is about, the substance, then what follows from it. One idea "
         "per slide.\n"
         f"- 3 to {MAX_BULLETS} bullets per slide, short phrases a room reads "
         "at a glance — never sentences, never paragraphs.\n"
-        "- notes: two or three sentences the presenter says over that slide, "
-        "carrying the detail the bullets left out.\n"
         "- Use ONLY the provided material. If it is thin, make fewer slides "
         "rather than padding them.\n"
+        "- Each block of material is labelled with what it is. A block that "
+        "reviews the WORK is evidence: correct the slides with it, drop what "
+        "it undermines, and never give it a slide of its own.\n"
+        "- Every slide is about the subject. None is about the state of the "
+        "work, what is still missing, what remains to be done, options for "
+        "the reader to choose between, or a template to fill in; no slide "
+        "asks the reader for input.\n"
+        "- notes: two or three sentences the presenter says over that slide, "
+        "carrying the detail the bullets left out.\n"
         "Write in the language of the request. No prose, no markdown, JSON only."
     )
 
-    #: Where the deck's content comes from, in priority order. Fixed rather
-    #: than derived from `results`, which arrives in wave order — a consumer
-    #: must never iterate that (see `core/state.py`).
-    MATERIAL: tuple[tuple[str, str], ...] = (
-        ("analysis", "analysis"),
-        ("research", "notes"),
-        ("critique", "critique"),
+    #: Where the deck's content comes from, in priority order, and **what
+    #: each block is** — `(capability, data key, what this material is)`.
+    #: Fixed rather than derived from `results`, which arrives in wave order
+    #: (a consumer must never iterate that, see `core/state.py`).
+    #:
+    #: The third field is the fix for #58. `critique` is agent-facing by
+    #: design — it reviews the work, not the subject — and a deck handed that
+    #: block under a bare `[critique]` tag rendered it faithfully: two slides
+    #: of gaps and next steps, shown to someone who asked about the subject.
+    #: It stays in the material because a review that says a claim is
+    #: unsupported is worth knowing before it reaches a slide; what changes is
+    #: that the block now says what it is, and `DESIGN_SYSTEM` says what to do
+    #: with a block of that kind.
+    MATERIAL: tuple[tuple[str, str, str], ...] = (
+        ("analysis", "analysis", "findings about the subject"),
+        ("research", "notes", "research notes about the subject"),
+        (
+            "critique",
+            "critique",
+            "an internal review OF THE WORK, not of the subject — evidence "
+            "only, never the subject of a slide",
+        ),
     )
 
     def __init__(
@@ -206,10 +230,15 @@ class SlideDeckCapability(Capability):
     # -------------------- Nodes --------------------
 
     def _material(self, state: DeckState) -> str:
-        """Everything upstream worth putting on a slide, in a fixed order."""
+        """Everything upstream worth putting on a slide, in a fixed order.
+
+        Each block is labelled with what it *is*, not only with the step that
+        wrote it: the deck is the one deliverable that reads this material
+        directly, with no generation between it and the reader (#58).
+        """
         results = state.get("results", {})
         blocks: list[str] = []
-        for name, key in self.MATERIAL:
+        for name, key, role in self.MATERIAL:
             result = results.get(name)
             if not result or not result.get("ok"):
                 continue
@@ -217,7 +246,7 @@ class SlideDeckCapability(Capability):
             # `data` at all
             text = (result.get("data") or {}).get(key)
             if text:
-                blocks.append(f"[{name}]\n{text}")
+                blocks.append(f"[{name} — {role}]\n{text}")
         if not blocks:
             return "(no upstream material — build the deck from the request alone)"
         return "\n\n".join(blocks)[: self.max_material_chars]
@@ -309,18 +338,25 @@ class SlideDeckCapability(Capability):
     # -------------------- Rendering --------------------
 
     def render_context(self, result: CapabilityResult) -> str | None:
-        """For the model: that a deck exists and how it is structured.
+        """For the model: that a deck exists, and nothing it can copy out.
 
-        Its outline, never its bullets — those are this job's own material
-        said back to it, and the written answer is not a transcript of the
-        deck. Knowing the deck's shape is what lets the answer refer to it.
+        It used to hand over the outline, on the reasoning that knowing the
+        deck's shape is what lets the answer refer to it. Measured on a real
+        run (#58), the answer did not refer to the deck — it *transcribed* it:
+        a section listing the ten slide titles, then the same list again as a
+        summary, and with them the deck's own register ("Prochaines étapes")
+        inside a document whose prompt forbids exactly that. The report and
+        the deck are two documents about one subject, not one quoting the
+        other, so what travels is that the annex exists and how big it is.
+
+        `render_report` still shows the outline: that is the provenance
+        section, written for a human who wants to know what the run produced.
         """
         deck = Deck.from_dict((result.get("data") or {}).get("deck"))
         if not deck.slides:
             return None
-        outline = "\n".join(f"{i}. {s.title}" for i, s in enumerate(deck.slides, 1))
         return (f"# Slide deck produced\n\n**{deck.title or 'Untitled'}** — "
-                f"{len(deck.slides)} slides\n\n{outline}")
+                f"{len(deck.slides)} slides, delivered alongside this report.")
 
     def render_report(self, result: CapabilityResult) -> str | None:
         """For the human: the file it produced, and what is on it."""

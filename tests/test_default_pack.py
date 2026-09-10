@@ -5,6 +5,9 @@ from conftest import FakeLLM, plan_json
 
 from jobsmith.agents.base import AgentContext
 from jobsmith.agents.default import default_capabilities
+from jobsmith.agents.default._step import SUBJECT_ONLY_RULE
+from jobsmith.agents.default.analysis import AnalysisCapability
+from jobsmith.agents.default.critique import CritiqueCapability
 from jobsmith.agents.default.research import ResearchCapability
 from jobsmith.core.builder import build_agent
 from jobsmith.core.deps import Deps
@@ -61,7 +64,29 @@ async def test_pack_chain_end_to_end(checkpointer):
 
     # merged context follows plan order with each capability's heading
     ctx = out["merged_context"]
-    assert ctx.index("# Research notes") < ctx.index("# Analysis") < ctx.index("# Critique")
+    assert (ctx.index("# Research notes") < ctx.index("# Analysis")
+            < ctx.index("# Internal review of the work"))   # labelled for what it is (#58)
+
+
+async def test_every_material_step_is_told_to_work_on_the_subject_alone():
+    """#58, one step upstream of the deliverable.
+
+    A request carries a subject *and* instructions about the document ("a
+    printable one-pager, plus a deck for the team"). A step that treats both
+    as its material analyses the task: the observed report about chairs grew
+    a section of advice on building the deck and an invented slide structure.
+    Every prompt of the pack that produces material carries the rule, so a
+    capability added later inherits it from `SingleStepCapability.work`.
+    """
+    llm = FakeLLM(PACK_SCRIPT)
+    state = {"query": "study X and make me a deck", "inputs": {}}
+    await ResearchCapability(llm).build().ainvoke(state)
+    await AnalysisCapability(llm).build().ainvoke(state)
+    await CritiqueCapability(llm).build().ainvoke(state)
+
+    systems = [c["messages"][0]["content"] for c in llm.calls]
+    assert len(systems) == 4                       # decompose, notes, analysis, critique
+    assert all(SUBJECT_ONLY_RULE in s for s in systems)
 
 
 async def test_pack_degrades_when_one_step_fails(checkpointer):
