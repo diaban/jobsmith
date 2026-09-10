@@ -84,10 +84,48 @@ class JobDocument:
         return [(dep, row.capability) for row in self.plan for dep in row.depends_on]
 
 
+#: What a deliverable is called when its request says nothing usable. Shared
+#: with `FileReporter.title`, so the file and the document agree.
+DEFAULT_TITLE = "Job report"
+
+#: How long a derived title may be. The request is the only source there is
+#: today; the day a job carries a title of its own (#55), this stays as the
+#: floor under it.
+TITLE_MAX = 80
+
+
+def document_title(request: str, *, limit: int = TITLE_MAX) -> str:
+    """The deliverable's title, derived from the request without cutting a word.
+
+    It used to be `job.query[:80]` — a raw slice, landing wherever the count
+    landed, with nothing to say it was cut (#54):
+
+        # Réaliser un comparatif détaillé des chaises ergonomiques adaptées à un utilisate
+
+    The word is *utilisateur*. This is the first line of the deliverable, and
+    the one part a reader sees before deciding whether to read the rest.
+
+    So: whitespace collapses (a request spanning lines would otherwise break
+    the markdown heading in two), a request that fits is left exactly as it
+    is, and a longer one is cut at the last word boundary that fits and marked
+    with an ellipsis. A single word longer than the limit has no boundary to
+    cut on and is cut anyway — a title too long to be one is the worse defect,
+    and the ellipsis still says it was cut.
+    """
+    text = " ".join((request or "").split())
+    if not text:
+        return DEFAULT_TITLE
+    if len(text) <= limit:
+        return text
+    head = text[:limit - 1]                     # leave room for the ellipsis
+    cut = head.rsplit(" ", 1)[0] if " " in head else head
+    return cut.rstrip(" ,;:.-—–") + "…"
+
+
 def build_document(job: Job, registry: Any = None, *, with_annexes: bool = False) -> JobDocument:
     """Turn a finished Job into the document a Reporter serializes."""
     doc = JobDocument(
-        title=job.query[:80],
+        title=document_title(job.query),
         request=job.query,
         job_id=job.job_id,
         session_id=job.session_id,
@@ -238,7 +276,7 @@ class FileReporter:
 
     format = "text"
     extension = "txt"
-    title = "Job report"
+    title = DEFAULT_TITLE
     binary = False          # is the file bytes rather than text?
 
     def __init__(self, registry: Any = None, *, with_annexes: bool = False):
