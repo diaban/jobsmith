@@ -1,25 +1,41 @@
 """Where the default agent's material comes from.
 
-`DocumentSource` is the **port**: what the `documents` capability needs, said
-in its own terms. It is deliberately not shaped like any particular backend —
-a web-search API, a vector store or the local filesystem all fit behind it,
-and swapping one for another must not touch the capability.
+**Two ports, because there are two questions.**
 
-`LocalFiles` is the first adapter: the files in a directory, ranked by term
-overlap. It needs no key, no network and no service, which is what makes it
-usable in tests and in CI.
+`DocumentSource.search(query, limit)` answers *"what do my files say about
+X"*: it ranks. `DocumentReader.read(ref)` answers *"give me THAT document"*:
+it does not rank, it either hands the file over or says why it cannot. A
+`search` that happened to match a filename would be a coincidence, not an
+answer, which is why the second is a port of its own rather than an argument
+to the first — and why the capabilities consuming them are two steps the
+planner chooses between (`documents` / `read_files`) rather than one step
+with a mode.
 
-Deliberately NOT semantic: this is keyword scoring, and the docstrings say so
-rather than implying retrieval quality the code does not have. A vector-store
-adapter is the next implementation of the same port.
+Both are deliberately not shaped like any particular backend: a web-search
+API, a vector store, object storage or the local filesystem all fit behind
+them, and swapping one for another must not touch the capability.
+
+Adapters here are the local ones, because they need no key, no network and no
+service — which is what makes them usable in tests and in CI:
+
+- `LocalFiles` for `DocumentSource` — the files in a directory, ranked by
+  term overlap. Deliberately NOT semantic: this is keyword scoring, and the
+  docstrings say so rather than implying retrieval quality the code does not
+  have. A vector-store adapter is the next implementation of that port.
+- `LocalFileReader` for `DocumentReader` — a file named by the request, if it
+  lands inside a root the deployment declared readable (`core/paths.py`).
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+
+from ...core.paths import PathRefused, resolve_within
 
 # Text-ish files worth reading. Binary formats (pdf, docx) need a parser and
 # belong in their own adapter, not in a widening list here.
@@ -45,6 +61,30 @@ class DocumentSource(Protocol):
     """The port. One method, because that is all the capability needs."""
 
     async def search(self, query: str, *, limit: int = 8) -> list[Document]: ...
+
+
+class DocumentUnavailable(Exception):
+    """A named document cannot be served, and the message says why.
+
+    Raised rather than answered with nothing, for the same reason
+    `TavilySource` raises on an HTTP error: "there is no such file", "it is
+    outside the readable area" and "it is not text" are three different facts
+    about a file someone deliberately pointed at, and an empty result flattens
+    all three into "that document said nothing" — which is the one reading
+    that is never true.
+    """
+
+
+class DocumentReader(Protocol):
+    """The port for *this document*, named by the request.
+
+    `read` takes the reference exactly as the request wrote it — a path, as
+    far as the local adapter is concerned, but the capability never assumes
+    that: an adapter over object storage takes a key, and one over a document
+    system takes an id, and neither changes the capability.
+    """
+
+    async def read(self, ref: str) -> Document: ...
 
 
 def _terms(text: str) -> list[str]:
@@ -135,3 +175,83 @@ class LocalFiles:
                 ))
         scored.sort(key=lambda d: (-d.score, d.id))
         return scored[:limit]
+
+
+class LocalFileReader:
+    """`DocumentReader` over a fixed set of readable roots.
+
+    The roots come from the composition root (`AgentContext.readable_roots`
+    plus whatever the agent already exposes), and `core.paths.resolve_within`
+    is the entire access rule: a reference is resolved — symlinks followed,
+    `..` collapsed — and then has to land inside one of them. Nothing here
+    inspects the spelling of a path, so `../../etc/passwd`, a symlink out of
+    the tree and an absolute path to somewhere else are one refusal with one
+    message, and a root the deployment did add is reachable however the user
+    happens to write it.
+
+    Whole files, not chunks: the request named this document, so ranking part
+    of it against the request would answer a question nobody asked. What the
+    reader does impose is a **budget** — a file longer than `max_chars` is cut
+    and the cut is written into the text itself, where both the model and the
+    human reading the report can see it. Silence there would be the same
+    defect as a dropped token: a shorter document than the one on disk, with
+    nothing saying so.
+    """
+
+    def __init__(self, roots: Iterable[str | Path], *, max_chars: int = 40_000):
+        self.roots = tuple(Path(r).expanduser() for r in roots)
+        self.max_chars = max_chars
+
+    async def read(self, ref: str) -> Document:
+        try:
+            path = resolve_within(ref, self.roots)
+        except PathRefused as refused:
+            # The policy speaks in paths; the port speaks in documents. One
+            # exception type reaches the capability, whatever went wrong.
+            raise DocumentUnavailable(str(refused)) from refused
+        # to_thread for the same reason `LocalArtifactStore.write` uses it:
+        # capability waves run in parallel and a large file is a blocking read.
+        text, cut = await asyncio.to_thread(self._read_text, path, ref)
+        if cut:
+            text += (f"\n\n…[truncated: only the first {self.max_chars} characters "
+                     f"of this file were read]")
+        return Document(id=ref, text=text, title=Path(ref).name or ref, source=str(path))
+
+    def _read_text(self, path: Path, ref: str) -> tuple[str, bool]:
+        """The file's text and whether it was cut short. Refuses, never guesses."""
+        if not path.is_file():
+            raise DocumentUnavailable(f"{ref!r}: no such file")
+        budget = self.max_chars * 4 + 1          # utf-8 is at most 4 bytes a character
+        try:
+            with path.open("rb") as handle:
+                raw = handle.read(budget)
+                cut = handle.read(1) != b""
+        except OSError as broken:
+            raise DocumentUnavailable(
+                f"{ref!r}: cannot be read ({broken.strerror or broken})") from broken
+        text = self._decode(raw, ref, cut=cut)
+        if len(text) > self.max_chars:
+            text, cut = text[: self.max_chars], True
+        if not text.strip():
+            raise DocumentUnavailable(f"{ref!r}: the file is empty")
+        return text, cut
+
+    @staticmethod
+    def _decode(raw: bytes, ref: str, *, cut: bool) -> str:
+        """utf-8, strictly — a decode that "succeeds" by ignoring bytes lies.
+
+        `errors="ignore"` is what retrieval uses (`LocalFiles`), and it is
+        right there: one unreadable file among five hundred should not stop a
+        search. Here the user named THIS file, so mojibake would be handed
+        back as its contents; refusing says the true thing instead.
+        """
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError as bad:
+            # A read stopped at a byte budget can split a character in two;
+            # a failure anywhere earlier means the file simply is not text.
+            if cut and bad.start >= len(raw) - 3:
+                return raw[: bad.start].decode("utf-8")
+            raise DocumentUnavailable(
+                f"{ref!r}: not UTF-8 text — this reader serves text documents"
+            ) from bad

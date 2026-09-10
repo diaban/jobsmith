@@ -56,11 +56,24 @@ class AgentContext:
     one; it is `None` only for a context assembled by hand, and a capability
     that cannot write should then stay out of the registry — the same rule
     `documents` and `vision` already follow.
+
+    `readable_roots` is the other half of that, and the same kind of fact: the
+    local directories this deployment lets a capability READ a file out of
+    when the request names one (`core/paths.py` says what "inside a root"
+    means, and refuses everything else). It is the composition root's to
+    decide for exactly the reason `artifacts` is — where a job's files live is
+    decided next to `reports_dir`, and a capability that could widen its own
+    readable set would be a capability that could read anything. An agent may
+    add to it what it already exposes by other means (the `--docs` directory
+    is searchable, so refusing to open a file *in* it by name would be
+    incoherent), never more. Empty means no root: a capability that needs one
+    then stays out of the registry, the rule `documents` and `vision` follow.
     """
 
     llm: LLMClient
     resources: Any = None
     artifacts: ArtifactStore | None = None
+    readable_roots: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

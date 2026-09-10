@@ -33,7 +33,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 from langgraph.types import interrupt
 
-from ..core.state import CONVERSATION_INPUT_KEY
+from ..core.state import CONVERSATION_INPUT_KEY, SOURCE_FILES_INPUT_KEY
 from ..jobs.manager import JobManager
 from ..jobs.models import Job, JobStatus
 
@@ -178,6 +178,7 @@ def make_job_tools(manager: JobManager, session_id: str) -> list[Any]:
         rationale: str,
         runtime: ToolRuntime,
         inputs: dict[str, Any] | None = None,
+        source_files: list[str] | None = None,
     ) -> str:
         """Launch a complex task as a BACKGROUND job (research, analysis,
         anything needing several capability steps).
@@ -190,9 +191,16 @@ def make_job_tools(manager: JobManager, session_id: str) -> list[Any]:
         runs, so it must also read as a faithful statement of what they asked.
 
         `rationale` explains to the user why a job is needed and what it will
-        do. `inputs` carries structured material the job needs (file refs,
-        image keys, ...); the recent conversation turns are attached
-        automatically as background — never paste them into `query`.
+        do. `inputs` carries structured material the job needs (image keys,
+        ...); the recent conversation turns are attached automatically as
+        background — never paste them into `query`.
+
+        `source_files` names files the job must READ — a path the user gave,
+        or the report a previous job of this conversation produced. Write each
+        path exactly as it was given to you; never invent one, never guess at
+        a directory, and never paste a file's contents into `query`. The user
+        sees this list when approving the launch and is handing those files
+        over, so a path they did not mention has no business in it.
 
         Returns immediately; the conversation continues while the job runs.
         """
@@ -201,6 +209,13 @@ def make_job_tools(manager: JobManager, session_id: str) -> list[Any]:
         excerpt = recent_conversation(state.get("messages") or [])
         if excerpt:
             job_inputs.setdefault(CONVERSATION_INPUT_KEY, excerpt)
+        # A named file travels as an INPUT, never as prose the engine would
+        # have to parse back out of the query. Empty means "none": the key is
+        # left out entirely, so the planner drops the reading step instead of
+        # planning one that can only report that nothing was given.
+        sources = [ref for ref in (str(f).strip() for f in source_files or []) if ref]
+        if sources:
+            job_inputs[SOURCE_FILES_INPUT_KEY] = sources
 
         decision = interrupt({
             "action": "launch_job",
@@ -209,6 +224,10 @@ def make_job_tools(manager: JobManager, session_id: str) -> list[Any]:
             # what will travel besides the query, so a front-end can show
             # exactly what the user is approving
             "context": job_inputs.get(CONVERSATION_INPUT_KEY, ""),
+            # the files it will be allowed to open — the same guard the query
+            # gets, and for the stronger reason: this is the user handing
+            # something over, not the model restating what they asked
+            "sources": sources,
         })
         if not (isinstance(decision, dict) and decision.get("approved")):
             return "The user DECLINED the launch. Do not launch this job; continue the conversation."

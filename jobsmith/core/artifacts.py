@@ -45,6 +45,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from .paths import safe_name
+
 # `CapabilityResult.meta` key under which a capability declares what it wrote.
 # A convention, like CONVERSATION_INPUT_KEY in state.py: the manager reads it,
 # capabilities write it, and nothing else in the framework interprets `meta`.
@@ -143,28 +145,23 @@ class LocalArtifactStore:
 
         `name` is a filename, not a path: only its last component is kept, so
         a capability cannot escape the job's directory with `../` — it does
-        not know the layout and must not be able to reach outside it.
+        not know the layout and must not be able to reach outside it. That
+        rule lives in `core/paths.py` (`safe_name`) rather than here, because
+        a *name* chosen by a model is one question this project answers in
+        several places — see that module.
 
         The same name twice within one job overwrites, exactly like reusing a
         filename anywhere else; a capability that produces several files names
         them apart (its own `spec.name` is the obvious prefix).
         """
-        directory = self.root / _safe_segment(job_id, "job id")
+        directory = self.root / safe_name(job_id, "job id")
         directory.mkdir(parents=True, exist_ok=True)
-        path = directory / _safe_segment(Path(str(name)).name, "artifact name")
+        path = directory / safe_name(Path(str(name)).name, "artifact name")
         payload = data.encode("utf-8") if isinstance(data, str) else data
         # to_thread: capability waves run in parallel and a big file is a
         # blocking write; the event loop keeps the other branches moving.
         await asyncio.to_thread(path.write_bytes, payload)
         return str(path)
-
-
-def _safe_segment(value: str, what: str) -> str:
-    """One path component that cannot climb out of its parent."""
-    cleaned = (value or "").strip().strip("/\\")
-    if not cleaned or cleaned in {".", ".."} or "/" in cleaned or "\\" in cleaned:
-        raise ValueError(f"unusable {what}: {value!r}")
-    return cleaned
 
 
 __all__ = [

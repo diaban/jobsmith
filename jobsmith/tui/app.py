@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Sequence
 from typing import Any
 
 from textual import work
@@ -97,12 +98,17 @@ class ProposalCard(Static):
     escaped, never summarised.
     """
 
-    def __init__(self, query: str, rationale: str) -> None:
+    def __init__(self, query: str, rationale: str, sources: Sequence[str] = ()) -> None:
         super().__init__(classes="proposal")
+        # The files it would be allowed to open, when there are any: approving
+        # the job is approving this list, so it is shown, not summarised away.
+        reads = (f"[{render.DIM}]reads {escape(', '.join(sources))}[/]\n"
+                 if sources else "")
         self.update(
             f"[{render.ATTENTION}]a background job is proposed[/]\n"
             f"[b]{escape(query)}[/b]\n"
-            f"[{render.DIM}]{escape(rationale)}[/]\n\n"
+            f"[{render.DIM}]{escape(rationale)}[/]\n"
+            f"{reads}\n"
             f"[b {render.DONE}]y[/] [{render.DIM}]launch it[/]     "
             f"[b]n[/] [{render.DIM}]not now[/]"
         )
@@ -419,7 +425,8 @@ class JobsmithApp(App[None]):
     def _propose(self, terminal: dict[str, Any]) -> None:
         conversation = self.query_one("#conversation", VerticalScroll)
         conversation.mount(ProposalCard(str(terminal.get("query") or ""),
-                                        str(terminal.get("rationale") or "")))
+                                        str(terminal.get("rationale") or ""),
+                                        [str(s) for s in terminal.get("sources") or []]))
         conversation.scroll_end(animate=False)
         self._awaiting_approval = True
         prompt = self.query_one("#prompt", Input)

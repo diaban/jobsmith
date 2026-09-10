@@ -1,15 +1,20 @@
 """The default agent.
 
-`documents` → `research` → `analysis` → `critique`, and `slide_deck` when the
-request wants a presentation. The first step is what keeps a job from being
-the model talking to itself; the rest reason over whatever it found.
+`read_files` / `documents` → `research` → `analysis` → `critique`, and
+`slide_deck` when the request wants a presentation. The first step is what
+keeps a job from being the model talking to itself; the rest reason over
+whatever it found. The two grounding steps answer different questions —
+`read_files` opens the document the request NAMED, `documents` searches the
+configured material for a topic — which is why the planner is offered both
+rather than one step with a mode.
 
-Three steps appear **only when something backs them** — `documents` with
-`--docs PATH` / `$JOBSMITH_DOCS`, `web_search` with `$TAVILY_API_KEY`,
-`slide_deck` with a `DeckRenderer` (the extra `.[pptx]`). A capability the
-agent cannot serve should not be in the registry at all: the planner would
-otherwise plan a step that always fails. With none of them, the agent still
-works, LLM-only, needing nothing but a model key.
+Four steps appear **only when something backs them** — `read_files` with a
+readable root (see `readable_roots`), `documents` with `--docs PATH` /
+`$JOBSMITH_DOCS`, `web_search` with `$TAVILY_API_KEY`, `slide_deck` with a
+`DeckRenderer` (the extra `.[pptx]`). A capability the agent cannot serve
+should not be in the registry at all: the planner would otherwise plan a step
+that always fails. With none of them, the agent still works, LLM-only,
+needing nothing but a model key.
 """
 from __future__ import annotations
 
@@ -25,9 +30,10 @@ from .analysis import AnalysisCapability
 from .critique import CritiqueCapability
 from .documents import DocumentsCapability, WebSearchCapability
 from .profile import DEFAULT_APP_PROFILE
+from .read_files import ReadFilesCapability
 from .research import ResearchCapability
 from .slides import Deck, DeckRenderer, Slide, SlideDeckCapability
-from .sources import Document, DocumentSource, LocalFiles
+from .sources import Document, DocumentReader, DocumentSource, LocalFileReader, LocalFiles
 from .web import TavilySource
 
 
@@ -45,6 +51,11 @@ class DefaultResources:
     documents: DocumentSource | None = None
     web: DocumentSource | None = None
     decks: DeckRenderer | None = None
+    #: the directory `documents` was pointed at, when it IS a directory. Kept
+    #: beside the adapter rather than read back out of it: a `DocumentSource`
+    #: promises `search` and nothing else, and `read_files` needs the root as
+    #: a fact, not as an implementation detail prised out of the port.
+    documents_root: str | None = None
 
 
 def pick_docs(spec: str | None = None) -> str | None:
@@ -55,7 +66,8 @@ def pick_docs(spec: str | None = None) -> str | None:
     return flag or os.environ.get("JOBSMITH_DOCS") or None
 
 
-async def _open_local_files() -> DocumentSource | None:
+def _local_docs_root() -> str | None:
+    """The directory `--docs` / `$JOBSMITH_DOCS` points at, if it is one."""
     spec = pick_docs()
     if not spec:
         return None
@@ -64,7 +76,7 @@ async def _open_local_files() -> DocumentSource | None:
         print(f"[documents: {root} is not a directory — source disabled]", file=sys.stderr)
         return None
     print(f"[documents: local files under {root}]", file=sys.stderr)
-    return LocalFiles(root)
+    return str(root)
 
 
 async def _open_web(stack: AsyncExitStack) -> DocumentSource | None:
@@ -102,17 +114,51 @@ async def _open_decks() -> DeckRenderer | None:
 
 
 async def open_default_resources(stack: AsyncExitStack) -> DefaultResources:
+    docs_root = _local_docs_root()
     return DefaultResources(
-        documents=await _open_local_files(),
+        documents=LocalFiles(docs_root) if docs_root else None,
         web=await _open_web(stack),
         decks=await _open_decks(),
+        documents_root=docs_root,
     )
+
+
+def readable_roots(ctx: AgentContext, resources: DefaultResources) -> tuple[str, ...]:
+    """Where `read_files` may open a file, and nowhere else.
+
+    Two entries, and both are already exposed by this deployment — this agent
+    opens no new door:
+
+    - what the composition root declared (`ctx.readable_roots`, i.e. the
+      directory jobs write their deliverables and annexes into). That is the
+      whole point of the step: the report a job wrote twenty minutes ago is
+      exactly the file the next request names, so the write-then-read loop is
+      covered deliberately rather than by accident.
+    - the `--docs` directory, when there is one. A capability can already
+      search it and quote any passage of any file in it, so refusing to open
+      one *by name* would protect nothing and surprise everyone.
+
+    Order matters only for a relative reference that could match in both:
+    the job artifacts win, because that is the tree this product's own paths
+    point into.
+    """
+    roots = [root for root in ctx.readable_roots if root]
+    if resources.documents_root:
+        roots.append(resources.documents_root)
+    return tuple(dict.fromkeys(roots))
 
 
 def default_capabilities(ctx: AgentContext) -> list[Capability]:
     llm = ctx.llm
     resources: DefaultResources = ctx.resources or DefaultResources()
     capabilities: list[Capability] = []
+    # First, because a document the request named is the most specific
+    # material there is — and, like every other conditional step, present only
+    # when something backs it: no readable root, no capability. `requires_inputs`
+    # is the second gate, dropping it from any plan for a request that named
+    # no file at all.
+    if roots := readable_roots(ctx, resources):
+        capabilities.append(ReadFilesCapability(LocalFileReader(roots)))
     if resources.documents is not None:
         capabilities.append(DocumentsCapability(llm, resources.documents))
     if resources.web is not None:
@@ -146,14 +192,18 @@ __all__ = [
     "DeckRenderer",
     "DefaultResources",
     "Document",
+    "DocumentReader",
     "DocumentSource",
     "DocumentsCapability",
     "Slide",
     "SlideDeckCapability",
     "TavilySource",
     "WebSearchCapability",
+    "LocalFileReader",
     "LocalFiles",
+    "ReadFilesCapability",
     "ResearchCapability",
+    "readable_roots",
     "default_capabilities",
     "open_default_resources",
     "pick_docs",
