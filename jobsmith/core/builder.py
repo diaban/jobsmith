@@ -23,7 +23,14 @@ from langgraph.graph import StateGraph
 from .deps import Deps
 from .errors import Escalator, ExecutionError, UserErrorEmitter
 from .executor import Executor
-from .generation import ContextMerger, DirectResponder, Generator, PostProcessor, Refiner
+from .generation import (
+    ContextMerger,
+    DirectResponder,
+    Generator,
+    PostProcessor,
+    Refiner,
+    UnansweredEmitter,
+)
 from .planner import Planner
 from .profile import AgentProfile
 from .registry import CapabilityRegistry
@@ -65,6 +72,7 @@ class AgentBuilder:
         self.output_validator = OutputValidator(self.profile)
         self.refiner          = Refiner(deps, self.profile)
         self.post_processor   = PostProcessor()
+        self.unanswered       = UnansweredEmitter()
         self.execution_error  = ExecutionError()
         self.escalator        = Escalator(self.profile)
         self.user_error       = UserErrorEmitter(self.profile)
@@ -103,6 +111,14 @@ class AgentBuilder:
         # the refine cycle (the refine counter only advances on success).
         if any(not e["recoverable"] for e in state.get("errors", [])):
             return "execution_error"
+        # The generator declared it could not answer with what it was given
+        # (#59). That is a fact about the *material*, so it is settled before
+        # the validity of the draft is even consulted: refining a declared
+        # refusal against the same context can only produce the same refusal
+        # again — or, worse, the invented answer the declaration exists to
+        # avoid. Absent (`True`) is every run that declared nothing.
+        if not state.get("answered", True):
+            return "unanswered"
         if state.get("output_valid"):
             return "post_process"
         if state.get("refine_count", 0) >= state.get("max_refine", 2):
@@ -133,6 +149,7 @@ class AgentBuilder:
         g.add_node("validate_output",   self.output_validator.run)
         g.add_node("refine",            self.refiner.run)
         g.add_node("post_process",      self.post_processor.run)
+        g.add_node("unanswered",        self.unanswered.run)
         g.add_node("execution_error",   self.execution_error.run)
         g.add_node("escalate",          self.escalator.run)
         g.add_node("user_error",        self.user_error.run)
@@ -171,11 +188,13 @@ class AgentBuilder:
         g.add_edge("generation", "validate_output")
         g.add_conditional_edges("validate_output", self._route_validate_output, {
             "post_process": "post_process",
+            "unanswered": "unanswered",
             "refine": "refine",
             "execution_error": "execution_error",
         })
         g.add_edge("refine", "generation")
         g.add_edge("post_process", END)
+        g.add_edge("unanswered", END)
 
         # Error routing
         g.add_conditional_edges("execution_error", self._route_execution_error, {

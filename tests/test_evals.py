@@ -189,6 +189,10 @@ def test_a_clean_observation_passes_everything():
         ("report_reader_facing", {
             "final_answer": "The comparison holds.\n\n## Next steps\n\n- confirm "
                             "the scope with whoever asked for this"}),
+        # a run that declared it could not answer, in a file that says nothing
+        # about it — the deliverable then reads exactly like a report (#59)
+        ("refusal_declared", {"terminal_kind": "unanswered",
+                              "report_text": "# t\n\nsomething plausible\n"}),
     ],
 )
 def test_each_check_fires_on_its_own_violation(check, broken):

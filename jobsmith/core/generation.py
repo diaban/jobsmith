@@ -1,19 +1,21 @@
 """Generation pipeline.
 
-Five classes:
+Six classes:
 - ContextMerger:   deterministic node — asks each capability to render its own
   result (render_context), iterating in PLAN order for determinism
 - Generator:       LLM call to produce the draft answer
 - DirectResponder: the router's "direct" route — answers without capabilities
 - Refiner:         LLM call to fix a rejected draft
 - PostProcessor:   marks the terminal answer (persistence lives in the job layer)
+- UnansweredEmitter: marks the terminal of a run that declared it could not
+  answer (the other half of the same decision)
 """
 from __future__ import annotations
 
 from .deps import Deps
-from .profile import AgentProfile
+from .profile import NO_ANSWER_MARKER, AgentProfile
 from .registry import CapabilityRegistry
-from .state import AgentState, NodeError
+from .state import TERMINAL_UNANSWERED, AgentState, NodeError
 
 # What DirectResponder renders where the capability list would go when the
 # registry is empty. Not a profile message: nothing here is shown to the human,
@@ -44,6 +46,38 @@ class ContextMerger:
         return {"merged_context": "\n\n".join(parts) if parts else self.empty_message}
 
 
+# Characters a model wraps a line in when it cannot resist formatting one:
+# `**NO_ANSWER: ...**`, `> NO_ANSWER: ...`, `# NO_ANSWER: ...`. Stripped before
+# the marker is looked for, and after the reason is cut off it.
+_DECORATION = " \t`*_#>-"
+
+
+def split_declaration(reply: str) -> tuple[str, bool]:
+    """Split the generator's structural declaration off its prose.
+
+    Returns `(text, answered)`. The generator is asked for one marker line —
+    and asked for it ONLY when it cannot answer (`NO_ANSWER_INSTRUCTION`), so
+    the absence of a declaration is the overwhelmingly common case and means
+    exactly what it meant before this existed: the reply is the answer.
+
+    This is a protocol, not a heuristic: only the FIRST line is looked at, and
+    only for the marker the prompt asked for. An answer that merely reads like
+    a refusal ("the sources disagree, so no figure can be given") is still an
+    answer — searching prose for regret is what this exists instead of.
+
+    What follows the marker on that line is the model's one-line reason. It is
+    folded back into the text rather than carried as a field of its own: the
+    explanation below it is the same thing said at length, and the reason is
+    all there is to keep when the model wrote nothing else.
+    """
+    head, _, rest = reply.lstrip().partition("\n")
+    declaration = head.strip().strip(_DECORATION)
+    if not declaration.upper().startswith(NO_ANSWER_MARKER):
+        return reply, True
+    reason = declaration[len(NO_ANSWER_MARKER):].strip().strip(_DECORATION).strip()
+    return rest.strip() or reason, False
+
+
 class Generator:
     def __init__(self, deps: Deps, profile: AgentProfile):
         self.deps = deps
@@ -65,7 +99,11 @@ class Generator:
                 ],
                 temperature=self.temperature,
             )
-            return {"draft_answer": answer}
+            # Both keys, always: `answered` is re-decided on every generation,
+            # so a refusal that a later attempt fixed cannot outlive the draft
+            # it was about (the refine cycle re-enters this node).
+            text, answered = split_declaration(answer)
+            return {"draft_answer": text, "answered": answered}
         except Exception as e:
             err: NodeError = {
                 "source": "generation",
@@ -179,3 +217,26 @@ class PostProcessor:
         # as the "no answer" the job layer already models (Job.final_answer is
         # `str | None`, and the reporter renders it as "(no answer)").
         return {"final_answer": state.get("draft_answer"), "terminal_kind": "answer"}
+
+
+class UnansweredEmitter:
+    """Terminal of a run whose generator declared it could not answer.
+
+    A twin of `PostProcessor`, and deliberately not a branch inside it: which
+    terminal a run reaches is a control-flow decision, so it lives in the
+    builder's path map (`_route_validate_output`) where the empty plan and the
+    refine cycle already live, and each terminal node states one outcome.
+
+    It emits the text anyway. The draft is not a failure to be discarded — it
+    is the run explaining what it would have needed, which is the most useful
+    thing a job that could not answer can hand back. `terminal_kind` is what
+    says how to read it, so no reader has to infer the outcome from the prose.
+    """
+
+    async def run(self, state: AgentState) -> dict:
+        # Same read as PostProcessor's: `draft_answer` is guaranteed by graph
+        # order (generation ran), not by the schema.
+        return {
+            "final_answer": state.get("draft_answer"),
+            "terminal_kind": TERMINAL_UNANSWERED,
+        }

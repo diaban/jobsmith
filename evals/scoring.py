@@ -31,6 +31,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from jobsmith.core.state import TERMINAL_UNANSWERED
+from jobsmith.jobs.report import UNANSWERED_NOTICE
+
 from .cases import EvalCase
 from .deliverable import Deliverable, extract, normalize
 from .harness import Observation
@@ -351,6 +354,27 @@ def check_report_reader_facing(case: EvalCase, obs: Observation) -> Check:
     return _check(name, not hits, f"addressed to the producer: {', '.join(hits)}")
 
 
+def check_refusal_declared(case: EvalCase, obs: Observation) -> Check:
+    """A run that could not answer says so in the file, not only in its prose.
+
+    The generator declares an unanswerable request as data and the run gets
+    its own terminal (#59); the deliverable is where that declaration reaches
+    the person who waited for it. A run that answered has nothing to declare,
+    so it skips — which is every case of the structural tier, the keyword fake
+    having no notion of insufficient material. It scores where it matters: on
+    a real provider, a report that reads like a report while the run gave up.
+    """
+    name = "refusal_declared"
+    if obs.error:
+        return _skip(name, "run did not complete")
+    if obs.terminal_kind != TERMINAL_UNANSWERED:
+        return _skip(name, "the run answered")
+    if not obs.report_text:
+        return _check(name, False, "no deliverable to declare it in")
+    return _check(name, _deliverable(obs).contains(UNANSWERED_NOTICE),
+                  "the deliverable does not say the run could not answer")
+
+
 CHECKS: tuple[Callable[[EvalCase, Observation], Check], ...] = (
     check_run_completed,
     check_router_route,
@@ -370,6 +394,7 @@ CHECKS: tuple[Callable[[EvalCase, Observation], Check], ...] = (
     check_report_provenance,
     check_report_covers_plan,
     check_report_reader_facing,
+    check_refusal_declared,
 )
 
 CHECK_NAMES: tuple[str, ...] = (
@@ -391,6 +416,7 @@ CHECK_NAMES: tuple[str, ...] = (
     "report_provenance",
     "report_covers_plan",
     "report_reader_facing",
+    "refusal_declared",
 )
 
 

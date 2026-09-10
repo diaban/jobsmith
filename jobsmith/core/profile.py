@@ -60,6 +60,29 @@ Rules:
   Use it only to resolve what the request refers to; plan for the request.
 - Return ONLY the JSON object, no prose, no markdown fences."""
 
+# ---------- The generator's structural declaration ----------
+
+# A generator held to "use ONLY the provided context" must sometimes answer
+# that the context does not let it answer. Saying that in prose is right for
+# the reader and useless to the graph: the run then ends exactly like one that
+# answered (#59). So the same decision is asked for as DATA — one marker line,
+# emitted only in that case — which `core/generation.py` reads and turns into
+# a terminal of its own, the way the router and the planner return decisions
+# rather than sentences.
+#
+# It is FAIL-OPEN by construction: the marker is asked for only on the refusal
+# path, so a model that never emits it produces exactly today's run. Nothing
+# greps the prose — an answer that merely *reads* like a refusal, in whatever
+# language it was written in, is still an answer.
+NO_ANSWER_MARKER = "NO_ANSWER:"
+
+NO_ANSWER_INSTRUCTION = (
+    "- If the provided material does not let you answer, do NOT improvise or "
+    f"speculate: make the FIRST line of your reply exactly `{NO_ANSWER_MARKER} "
+    "<one short sentence naming what is missing>`, then explain below it what "
+    "would be needed. Use that line only in that case, and nowhere else."
+)
+
 # The audience clause is not decoration (#58): the material a generator is
 # handed was written for the run — notes, findings, a review of the work — and
 # a prompt that only says "answer" lets that shape through to a reader who was
@@ -71,7 +94,8 @@ DEFAULT_GENERATOR_PROMPT = (
     "a report on the work. Answer the user's query using ONLY the provided "
     "context. If the context is insufficient, say so explicitly. Be concise "
     "and precise. Address that reader and never the producer: no next steps, "
-    "no open questions, no options to choose between, no requests for input."
+    "no open questions, no options to choose between, no requests for input.\n"
+    + NO_ANSWER_INSTRUCTION
 )
 
 DEFAULT_REFINER_TEMPLATE = (
