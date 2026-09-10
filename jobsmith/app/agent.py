@@ -40,6 +40,7 @@ class AgentApp:
     session_factory: Callable[..., ChatSession]   # optional session_id argument
     agent_name: str = "default"
     resources: Any = None                         # whatever the agent opened
+    registry: Any = None                          # what it can actually do
     _stack: AsyncExitStack = field(default_factory=AsyncExitStack)
 
     def new_session(self, session_id: str | None = None) -> ChatSession:
@@ -103,8 +104,16 @@ async def build_app(
         # rooted where the manager keeps deliverables, so a job's annexes sit
         # next to its report and no capability has to know that layout.
         artifacts = LocalArtifactStore(reports_dir)
+        # ...and reads a named one from under the same root. That is the whole
+        # of what this deployment declares readable: the tree the product's own
+        # paths point into, so the report a job just wrote is a file the next
+        # request can name. An agent may add what it already exposes by other
+        # means (`--docs`); it may not add anything else. See `core/paths.py`.
         registry = CapabilityRegistry(
-            definition.capabilities(AgentContext(llm, resources, artifacts))
+            definition.capabilities(
+                AgentContext(llm, resources, artifacts,
+                             readable_roots=(str(reports_dir),))
+            )
         )
         graph = AgentBuilder(
             Deps(llm=llm), registry,
@@ -131,4 +140,4 @@ async def build_app(
         return ChatSession(manager, chat_model, session_id=session_id,
                            checkpointer=checkpointer, **prompt)
 
-    return AgentApp(manager, session_factory, definition.name, resources, stack)
+    return AgentApp(manager, session_factory, definition.name, resources, registry, stack)

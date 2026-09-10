@@ -106,6 +106,15 @@ def merge_results(
 # the request itself — `query` stays authoritative.
 CONVERSATION_INPUT_KEY = "conversation"
 
+# The files a request explicitly NAMED — paths, as the user or the model wrote
+# them, never contents. A framework convention for the same reason as the key
+# above: the chat layer fills it (`chat/tools.py`, from `launch_job`'s own
+# parameter, shown at the approval interrupt), and whichever capability
+# declares `requires_inputs=("source_files",)` consumes it. The framework
+# carries the key and never opens anything — reading is a port's job, and what
+# a path is allowed to be is `core/paths.py`.
+SOURCE_FILES_INPUT_KEY = "source_files"
+
 
 # ---------- Errors ----------
 

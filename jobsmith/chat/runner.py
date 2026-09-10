@@ -30,7 +30,7 @@ wording belongs in the thing that reports the fact.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from langchain_core.messages import AIMessage
@@ -68,9 +68,18 @@ class Message:
 
 @dataclass(frozen=True)
 class Proposal:
-    """Terminal: the turn ended on a job awaiting human approval."""
+    """Terminal: the turn ended on a job awaiting human approval.
+
+    `sources` is the files the job would be allowed to open (`launch_job`'s
+    `source_files`). It rides on the terminal for the same reason `query`
+    does: what the user approves has to be what they were shown, and a file
+    handed over without being named is a second silent decision. A list, not
+    a tuple, because this crosses HTTP and both backings must answer with the
+    same JSON.
+    """
     query: str | None
     rationale: str | None
+    sources: list[str] = field(default_factory=list)
 
 
 ChatEvent = Token | ToolStarted | ToolFinished | Message | Proposal
@@ -160,6 +169,7 @@ class ChatRunner:
                         for message in value.get("messages") or []:
                             yield ToolFinished(getattr(message, "name", "") or "")
         if proposal is not None:
-            yield Proposal(proposal.get("query"), proposal.get("rationale"))
+            yield Proposal(proposal.get("query"), proposal.get("rationale"),
+                           list(proposal.get("sources") or []))
         else:
             yield Message(answer)

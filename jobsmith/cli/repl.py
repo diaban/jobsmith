@@ -214,6 +214,10 @@ async def run_repl(client: AgentClient, session_id: str) -> None:
                     print("\n  the agent proposes a background job:")
                     print(f"    task     : {reply.get('query')}")
                     print(f"    approach : {reply.get('rationale')}")
+                    # the files it would be allowed to open: approving the job
+                    # is approving this list, so it is never left unsaid
+                    if sources := reply.get("sources"):
+                        print(f"    reads    : {', '.join(sources)}")
                     answer = await loop.run_in_executor(None, input, "  launch it? [y/N] ")
                     approved = answer.strip().lower() in ("y", "yes", "o", "oui")
                     reply = await render_turn(

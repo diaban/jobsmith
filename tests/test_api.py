@@ -60,7 +60,7 @@ async def test_chat_flow_proposal_approval_report(store, checkpointer, tmp_path)
         r = (await client.post(f"/sessions/{sid}/messages",
                                json={"text": "please analyse the data"})).json()
         assert r == {"type": "proposal", "query": "analyse the data",
-                     "rationale": "several steps needed"}
+                     "rationale": "several steps needed", "sources": []}
 
         r = (await client.post(f"/sessions/{sid}/approval", json={"approved": True})).json()
         assert r["type"] == "message" and "report coming" in r["content"]

@@ -188,6 +188,30 @@ backs it, rather than being planned and failing. An agent left with no
 capabilities at all still answers: the router sees an empty registry and
 replies directly instead of planning.
 
+### Pointing a request at a file
+
+`documents` searches; **`read_files` reads**. When a request names a document —
+a path you give, or a report a previous job wrote — the file itself travels
+with the job as an input, and the step opens it:
+
+```
+you : make a one-pager out of the report from this morning
+      (the agent proposes a job, and the proposal says which files it will read)
+      task     : condense artifacts/8aea26ec.md into a one-page brief
+      reads    : artifacts/8aea26ec.md
+      launch it? [y/N]
+```
+
+That loop — jobsmith writes a report, you ask for something to be made of it —
+is the reason the step exists. **What a job may open is decided, not
+inherited**: a named path is resolved (symlinks followed, `..` collapsed) and
+then has to land inside the directory jobs write their own files into, or the
+`--docs` directory when there is one. Anything else is refused with a message
+saying so, whether it was spelled `../../etc/passwd`, hidden behind a symlink,
+or written as an absolute path to somewhere else. Nothing widens that set at
+runtime, and the files are listed in the approval before the job exists — you
+are the one handing them over.
+
 ### Asking for a deck
 
 Install one extra and a `slide_deck` step joins the registry: ask for a
@@ -415,7 +439,8 @@ jobsmith/
   cli/          adapter — daemon, clients, REPL, argparse entrypoint
   tui/          adapter — Textual: chat pane, job list, job detail
   agents/       ★ what each agent IS — a capability pack + a profile
-    default/      research → analysis → critique, + slide_deck (a .pptx annex)
+    default/      read_files/documents → research → analysis → critique,
+                  + slide_deck (a .pptx annex)
     banking/      a domain agent: its own capabilities, ports and adapters
   app/          composition: providers, persistence, build_app(agent=...)
 evals/          the golden set + the property checks that score a prompt change
@@ -457,7 +482,7 @@ handle per-provider tool formats), the job engine uses a dependency-light
 |---|---|
 | `--llm anthropic\|openai\|fake` | provider for **both** stacks (default: auto-detected from keys) |
 | `--agent NAME` | which agent to run — `default` or `banking` (applies to whichever process owns the engine, so pass it to `serve`) |
-| `--docs DIR` | ground jobs in the files under `DIR` (default: `$JOBSMITH_DOCS`); without it the agent runs on the model's own knowledge |
+| `--docs DIR` | ground jobs in the files under `DIR` (default: `$JOBSMITH_DOCS`); without it the agent runs on the model's own knowledge. It also becomes readable by name: a request may point `read_files` at a file inside it |
 | `TAVILY_API_KEY` | enables the `web_search` step (extra `.[web]`); absent, the capability is not registered |
 | extra `.[tui]` | enables `jobsmith ui`; absent, the command says what to install |
 | `$JOBSMITH_THEME` | the UI's theme (default `ember-dark`); `--theme NAME` overrides it, `ctrl+p` switches it for the session |

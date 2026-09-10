@@ -124,7 +124,7 @@ async def test_identical_answers_through_either_backing(
 
         reply = await client.send(session_id, "please analyse it")
         assert reply == {"type": "proposal", "query": "analyse it",
-                         "rationale": "multi-step"}
+                         "rationale": "multi-step", "sources": []}
 
         approved = await client.approve(session_id, True)
         assert approved["type"] == "message"
@@ -275,8 +275,10 @@ async def test_a_turn_is_the_same_flow_through_either_backing(
 
         proposing = [e async for e in client.stream(session_id, "please analyse it")]
         assert {"type": "tool_started", "name": "launch_job"} in proposing
+        # `sources` rides on the terminal and must survive the HTTP round
+        # trip as the same JSON — a list on both sides, never a tuple.
         assert proposing[-1] == {"type": "proposal", "query": "analyse it",
-                                 "rationale": "multi-step"}
+                                 "rationale": "multi-step", "sources": []}
 
         answering = [e async for e in client.stream_approval(session_id, True)]
         assert {"type": "tool_finished", "name": "launch_job"} in answering

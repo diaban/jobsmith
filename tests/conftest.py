@@ -157,14 +157,26 @@ def store():
     return InMemoryStore()
 
 
-def registered_capabilities(app: Any) -> list[str]:
-    """What the composed app actually registered, in registry order.
+def registered_capabilities(app: Any, *, gated: bool = False) -> list[str]:
+    """What the composed app will actually chain, in registry order.
 
     The default pack's registry is configuration-dependent — `documents` needs
     a directory, `web_search` a key, `slide_deck` the `.[pptx]` extra — so a
     test that pins what `KeywordLLM` plans (it chains every registered
     capability) asks the app what it composed instead of hardcoding the
     environment it happened to be written in.
+
+    Registered is not the same as planned, though: a capability gated on
+    `requires_inputs` (`read_files` needs a file the request named) IS in the
+    registry and IS in the fake's chain, and then the planner drops it because
+    the request carries no such input. What a plain query runs is therefore the
+    ungated set, which is what this returns; `gated=True` gives the whole
+    registry.
     """
     prefix = "cap_"
-    return [n[len(prefix):] for n in app.manager.graph.nodes if n.startswith(prefix)]
+    names = [n[len(prefix):] for n in app.manager.graph.nodes if n.startswith(prefix)]
+    registry = getattr(app, "registry", None) or getattr(
+        getattr(app, "app", None), "registry", None)
+    if gated or registry is None:
+        return names
+    return [n for n in names if not registry.get(n).spec.requires_inputs]
