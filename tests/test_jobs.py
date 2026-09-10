@@ -437,6 +437,48 @@ async def test_annexes_are_opt_in_and_rendered_by_the_capability(store, checkpoi
     assert '"score": 0.9' in report                       # structured -> json block
 
 
+def test_a_title_is_never_cut_mid_word():
+    """#54: the title was `job.query[:80]`, a raw slice landing anywhere.
+
+    It is the first line of the deliverable and the one part a reader sees
+    before deciding whether to read the rest, and every long request produced
+    something like "…adaptées à un utilisate", with nothing saying it was cut.
+    """
+    from jobsmith.jobs.report import DEFAULT_TITLE, TITLE_MAX, document_title
+
+    long = ("Réaliser un comparatif détaillé des chaises ergonomiques adaptées "
+            "à un utilisateur travaillant à domicile")
+    title = document_title(long)
+    assert len(title) <= TITLE_MAX
+    assert title.endswith("…") and not title.endswith(" …")
+    assert "utilisate…" not in title              # the word that gave the issue
+    assert long.startswith(title[:-1])            # a prefix, only shorter
+    assert title[:-1].split()[-1] in long.split()  # every word it kept is whole
+
+    # short requests are left exactly as they are
+    assert document_title("compare two options") == "compare two options"
+    # a request spanning lines would otherwise break the markdown heading in two
+    assert document_title("compare\n  two   options") == "compare two options"
+    # one word longer than the limit has no boundary to cut on: cut it anyway
+    solid = document_title("x" * 200)
+    assert len(solid) == TITLE_MAX and solid.endswith("…")
+    # nothing usable in the request is still a document that names itself
+    assert document_title("   ") == DEFAULT_TITLE
+
+
+def test_the_deliverable_carries_that_title(store, checkpointer, tmp_path):
+    """One place decides it, and all three Reporters read `JobDocument.title`."""
+    from jobsmith.jobs.models import Job, JobStatus
+    from jobsmith.jobs.report import build_document
+
+    request = ("Réaliser un comparatif détaillé des chaises ergonomiques "
+               "adaptées à un utilisateur travaillant à domicile")
+    doc = build_document(Job(job_id="j1", status=JobStatus.DONE, query=request,
+                             final_answer="an answer"))
+    assert doc.title.endswith("…") and doc.request == request
+    assert "\n" not in doc.title
+
+
 def test_mermaid_draws_isolated_steps_once():
     """A root that feeds another step is drawn by its edge; a step wired to
     nothing at all still needs its own line or it vanishes from the DAG."""
