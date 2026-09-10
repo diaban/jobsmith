@@ -205,6 +205,32 @@ def check_plan_required_steps(case: EvalCase, obs: Observation) -> Check:
     return _check(name, not missing, f"missing from the plan: {', '.join(missing)}")
 
 
+def check_plan_excluded_steps(case: EvalCase, obs: Observation) -> Check:
+    """Capabilities the request does NOT call for stay out of the plan.
+
+    The mirror of `check_plan_required_steps`, and it exists because a spec
+    that is too easy to reach is invisible everywhere else: the run is green,
+    every step reports ok, and the user opens the wrong kind of file. #61 was
+    exactly that — a request for a printable one-page PDF planned `slide_deck`
+    and delivered a PowerPoint, because a deck was the closest thing in the
+    registry and its description did not say what it was not.
+
+    Skipped when none of the named capabilities is registered here, for the
+    same reason as its mirror: a registry is agent- and configuration-
+    dependent, and "the plan omits a step this agent could never plan" is not
+    a measurement.
+    """
+    name = "plan_excluded_steps"
+    unwanted = [c for c in case.must_exclude if c in obs.registry]
+    if not unwanted:
+        return _skip(name, "no excluded capability is registered here")
+    if (s := _plan_applies(obs, name)) is not None:
+        return s
+    planned = {s["capability"] for s in obs.plan_steps}
+    present = [c for c in unwanted if c in planned]
+    return _check(name, not present, f"should not have been planned: {', '.join(present)}")
+
+
 # ---------------------------------------------------------------- execution
 
 def check_steps_all_ran(case: EvalCase, obs: Observation) -> Check:
@@ -386,6 +412,7 @@ CHECKS: tuple[Callable[[EvalCase, Observation], Check], ...] = (
     check_plan_acyclic,
     check_plan_size,
     check_plan_required_steps,
+    check_plan_excluded_steps,
     check_steps_all_ran,
     check_steps_all_ok,
     check_report_written,
@@ -408,6 +435,7 @@ CHECK_NAMES: tuple[str, ...] = (
     "plan_acyclic",
     "plan_size",
     "plan_required_steps",
+    "plan_excluded_steps",
     "steps_all_ran",
     "steps_all_ok",
     "report_written",

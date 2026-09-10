@@ -140,13 +140,24 @@ class SlideDeckCapability(Capability):
 
     spec = CapabilitySpec(
         name="slide_deck",
+        # The description is the WHOLE of what the planner reads about this
+        # step, so it has to say what this is NOT (#61). A request for "a
+        # one-page printable synthesis, A4, as a PDF" was planned here and
+        # delivered a PowerPoint: nothing in the registry was closer, and
+        # "a formatted, sectioned document" is a fair reading of a deck.
+        # A capability that can be MISTAKEN for another earns the same care
+        # as one nothing can serve — which stays out of the registry entirely.
         description=(
             "produce a slide deck file (a presentation: title, one idea per "
             "slide, bullets and speaker notes) from the material the other "
-            "steps produced — plan it when the request asks for slides, a "
-            "deck or a presentation, and plan it LAST, after the steps that "
-            "produce that material; the written report is still delivered "
-            "alongside it, so this is never a substitute for analysis"
+            "steps produced — plan it ONLY when the request asks for slides, "
+            "a deck, a presentation, or something to show a room, and plan it "
+            "LAST, after the steps that produce that material; the written "
+            "report is still delivered alongside it, so this is never a "
+            "substitute for analysis. Do NOT plan it for a document meant to "
+            "be read: a printable page, a one-pager, a PDF, a written report, "
+            "a summary or a note are the deliverable the job already writes, "
+            "and planning a deck for one delivers the wrong file"
         ),
         output_schema={
             "type": "object",
