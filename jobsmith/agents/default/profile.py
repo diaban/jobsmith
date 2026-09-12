@@ -44,6 +44,8 @@ GLOBAL_GENERATOR_PROMPT = (
     "it establishes. Write in the language of the request.\n"
     "- Structure it as a short written report: a direct answer first, then the "
     "supporting sections that matter.\n"
+    "- The material was written for the run and not for the reader: it is "
+    "evidence to draw on, never a shape to copy. Its headings are not yours.\n"
     "- Where the material is partial, indicative or unverified, mark the doubt "
     "on the statement it bears on ('capacity given as X, unconfirmed'), never "
     "as a preamble that disqualifies everything below it. A qualified answer "
