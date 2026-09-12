@@ -6,12 +6,18 @@ and the wiring, not retrieval logic that was already covered.
 """
 from __future__ import annotations
 
+import re
 from contextlib import AsyncExitStack
 
 import pytest
 
 from jobsmith.agents.base import AgentContext
-from jobsmith.agents.default import DefaultResources, default_capabilities, open_default_resources
+from jobsmith.agents.default import (
+    DefaultResources,
+    default_capabilities,
+    open_default_resources,
+    pick_search_depth,
+)
 from jobsmith.agents.default.documents import DocumentsCapability, WebSearchCapability
 from jobsmith.agents.default.web import TavilySource
 
@@ -172,3 +178,128 @@ def test_both_sources_feed_the_same_capability_contract():
     assert isinstance(by_name["documents"], DocumentsCapability)
     assert isinstance(by_name["web_search"], DocumentsCapability)   # same machinery
     assert by_name["documents"].__class__ is not by_name["web_search"].__class__
+
+
+# ------------------------------------------------- the page, not the snippet (#75)
+
+
+async def test_the_request_asks_for_the_page_and_for_the_configured_depth():
+    """Both halves of the retrieval bug are in the request body: without
+    `include_raw_content` Tavily never sends the page at all, and `basic`
+    depth is what returned snippet-shaped material for a request that needed
+    spec sheets."""
+    http = FakeHTTP()
+    await TavilySource("k", http).search("q")
+
+    (call,) = http.calls
+    assert call["json"]["include_raw_content"] is True
+    assert call["json"]["search_depth"] == "advanced"   # the adapter's default
+
+
+async def test_the_page_wins_over_the_search_engine_crop():
+    http = FakeHTTP({"results": [dict(HIT, raw_content="The whole extracted page.")]})
+    (doc,) = await TavilySource("k", http).search("q")
+    assert doc.text == "The whole extracted page."
+    assert "Ports and adapters" not in doc.text
+
+
+@pytest.mark.parametrize("raw", [None, "", "   "], ids=["null", "empty", "blank"])
+async def test_a_page_tavily_could_not_fetch_falls_back_to_the_snippet(raw):
+    """`raw_content` is null for a hit whose page could not be fetched, and an
+    excerpt grounds more than an empty document does."""
+    http = FakeHTTP({"results": [dict(HIT, raw_content=raw)]})
+    (doc,) = await TavilySource("k", http).search("q")
+    assert doc.text == "Ports and adapters keep the domain independent of I/O."
+
+
+async def test_a_result_with_neither_a_page_nor_a_snippet_is_still_dropped():
+    http = FakeHTTP({"results": [{"url": "https://example.org/x", "raw_content": None,
+                                  "content": ""}]})
+    assert await TavilySource("k", http).search("q") == []
+
+
+async def test_an_unknown_search_depth_is_refused_rather_than_sent():
+    """A depth the API has never heard of either 400s in the middle of a job
+    or is ignored and quietly retrieves less."""
+    with pytest.raises(ValueError, match="search_depth"):
+        TavilySource("k", FakeHTTP(), search_depth="deep")
+
+
+# ------------------------------------------------- the bound (#75)
+
+
+async def test_a_document_under_the_bound_is_untouched_to_the_byte():
+    page = "Ligne un.\nLigne deux, avec des accents: é à ü.\n"
+    http = FakeHTTP({"results": [dict(HIT, raw_content=page)]})
+    (doc,) = await TavilySource("k", http, max_chars=100).search("q")
+    assert doc.text == page.strip()          # only the surrounding whitespace goes
+    assert "truncated" not in doc.text
+
+
+async def test_a_long_page_is_cut_on_a_boundary_and_the_cut_is_marked():
+    """Ten pages of 50–100k characters would fill the window on their own, so
+    the bound lives where the bytes arrive — and a page silently shortened
+    reads to the model as a complete page."""
+    page = " ".join(f"mot{i:04d}" for i in range(4_000))       # ~32k characters
+    http = FakeHTTP({"results": [dict(HIT, raw_content=page)]})
+    # 1 003 rather than a round number on purpose: the words are 8 characters
+    # with their space, so a round bound would land on whitespace by accident
+    # and the boundary rule would never be exercised (measured — it wasn't).
+    (doc,) = await TavilySource("k", http, max_chars=1_003).search("q")
+
+    body, marker = doc.text.split("…[truncated:", 1)
+    kept = body.rstrip()
+    assert len(kept) <= 1_003                       # the bound really bounds
+    assert marker.startswith(f" only the first {len(kept)} characters")
+    assert page.startswith(kept)                    # a prefix, not a paraphrase
+    # cut on a boundary: the last thing read is a whole word of the page, not
+    # the "mot03" a mid-word slice would leave behind
+    assert re.fullmatch(r"mot\d{4}", kept.split()[-1])
+
+
+async def test_a_page_with_no_boundary_near_the_end_is_cut_anyway():
+    """Tidiness must not cost real material: a run of 20% of the budget with
+    no whitespace in it is cut where the budget ends."""
+    http = FakeHTTP({"results": [dict(HIT, raw_content="a " + "x" * 5_000)]})
+    (doc,) = await TavilySource("k", http, max_chars=100).search("q")
+    body = doc.text.split("…[truncated:", 1)[0]
+    assert len(body.rstrip()) == 100
+
+
+# ------------------------------------------------- the wiring of the depth (#75)
+
+
+def test_the_depth_is_a_deployment_choice_with_a_default(monkeypatch):
+    monkeypatch.delenv("TAVILY_SEARCH_DEPTH", raising=False)
+    assert pick_search_depth() == "advanced"
+    monkeypatch.setenv("TAVILY_SEARCH_DEPTH", "basic")
+    assert pick_search_depth() == "basic"
+    assert pick_search_depth("advanced") == "advanced"      # argument wins
+
+
+async def test_the_configured_depth_reaches_the_adapter(monkeypatch):
+    http = FakeHTTP()
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-k")
+    monkeypatch.setenv("TAVILY_SEARCH_DEPTH", "basic")
+    monkeypatch.delenv("JOBSMITH_DOCS", raising=False)
+    monkeypatch.setattr("sys.argv", ["pytest"])
+    monkeypatch.setattr("httpx.AsyncClient", lambda *a, **kw: http)
+
+    async with AsyncExitStack() as stack:
+        resources = await open_default_resources(stack)
+    assert isinstance(resources.web, TavilySource)
+    assert resources.web.search_depth == "basic"
+
+
+async def test_a_misconfigured_depth_fails_at_startup_not_mid_job(monkeypatch):
+    """The rule `PdfReport` applies to its engine: a setting nothing can serve
+    fails when the app composes, not three minutes into the first job."""
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-k")
+    monkeypatch.setenv("TAVILY_SEARCH_DEPTH", "turbo")
+    monkeypatch.delenv("JOBSMITH_DOCS", raising=False)
+    monkeypatch.setattr("sys.argv", ["pytest"])
+    monkeypatch.setattr("httpx.AsyncClient", lambda *a, **kw: FakeHTTP())
+
+    with pytest.raises(ValueError, match="search_depth"):
+        async with AsyncExitStack() as stack:
+            await open_default_resources(stack)
