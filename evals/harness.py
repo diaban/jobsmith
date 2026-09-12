@@ -15,7 +15,10 @@ Two deliberate choices:
 
 The route a run took is read back from the checkpointer rather than inferred,
 because the interesting failure — the planner rescuing a message the router
-should have sent direct — is invisible from the outside.
+should have sent direct — is invisible from the outside. The material the
+generator was handed is read back from the same place and for the same reason
+(#73): a `Job` records what came out, and "did the deliverable use what the
+steps produced" is a question about what went in.
 """
 from __future__ import annotations
 
@@ -56,6 +59,7 @@ class Observation:
     report_path: str | None = None
     report_text: str | None = None
     report_format: str = "markdown"   # which Reporter wrote it (checks read through it)
+    material: str = ""                # the merged context the generator was handed
     registry: tuple[str, ...] = ()
     duration_s: float = 0.0
     error: str | None = None          # the harness itself blew up (not a run failure)
@@ -79,16 +83,22 @@ class Observation:
         }
 
 
-async def _route_of(app: Any, job_id: str) -> str | None:
-    """The triage decision, read back from the run's checkpoint."""
+async def _final_state(app: Any, job_id: str) -> dict[str, Any]:
+    """The run's last checkpointed state.
+
+    Two things are read off it and neither is visible from the outside: the
+    triage decision (a planner rescuing a message the router should have sent
+    direct looks like a normal run) and the material the generator was handed
+    (#73 — whether the deliverable was built from it is the whole question,
+    and `Job` records the answer, never the input).
+    """
     try:
         snapshot = await app.manager.graph.aget_state(
             {"configurable": {"thread_id": job_id}}
         )
-        route = snapshot.values.get("route")
     except Exception:
-        return None
-    return route or None
+        return {}
+    return dict(snapshot.values or {})
 
 
 async def run_case(
@@ -110,7 +120,9 @@ async def run_case(
         main = next((o for o in job.outputs if o.role == "main"), None)
         if main is not None:
             obs.report_format = main.format
-        obs.route = await _route_of(app, job.job_id)
+        state = await _final_state(app, job.job_id)
+        obs.route = state.get("route") or None
+        obs.material = state.get("merged_context") or ""
         if obs.report_path:
             try:
                 obs.report_text = Path(obs.report_path).read_text(encoding="utf-8")

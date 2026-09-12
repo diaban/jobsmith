@@ -28,6 +28,7 @@ moved the very strings the checks searched for.
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -35,7 +36,14 @@ from jobsmith.core.state import TERMINAL_UNANSWERED
 from jobsmith.jobs.report import UNANSWERED_NOTICE
 
 from .cases import EvalCase
-from .deliverable import Deliverable, extract, normalize
+from .deliverable import (
+    PROCESS_WORDS,
+    Deliverable,
+    extract,
+    frequent_terms,
+    normalize,
+    terms,
+)
 from .harness import Observation
 
 PASS = "pass"
@@ -380,6 +388,75 @@ def check_report_reader_facing(case: EvalCase, obs: Observation) -> Check:
     return _check(name, not hits, f"addressed to the producer: {', '.join(hits)}")
 
 
+#: How many of the material's own words a check looks at, and what share of a
+#: vocabulary a deliverable has to carry to count as being about it. Round
+#: numbers rather than tuned ones, and the same share in both places because
+#: the claim is the same one twice: a text that names a third of what a body
+#: of words keeps coming back to is plainly about it, and one that names
+#: almost none of it is not. Deliberately not higher — an answer is a
+#: paraphrase, not a copy, and a good one names the products and the figures
+#: without repeating the category word in every sentence.
+MATERIAL_TERMS = 20
+MIN_TERM_SHARE = 1 / 3
+
+
+def check_report_answers_request(case: EvalCase, obs: Observation) -> Check:
+    """The deliverable answers, in the subject's own terms, from the material.
+
+    The failure this exists for (#73) is invisible to every other check here:
+    four steps ran ok, 22k tokens were spent, both files were written where
+    they were asked for — and the deliverable was `critique`'s review of the
+    work rendered as a document, a data-collection plan and a blank template,
+    with not one line about the subject. `report_reader_facing` fires on the
+    *register* of such a document; nothing asked whether it contained an
+    answer.
+
+    Two halves, both necessary, because either alone is trivially satisfied:
+
+    - **it names its subject** — most of the request's own content words,
+      minus the vocabulary of producing a document (`compare X and write me a
+      report` is about X, not about reports). A document about something else
+      fails here;
+    - **it says what the material said** — a third of the words the material
+      keeps coming back to, *excluding the request's own*. This is the half
+      that cannot be satisfied by restating the brief, which is why it is
+      measured against the generator's input rather than against the request.
+
+    Honest about what it is not. It reads the answer as a bag of words, so it
+    detects a deliverable that **abandoned** its material, never one that
+    regurgitates it — a generator that dumped the context would score
+    perfectly. It is a floor, like `report_reader_facing`, and the two look
+    at opposite failures: one at a document addressed to the wrong reader,
+    one at a document with nothing in it.
+    """
+    name = "report_answers_request"
+    if (s := _report_applies(case, obs, name)) is not None:
+        return s
+    if not obs.plan_steps:
+        return _skip(name, "no plan: no material was produced to answer from")
+    answer = terms(normalize(obs.final_answer or ""))
+
+    problems = []
+    subject = terms(obs.query, drop_process_words=True)
+    if len(subject) >= 2 and len(subject & answer) < MIN_TERM_SHARE * len(subject):
+        problems.append(f"does not name its subject: {', '.join(sorted(subject))}")
+
+    query_words = terms(obs.query)
+    material = frequent_terms(
+        normalize(obs.material), exclude=query_words | PROCESS_WORDS, limit=MATERIAL_TERMS
+    )
+    if material:
+        carried = [t for t in material if t in answer]
+        if len(carried) < MIN_TERM_SHARE * len(material):
+            problems.append(
+                f"carries {len(carried)}/{len(material)} of what the material is "
+                f"about ({', '.join(t for t in material if t not in answer)})"
+            )
+    elif not problems:
+        return _skip(name, "the material added nothing to the request's own words")
+    return _check(name, not problems, "; ".join(problems))
+
+
 def check_refusal_declared(case: EvalCase, obs: Observation) -> Check:
     """A run that could not answer says so in the file, not only in its prose.
 
@@ -399,6 +476,81 @@ def check_refusal_declared(case: EvalCase, obs: Observation) -> Check:
         return _check(name, False, "no deliverable to declare it in")
     return _check(name, _deliverable(obs).contains(UNANSWERED_NOTICE),
                   "the deliverable does not say the run could not answer")
+
+
+#: A refusal has a shape (#73): what was asked, what the material did and did
+#: not support, what is known anyway — short, and nothing else. These are the
+#: three things it must not turn into, taken from the run that opened the
+#: issue: a plan for obtaining the material, a form for someone to fill in,
+#: and an offer to do the work. Kept apart from `PRODUCER_FACING_MARKERS`
+#: because the two lists answer different questions and apply to disjoint
+#: runs — one to a document that answered, this one to a document that did
+#: not — and a refusal legitimately says what is missing, which is the one
+#: thing the other list is entitled to object to.
+REFUSAL_SHAPE_MARKERS: tuple[str, ...] = (
+    "collection plan",
+    "plan de collecte",
+    "sourcing plan",
+    "plan de sourcing",
+    "verification plan",
+    "plan de vérification",
+    "to fill in",
+    "à remplir",
+    "ready to fill",
+    "prêt à compléter",
+    "template",
+    "gabarit",
+    "i can prepare",
+    "je peux préparer",
+    "if you would like",
+    "si vous le souhaitez",
+    "would you like",
+    "let me know",
+)
+
+#: A label with nothing after it — one line of a blank form. Headings are
+#: excluded (`## What was missing:` is prose, not a field), and the check
+#: wants several before it says anything: the observed template had eight.
+_BLANK_FIELD = re.compile(r"^\s{0,3}(?:[-*+]\s+|\d+\.\s+)?[^#:\n]{1,40}\s*:\s*$")
+MAX_REFUSAL_CHARS = 1500
+MIN_BLANK_FIELDS = 3
+
+
+def check_refusal_is_bare(case: EvalCase, obs: Observation) -> Check:
+    """A run that could not answer says so briefly, and stops there.
+
+    The twin of `refusal_declared`, and the second half of the same defect
+    (#73). Declaring the refusal was never the problem: what arrived under
+    the declaration was. The prompts forbid exactly the register a refusal
+    needs — nothing on the state of the work, no templates, no requests for
+    input — while asking for a refusal, and with nothing arbitrating, the
+    model produced the maximal version of the forbidden thing: a
+    data-collection plan, a verification plan, a blank sheet with eight
+    fields to fill in, and an offer to prepare it. Six thousand characters,
+    none of them about the subject.
+
+    So the shape is specified in `NO_ANSWER_INSTRUCTION` and measured here,
+    as a shape: short, no blank form, no plan or offer of service. It reads
+    the **answer**, not the file — the Reporter's own `UNANSWERED_NOTICE` and
+    provenance are about the run by design, and `refusal_declared` is what
+    pins that they are there.
+    """
+    name = "refusal_is_bare"
+    if obs.error:
+        return _skip(name, "run did not complete")
+    if obs.terminal_kind != TERMINAL_UNANSWERED:
+        return _skip(name, "the run answered")
+    text = obs.final_answer or ""
+    problems = []
+    if (length := len(normalize(text))) > MAX_REFUSAL_CHARS:
+        problems.append(f"{length} chars, over {MAX_REFUSAL_CHARS}")
+    fields = [ln.strip() for ln in text.splitlines() if _BLANK_FIELD.match(ln)]
+    if len(fields) >= MIN_BLANK_FIELDS:
+        problems.append(f"a form to fill in: {', '.join(fields[:3])}…")
+    lowered = normalize(text).lower()
+    if hits := [m for m in REFUSAL_SHAPE_MARKERS if m in lowered]:
+        problems.append(f"a plan or an offer of service: {', '.join(hits)}")
+    return _check(name, not problems, "; ".join(problems))
 
 
 CHECKS: tuple[Callable[[EvalCase, Observation], Check], ...] = (
@@ -421,7 +573,9 @@ CHECKS: tuple[Callable[[EvalCase, Observation], Check], ...] = (
     check_report_provenance,
     check_report_covers_plan,
     check_report_reader_facing,
+    check_report_answers_request,
     check_refusal_declared,
+    check_refusal_is_bare,
 )
 
 CHECK_NAMES: tuple[str, ...] = (
@@ -444,7 +598,9 @@ CHECK_NAMES: tuple[str, ...] = (
     "report_provenance",
     "report_covers_plan",
     "report_reader_facing",
+    "report_answers_request",
     "refusal_declared",
+    "refusal_is_bare",
 )
 
 

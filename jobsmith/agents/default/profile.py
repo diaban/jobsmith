@@ -13,27 +13,41 @@ improvements" is a memo about the work, addressed to whoever will redo it.
 Handed to a generator that was told only to answer, that material comes back
 out as its own shape: a deliverable whose sections were *Contraintes de
 livrable*, *État actuel et risques*, *Prochaines étapes*, given to someone who
-asked about a subject and does not know a DAG exists. Naming the audience is
-what turns working material into a document; saying that `critique` is
-evidence and never voice is what keeps the review out of the reader's hands.
+asked about a subject and does not know a DAG exists.
+
+**And it says what the document must contain** (#73). Naming the audience and
+banning a register was not enough, and the run that showed it is worth
+keeping: four steps produced 14.7k characters of sourced specifications, 14.6k
+of per-item sheets and 8.3k of analysis with real conclusions, and the
+deliverable was `critique`'s methodology review rendered as a document — a
+data-collection plan and a blank template, closing with an offer to prepare
+the template. Not one line of it was about the subject. A model given
+prohibitions and no obligation fills the gap with the best-structured thing it
+can see, so the obligation is now stated first, and `critique` is no longer
+one of the things it can see (`CritiqueCapability.render_context`).
 """
 from __future__ import annotations
 
 from ...core.profile import NO_ANSWER_INSTRUCTION, AgentProfile
+from ._step import SUBJECT_ONLY_RULE
 
 GLOBAL_GENERATOR_PROMPT = (
     "You are writing the final deliverable of a background job.\n"
     "Who reads it: the person who made the request. They were not part of the "
     "work, do not know which steps produced this, and want the subject they "
     "asked about — not a report on the work that was done for them.\n"
-    "Use ONLY the material provided below (research notes, analysis, "
-    "critique). Write in the language of the request.\n"
+    "What it must contain: the answer to their request, first, in the "
+    "subject's own terms — the things, the figures, the findings the material "
+    "actually holds — then the supporting sections that matter. A document "
+    "that describes what would be needed in order to answer has not answered.\n"
+    "Use ONLY the material provided below, and use what it holds: state what "
+    "it establishes. Write in the language of the request.\n"
     "- Structure it as a short written report: a direct answer first, then the "
     "supporting sections that matter.\n"
-    "- The material is working material, written for the run and not for the "
-    "reader. The critique in particular reviews the work itself: use it as "
-    "evidence — correct what it corrects, drop what it undermines — and never "
-    "let it become the shape or the voice of the document.\n"
+    "- Where the material is partial, indicative or unverified, mark the doubt "
+    "on the statement it bears on ('capacity given as X, unconfirmed'), never "
+    "as a preamble that disqualifies everything below it. A qualified answer "
+    "is an answer.\n"
     "- Write about the subject only. No section on the state of the work, what "
     "is still missing, what would be needed to go further, or options for the "
     "reader to choose between; no placeholders or templates to fill in; no "
@@ -45,20 +59,31 @@ GLOBAL_GENERATOR_PROMPT = (
     "- Do NOT add citation markers: the material has no sources to cite.\n"
     "- Do NOT end with questions or offers of further help — this is a "
     "document, not a chat turn.\n"
-    "- If the material is insufficient, say so plainly.\n"
+    # The pack's shared rule, plus the one sentence the generator needs that a
+    # material-producing step does not (#73): it is the step that actually
+    # produces the document, so "not part of the subject" must not read as
+    # "ignore the length the request asked for".
+    + SUBJECT_ONLY_RULE
+    + " Any length, structure or language it asks for is still yours to "
+    "honour: carry it out, and never restate it in the prose.\n"
     # Appended, not folded into the bullets above: the declaration is the
     # framework's protocol (#59), and a profile that wants it says so by
-    # adding this one line rather than by re-wording it.
+    # adding this one line rather than by re-wording it. It also carries the
+    # bar and the shape of a refusal (#73) — including the sentence that says
+    # it is the one path on which the rules above are lifted, which is why
+    # nothing here says "if the material is insufficient, say so plainly".
     + NO_ANSWER_INSTRUCTION
 )
 
 GLOBAL_REFINER_TEMPLATE = (
     "The deliverable you produced failed validation.\n"
     "Validation issues: {issues}\n"
-    "Rewrite it, fixing these issues and keeping to the provided material. "
-    "Same reader as before: the person who made the request, who was not part "
-    "of the work. No citation markers, no closing questions, nothing addressed "
-    "to whoever produced the document."
+    "Produce a corrected version, fixing these issues and keeping to the "
+    "provided material. Same reader as before: the person who made the "
+    "request, who was not part of the work. It must still answer that request "
+    "first, in the subject's own terms, from the material. No citation "
+    "markers, no closing questions, nothing addressed to whoever produced the "
+    "document."
 )
 
 DEFAULT_APP_PROFILE = AgentProfile(

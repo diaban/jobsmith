@@ -28,6 +28,13 @@ from ...core.state import CapabilityResult
 #: invented for it. What document is produced is the run's business: the plan
 #: decided it, the generator and `slide_deck` are told who reads it. A step
 #: producing material has only the subject to work on.
+#:
+#: The generator carries it too (#73): it recited the delivery instructions
+#: back at the reader ("Document name: …"), which since #55 are structured
+#: fields on the `Job` and pure noise in the prose. It is the one consumer
+#: that must still *obey* them, so `GLOBAL_GENERATOR_PROMPT` appends one
+#: sentence saying so — this rule bans writing about the document, not
+#: honouring what it asks for.
 SUBJECT_ONLY_RULE = (
     "\nThe request may also say what document is wanted — a report, a deck, a "
     "page, a language. That is not part of the subject: work on the subject "
