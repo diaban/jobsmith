@@ -161,6 +161,28 @@ GOLDEN_CASES: tuple[EvalCase, ...] = (
         ),
     ),
 
+    EvalCase(
+        id="plan_verifiable_comparison",
+        query=(
+            "compare the main open-source vector databases on their published "
+            "limits — index size, query latency, memory footprint — and say "
+            "which one fits a single-node deployment"
+        ),
+        expect_route="plan",
+        expect_terminal="answer",
+        min_steps=1,
+        tiers=(LLM,),
+        note=(
+            "a request that asks for figures is the one that tips a generator "
+            "into refusing (#73): the notes come back hedged, and the model "
+            "reads 'I cannot verify' as 'the material says nothing'. The run "
+            "that opened the issue had 14k characters of sourced "
+            "specifications and delivered a data-collection plan. Only a real "
+            "model can be measured on it — the keyword fake has no notion of "
+            "verification, and would reach the same terminal either way"
+        ),
+    ),
+
     # ---------------- a request the material cannot answer ----------------
     EvalCase(
         id="unanswerable_missing_material",

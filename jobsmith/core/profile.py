@@ -76,11 +76,36 @@ Rules:
 # language it was written in, is still an answer.
 NO_ANSWER_MARKER = "NO_ANSWER:"
 
+# The BAR and the SHAPE are both stated here (#73), and neither was before.
+#
+# The bar: a run that had 14k characters of sourced specifications declared it
+# could not answer, because the notes it was handed opened by saying their
+# figures were unverified. "Insufficient" had been left to the model, which
+# read it as "unverified" — and against a pack whose research step flags its
+# own uncertainty, that reading refuses every request that asks for rigour.
+# Unverified material is material: it is answered, with the doubt marked on
+# the statement it bears on.
+#
+# The shape: the prompts that carry this line forbid exactly the register a
+# refusal needs (nothing on the state of the work, no templates, no requests
+# for input) while asking for a refusal. Nothing arbitrated, so the model
+# produced the maximal version of the forbidden thing — a data-collection plan
+# and a blank template, closing with an offer to prepare it. So the refusal is
+# specified as a shape, and this line says outright that it is the one place
+# those rules are lifted.
 NO_ANSWER_INSTRUCTION = (
-    "- If the provided material does not let you answer, do NOT improvise or "
-    f"speculate: make the FIRST line of your reply exactly `{NO_ANSWER_MARKER} "
-    "<one short sentence naming what is missing>`, then explain below it what "
-    "would be needed. Use that line only in that case, and nowhere else."
+    "- The bar for saying you cannot answer is that the material says NOTHING "
+    "about the subject. Material that is partial, indicative, second-hand or "
+    "unverified IS material: answer with it, and mark the doubt on the "
+    "statement it bears on. A qualified answer is an answer.\n"
+    f"- Only when that bar is met: make the FIRST line of your reply exactly "
+    f"`{NO_ANSWER_MARKER} <one short sentence naming what is missing>`, and "
+    "below it, in a few short paragraphs at most, say what was asked, what "
+    "the material did and did not support, and whatever is known anyway. "
+    "Nothing else — no plan for gathering what is missing, no template or "
+    "blank fields, no offer of further work. On that path, and only there, "
+    "that shape replaces the rules above about what the document must "
+    "contain; everywhere else they hold and this line must not appear."
 )
 
 # The audience clause is not decoration (#58): the material a generator is
@@ -88,21 +113,38 @@ NO_ANSWER_INSTRUCTION = (
 # a prompt that only says "answer" lets that shape through to a reader who was
 # never in the room. Neutral enough to stay a core default: every agent's
 # deliverable is read by whoever asked for it.
+#
+# The OBLIGATION is the other half, and it was missing (#73). #58 gave the
+# document a reader and a list of banned registers; nothing said what it must
+# CONTAIN. A model handed prohibitions and no substance fills the gap with
+# what is at hand — the working material — so the first thing this prompt now
+# states is the answer, in the subject's own terms, from the material.
 DEFAULT_GENERATOR_PROMPT = (
     "You are writing a document for the person who asked for it: they were not "
     "part of the work that produced it, and they want the subject rather than "
-    "a report on the work. Answer the user's query using ONLY the provided "
-    "context. If the context is insufficient, say so explicitly. Be concise "
-    "and precise. Address that reader and never the producer: no next steps, "
-    "no open questions, no options to choose between, no requests for input.\n"
+    "a report on the work.\n"
+    "What it must contain: the answer to the query, first, in the subject's "
+    "own terms. Use ONLY the provided context, and use what it holds — state "
+    "what it establishes rather than what would have to be checked. A "
+    "document describing what would be needed in order to answer has not "
+    "answered.\n"
+    "Where the material is partial or unverified, mark the doubt on the "
+    "statement it bears on ('reported as X, unconfirmed'), never as a preamble "
+    "that disqualifies everything below it.\n"
+    "Be concise and precise. Address that reader and never the producer: no "
+    "next steps, no open questions, no options to choose between, no requests "
+    "for input, no templates or blank fields to fill in.\n"
+    "The query may also say what document is wanted — a name, a length, a "
+    "format, a language. Carry it out; never restate it in the prose.\n"
     + NO_ANSWER_INSTRUCTION
 )
 
 DEFAULT_REFINER_TEMPLATE = (
     "You previously produced an answer that failed validation.\n"
     "Validation issues: {issues}\n"
-    "Re-write the answer fixing these issues. Keep using only the provided "
-    "context."
+    "Produce a corrected version fixing these issues. Keep using only the "
+    "provided context, and keep what a deliverable must contain: the answer "
+    "to the query, first, in the subject's own terms, from that context."
 )
 
 DEFAULT_DIRECT_ANSWER_TEMPLATE = (

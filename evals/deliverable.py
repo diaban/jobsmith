@@ -28,6 +28,7 @@ is flattened exactly like the haystack: `- **web_search**` in markdown and
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass
 from html import unescape
 
@@ -63,6 +64,76 @@ def normalize(text: str) -> str:
             continue
         lines.append(_MD_INLINE.sub(" ", _MD_LINE_PREFIX.sub("", line)))
     return _WHITESPACE.sub(" ", " ".join(lines)).strip()
+
+
+#: Words a check must not treat as *what a text is about*.
+#:
+#: Two families, and the second is the point (#73). The first is ordinary
+#: grammar, English and French, kept to what survives the 4-character floor
+#: below. The second is the vocabulary of *producing a document* — a request
+#: says "compare X and give me a report", and a deliverable that names only
+#: the second half has said nothing about X. Neither list is exhaustive and
+#: neither has to be: a missed word makes a check slightly more lenient, never
+#: wrong, because every property built on this is a threshold over many terms.
+STOPWORDS: frozenset[str] = frozenset("""
+about above after again against also because been before being below between
+both cannot could does doing down during each even ever every from further
+have having here hers into itself just more most much must only other over
+same should some such than that their them then there these they this those
+through under until very were what when where which while with would your
+
+alors après aussi autre autres avec avoir bien cela cette ceux chaque comme
+dans deux donc dont elle elles encore entre être fait faire faut leur
+leurs mais même moins nous plus pour sans sont sous suis tous tout toute
+toutes très vous
+""".split())
+
+#: The other half: naming the *work* is not naming the subject.
+PROCESS_WORDS: frozenset[str] = frozenset("""
+analyse analyser analysis analyze answer approach approaches compare
+comparison compte critique deck describe detail details document documents
+donne dossier draft étude evaluate explain give liste listing page pages
+paragraph pdf point points présentation presentation produce produire
+question rapport recommend recommandation report request research recherche resume
+résumé review section sections slide slides study summarise summarize summary
+synthèse write
+""".split())
+
+_WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
+MIN_TERM_LEN = 4
+
+
+def terms(text: str, *, drop_process_words: bool = False) -> set[str]:
+    """The content words of a text, lower-cased.
+
+    A deliberately blunt bag of words: no stemming, no phrases, nothing that
+    would make one of these checks look cleverer than it is. Words shorter
+    than `MIN_TERM_LEN` and the stopword list go; digits go with them, since
+    a figure repeated from the request proves nothing about the prose around
+    it. `drop_process_words` additionally removes the vocabulary of producing
+    a document, which is what lets a check ask whether a text names its
+    *subject* rather than only the work done on it.
+    """
+    found = {w.lower() for w in _WORD.findall(text or "") if len(w) >= MIN_TERM_LEN}
+    found -= STOPWORDS
+    return found - PROCESS_WORDS if drop_process_words else found
+
+
+def frequent_terms(text: str, *, exclude: set[str], limit: int) -> list[str]:
+    """The `limit` most frequent content words of `text`, minus `exclude`.
+
+    What a body of text is *about*, cheaply: a term the material keeps coming
+    back to is one a document built from that material would be expected to
+    name. Ties are broken alphabetically so a check never depends on dict
+    ordering.
+    """
+    counts = Counter(
+        w.lower() for w in _WORD.findall(text or "")
+        if len(w) >= MIN_TERM_LEN and w.lower() not in STOPWORDS
+    )
+    for word in exclude:
+        counts.pop(word, None)
+    return [w for w, _ in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]]
 
 
 @dataclass(frozen=True)

@@ -198,6 +198,21 @@ def test_a_clean_observation_passes_everything():
         # about it — the deliverable then reads exactly like a report (#59)
         ("refusal_declared", {"terminal_kind": "unanswered",
                               "report_text": "# t\n\nsomething plausible\n"}),
+        # a deliverable with nothing of the subject or the material in it (#73)
+        ("report_answers_request", {
+            "query": "compare ergonomic chairs for a tall adult",
+            "material": ("# Research notes\n\nThe Aeron seats 159 kilos; the "
+                         "Embody offers lumbar support and a taller backrest."),
+            "final_answer": ("Before anything can be stated, a sourcing exercise "
+                             "must establish which measurements exist."),
+        }),
+        # a refusal that turned into the work plan it was told not to write (#73)
+        ("refusal_is_bare", {
+            "terminal_kind": "unanswered",
+            "final_answer": ("Data to collect and sourcing plan.\n\n"
+                             "Exact product name:\nManufacturer:\n"
+                             "Maximum recommended weight:\n"),
+        }),
     ],
 )
 def test_each_check_fires_on_its_own_violation(check, broken):
@@ -220,6 +235,87 @@ def test_report_reader_facing_catches_the_run_that_opened_it():
     clean = _obs(report_text=f"# t\n\n{ANSWER}\n\n- Request: prochaines étapes\n"
                              "- Job: job1\n\n| research | analysis |\n")
     assert _status(PLAN_CASE, clean, "report_reader_facing") == "pass"
+
+
+def test_report_answers_request_catches_the_run_that_opened_it():
+    """#73, as it actually arrived: the deliverable was `critique`, not an answer.
+
+    A request for a comparison of ergonomic chairs; four steps ok; 14.7k
+    characters of sourced specifications and 8.3k of analysis with real
+    conclusions in the material. The document that came out had sections
+    named *Data to collect and sourcing plan*, *Verification plan* and a
+    blank template, and not one line about a chair.
+
+    Both halves are asserted, because either alone would be gameable: the
+    document must name its subject, and it must carry what the material was
+    about. The second is what a restatement of the brief cannot fake — note
+    that the failing answer below *does* name the subject.
+    """
+    case = EvalCase(id="c", query="compare 6 ergonomic chairs for a 100 kg adult")
+    material = (
+        "# Research notes\n\nAeron size C: announced capacity 159 kg, seat "
+        "height 41-53 cm, adjustable lumbar. Steelcase Leap: capacity 181 kg, "
+        "wide backrest. Embody: lumbar support, narrower seat.\n\n"
+        "# Analysis\n\nThe Leap and the Aeron both cover the height and the "
+        "capacity; the Embody trades capacity for lumbar adjustment."
+    )
+    observed = (
+        "## Data and requirements to answer\n\n"
+        "## Data to collect and sourcing plan\n\n"
+        "## Verification plan\n\n"
+        "## Expected structure of the chairs data sheets (to fill in)\n\n"
+        "Exact product name:\nManufacturer:\nMaximum recommended weight:\n"
+    )
+    obs = _obs(query=case.query, material=material, final_answer=observed)
+    assert _status(case, obs, "report_answers_request") == "fail"
+
+    # the same material, answered: the subject and what the material said
+    answered = _obs(
+        query=case.query,
+        material=material,
+        final_answer=(
+            "For a 100 kg adult, the Steelcase Leap is the safest fit: its "
+            "announced capacity is 181 kg and its backrest is the widest of "
+            "the three. The Aeron size C is announced at 159 kg with a seat "
+            "height of 41-53 cm and adjustable lumbar support; the Embody "
+            "trades capacity for a narrower seat."
+        ),
+    )
+    assert _status(case, answered, "report_answers_request") == "pass"
+
+
+def test_a_refusal_that_merely_restates_the_request_is_not_an_answer():
+    """The half a subject-term count cannot do on its own.
+
+    This text names every subject word the request used — it is the request,
+    written back out — and says nothing the material said. `must not be
+    satisfiable by repeating the brief` is measured against the generator's
+    input, which is the only place a restatement has nothing to borrow from.
+    """
+    case = EvalCase(id="c", query="compare ergonomic chairs for a tall adult")
+    obs = _obs(
+        query=case.query,
+        material="Aeron: announced 159 kilos. Leap: wider backrest, 181 kilos.",
+        final_answer=("This document concerns ergonomic chairs suitable for a "
+                      "tall adult, as requested."),
+    )
+    assert _status(case, obs, "report_answers_request") == "fail"
+
+
+def test_refusal_is_bare_catches_the_shape_the_prompts_forbade_and_got():
+    """#73: nothing arbitrated, so the refusal became the maximal forbidden thing."""
+    case = EvalCase(id="c", query="summarise the attached report")
+    short = _obs(terminal_kind="unanswered",
+                 final_answer="Nothing in the material covers what was asked.")
+    assert _status(case, short, "refusal_is_bare") == "pass"
+
+    for observed in (
+        "Nothing was provided.\n\n" + "filler words repeated. " * 120,   # too long
+        "Nothing was provided. I can prepare the template if you would like.",
+        "Missing data.\n\nProduct:\nManufacturer:\nWeight:\n",
+    ):
+        obs = _obs(terminal_kind="unanswered", final_answer=observed)
+        assert _status(case, obs, "refusal_is_bare") == "fail", observed[:40]
 
 
 # --------------------------------------------------- reading a deliverable
