@@ -182,6 +182,12 @@ export TAVILY_API_KEY=tvly-...
 jobsmith run "compare the current LangGraph and LlamaIndex agent APIs" --wait
 ```
 
+What it grounds on is the **page**, not the search engine's snippet of it: the
+adapter asks Tavily for the extracted text, searches at `advanced` depth and
+falls back to the excerpt only for a page that could not be fetched. Each
+document is capped at 8 000 characters, and a page that was cut says so in its
+own text. Set `$TAVILY_SEARCH_DEPTH=basic` to search cheaper and shallower.
+
 Both are the same port with different adapters, so the capability consuming
 them is identical — and each stays out of the registry entirely when nothing
 backs it, rather than being planned and failing. An agent left with no
@@ -517,6 +523,7 @@ handle per-provider tool formats), the job engine uses a dependency-light
 | `--agent NAME` | which agent to run — `default` or `banking` (applies to whichever process owns the engine, so pass it to `serve`) |
 | `--docs DIR` | ground jobs in the files under `DIR` (default: `$JOBSMITH_DOCS`); without it the agent runs on the model's own knowledge. It also becomes readable by name: a request may point `read_files` at a file inside it |
 | `TAVILY_API_KEY` | enables the `web_search` step (extra `.[web]`); absent, the capability is not registered |
+| `$TAVILY_SEARCH_DEPTH` | `advanced` (default) or `basic` — how hard `web_search` digs; `basic` costs less per call and retrieves less. Anything else is refused at startup |
 | extra `.[tui]` | enables `jobsmith ui`; absent, the command says what to install |
 | `$JOBSMITH_THEME` | the UI's theme (default `ember-dark`); `--theme NAME` overrides it, `ctrl+p` switches it for the session |
 | extra `.[pptx]` | enables the `slide_deck` step — a `.pptx` annex next to the report; absent, the capability is not registered |

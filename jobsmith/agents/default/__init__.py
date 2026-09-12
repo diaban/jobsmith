@@ -79,6 +79,20 @@ def _local_docs_root() -> str | None:
     return str(root)
 
 
+def pick_search_depth(spec: str | None = None) -> str:
+    """How hard the web search digs: argument > $TAVILY_SEARCH_DEPTH > advanced.
+
+    `advanced` is the default because retrieval quality is the whole of #75:
+    `basic` is one crawl pass and returns the snippet-shaped material that made
+    a request for spec sheets unreachable, while `advanced` extracts more of
+    each page — which is exactly what `include_raw_content` is then asked to
+    hand over. It costs more per call (Tavily bills it at a higher rate), so
+    the deployment can lower it; what it cannot do is set it to something
+    Tavily has never heard of, which `TavilySource` refuses on sight.
+    """
+    return spec or os.environ.get("TAVILY_SEARCH_DEPTH") or "advanced"
+
+
 async def _open_web(stack: AsyncExitStack) -> DocumentSource | None:
     api_key = os.environ.get("TAVILY_API_KEY")
     if not api_key:
@@ -92,8 +106,14 @@ async def _open_web(stack: AsyncExitStack) -> DocumentSource | None:
     # on the app's stack, so its connection pool is released with the app —
     # whether it shut down cleanly or startup raised.
     client = await stack.enter_async_context(httpx.AsyncClient())
-    print("[web_search: Tavily]", file=sys.stderr)
-    return TavilySource(api_key, client)
+    # A depth nobody can serve fails HERE, at startup, rather than inside the
+    # first job that plans a web search — the rule `PdfReport` already applies
+    # to its engine, and the reason a capability nothing can serve stays out
+    # of the registry. `TavilySource` raises; nothing catches it.
+    depth = pick_search_depth()
+    source = TavilySource(api_key, client, search_depth=depth)
+    print(f"[web_search: Tavily, {depth} depth, full page text]", file=sys.stderr)
+    return source
 
 
 async def _open_decks() -> DeckRenderer | None:
@@ -207,4 +227,5 @@ __all__ = [
     "default_capabilities",
     "open_default_resources",
     "pick_docs",
+    "pick_search_depth",
 ]
