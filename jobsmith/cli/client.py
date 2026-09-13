@@ -215,12 +215,15 @@ class DaemonClient(AgentService):
         return r.json()
 
     async def launch_job(self, query, *, session_id=None, inputs=None,
-                         document_name="", document_title="", formats=()) -> dict:
+                         document_name="", document_title="", formats=None) -> dict:
         r = await self._request(
             "POST", "/jobs",
             json={"query": query, "session_id": session_id, "inputs": inputs,
                   "document_name": document_name, "document_title": document_title,
-                  "formats": list(formats)},
+                  # `null` and `[]` are two different asks (#84) — "you decide"
+                  # and "no document" — so the distinction has to survive the
+                  # wire, which is why this is not `list(formats or [])`.
+                  "formats": None if formats is None else list(formats)},
         )
         if r.status_code == 400:
             # A document this deployment cannot produce — a name that is not a

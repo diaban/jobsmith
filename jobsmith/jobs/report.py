@@ -165,7 +165,9 @@ def document_stem(name: str) -> str:
     return stem
 
 
-def deliverable_filenames(document_name: str, formats: Iterable[str]) -> list[str]:
+def deliverable_filenames(
+    document_name: str, formats: Iterable[str] | None
+) -> list[str]:
     """What the files will be called, for a front-end showing what is approved.
 
     A fact, not a sentence: the format→extension mapping is this module's, and
@@ -173,11 +175,18 @@ def deliverable_filenames(document_name: str, formats: Iterable[str]) -> list[st
     the job has no name of its own — the file is then `{job_id}.{extension}`
     and there is no job id yet at the moment this is shown, so a caller says
     what it can honestly say: the formats.
+
+    `formats` carries the three states of `Job.formats` and the difference
+    matters here more than anywhere: `None` is a request that said nothing,
+    so the deployment's default is the only honest guess and it is made;
+    **`[]` is a request for no document at all** (#84), and guessing markdown
+    there would print a filename for a file nobody will write — a promise in
+    exactly the place #55 built to stop making them.
     """
-    if not document_name:
+    if not document_name or formats is not None and not list(formats):
         return []
     extensions = known_extensions()
-    wanted = [f.strip().lower() for f in formats if f and f.strip()] or ["markdown"]
+    wanted = [f.strip().lower() for f in formats or [] if f and f.strip()] or ["markdown"]
     return [f"{document_name}.{extensions.get(f, f)}" for f in wanted]
 
 
@@ -201,16 +210,27 @@ def available_formats(registry: Any = None) -> list[str]:
     return sorted(names)
 
 
-def ensure_formats_available(formats: Iterable[str], *, registry: Any = None) -> list[str]:
+def ensure_formats_available(
+    formats: Iterable[str] | str | None, *, registry: Any = None
+) -> list[str] | None:
     """The requested formats, or a `ValueError` saying which cannot be had.
 
     Composing IS the check — `make_reporter` refuses an unknown name and
     `PdfReport` probes its engine in `__init__` — so this asks the question by
     building the answer and throwing it away. That matters for `.[pdf]`, this
     project's one deployment constraint: a format nothing can render here must
-    be refused where the person who asked can still see it (the proposal card,
-    `create_job`), never at the end of a run that spent three minutes first.
+    be refused where the person who asked can still see it (the notice
+    `chat/tools.py` writes, `create_job`), never at the end of a run that
+    spent three minutes first.
+
+    It answers in the same three states it is asked in (#84), and passes them
+    through unchanged: `None` for a request that said nothing, `[]` for one
+    that asked for **no document**, the names otherwise. `[]` composes
+    nothing on purpose — there is no Reporter to check, which is the whole
+    content of the answer.
     """
+    if formats is None:
+        return None
     names = parse_report_formats(formats) if isinstance(formats, str) else list(formats)
     if not names:
         return []
@@ -604,6 +624,13 @@ def compose_reporters(
     anywhere in the list still raises — `make_reporter` is the per-format
     factory and stays the one that decides.
 
+    **An empty list raises too** (#84). It used to mean markdown, because
+    empty meant "the caller said nothing"; it now means "no document", and a
+    Reporter is the last place that decision can be honoured — this function
+    exists to answer *which* file, and a caller that wants none must not ask.
+    Silently writing markdown for a job that asked for no file is the same
+    mistake as writing it for one that asked for HTML.
+
     A Reporter writes `{job_id}.{extension}`, so the extension is what makes
     two of them collide, and the two ways to name one twice are not the same
     mistake:
@@ -619,9 +646,13 @@ def compose_reporters(
       peer of the HTML Reporter, not a second rendering of it.)
     """
     names = parse_report_formats(formats) if isinstance(formats, str) else list(formats)
+    if not names:
+        raise ValueError(
+            "no report format to compose — an empty list means no document at "
+            "all (#84), which is decided before a Reporter is asked for one")
     reporters: list[Reporter] = []
     seen: dict[str, tuple[type, str]] = {}     # extension -> (class, format name)
-    for name in names or ["markdown"]:
+    for name in names:
         reporter = make_reporter(name, registry, with_annexes=with_annexes)
         known = seen.get(reporter.extension)
         if known is not None:

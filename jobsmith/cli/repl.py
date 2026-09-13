@@ -61,7 +61,11 @@ def job_lines(event: dict, indent: str = "    ") -> list[str]:
 
     `writes` prefers real filenames and falls back to the bare format names:
     a name is only a name once there is a job id to hang it on, so a proposal
-    can legitimately have formats and nothing to call them.
+    can legitimately have formats and nothing to call them. **And it says so
+    when there will be no file at all** (#84): `formats == []` is a decision
+    the user is entitled to see, exactly as a filename is — the line is not
+    dropped for it, because a missing line is what an unstated format already
+    looks like.
     """
     lines = [f"{indent}task     : {event.get('query')}"]
     if rationale := event.get("rationale"):
@@ -70,11 +74,13 @@ def job_lines(event: dict, indent: str = "    ") -> list[str]:
         lines.append(f"{indent}reads    : {', '.join(sources)}")
     if title := event.get("document_title"):
         lines.append(f"{indent}titled   : {title}")
-    if files := deliverable_filenames(str(event.get("document_name") or ""),
-                                      event.get("formats") or []):
+    formats = event.get("formats")
+    if files := deliverable_filenames(str(event.get("document_name") or ""), formats):
         lines.append(f"{indent}writes   : {', '.join(files)}")
-    elif formats := event.get("formats"):
+    elif formats:
         lines.append(f"{indent}writes   : {', '.join(formats)}")
+    elif formats is not None:
+        lines.append(f"{indent}writes   : no file — the answer stays here")
     return lines
 
 
@@ -160,6 +166,19 @@ async def render_turn(events: AsyncIterator[dict], printer: TurnPrinter) -> dict
     return terminal
 
 
+def no_document_note(job: dict) -> str:
+    """What to say about a job that deliberately produced no file (#84).
+
+    Wording, not a fact: the fact is `deliverable_expected` on the record,
+    and it is worded here for the same reason `REPORT_MEDIA_TYPES` lives in
+    the HTTP adapter — every front-end says it to its own reader. It names
+    where the answer *is*, because a command that only reports an absence
+    leaves the reader with nowhere to go.
+    """
+    return (f"no document: none was asked for "
+            f"(the answer is in  jobsmith job {job['job_id'][:8]})")
+
+
 def show_job(job: dict, *, verbose: bool = True) -> None:
     print(f"  job {job['job_id'][:8]}  [{job['status']}]  {job['query'][:60]!r}")
     if not verbose:
@@ -182,6 +201,11 @@ def show_job(job: dict, *, verbose: bool = True) -> None:
         print(f"  usage:     {format_usage(Usage.from_dict(job['usage']))}")
     if job.get("report_path"):
         print(f"  report:    {job['report_path']}")
+    elif job["status"] == "done" and not job.get("deliverable_expected", True):
+        # DONE, answered, and no file — because none was asked for (#84).
+        # Said out loud next to the answer: an absent line reads as a run
+        # that has not got there yet.
+        print("  document:  none (none was asked for)")
     if job.get("final_answer"):
         print("  answer:\n    " + job["final_answer"].replace("\n", "\n    "))
     if job.get("error") and job["status"] != "done":
@@ -233,7 +257,10 @@ async def run_repl(client: AgentClient, session_id: str) -> None:
                 if job:
                     try:
                         report = await client.get_report(job["job_id"])
-                        print(report or "  no report yet (is the job done?)")
+                        print(report or "  " + (
+                            no_document_note(job)
+                            if not job.get("deliverable_expected", True)
+                            else "no report yet (is the job done?)"))
                     except BinaryDeliverable as refused:
                         print(f"  {refused}")
             elif line.startswith("/cancel "):

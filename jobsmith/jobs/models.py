@@ -66,10 +66,14 @@ class Job:
     #   document_title  the heading inside the document; "" ⇒ derived from the
     #                   request (`document_title()` in report.py, #54)
     #   formats         which Reporters render it, first one is the `main`
-    #                   deliverable; empty ⇒ whatever the deployment composed
+    #                   deliverable. Three states, and the third is #84's:
+    #                   None ⇒ the request said nothing, so whoever writes it
+    #                   decides; a non-empty list ⇒ exactly these; **[] ⇒ no
+    #                   document at all**, which is a request a caller can now
+    #                   make and which nothing could say before.
     document_name: str = ""
     document_title: str = ""
-    formats: list[str] = field(default_factory=list)
+    formats: list[str] | None = None
     session_id: str | None = None           # chat session that launched it, if any
     created_at: str = ""                    # ISO timestamps
     updated_at: str = ""
@@ -80,6 +84,17 @@ class Job:
     terminal_kind: str | None = None
     error: str | None = None
     outputs: list[JobOutput] = field(default_factory=list)   # the deliverables
+    # Was a deliverable meant to be written at all (#84)? False says the
+    # absence of one is the *decision* and not a failure — the request asked
+    # for no document (`formats == []`), or the run had none to make (it
+    # answered without a plan, so there is nothing but a chat turn to file).
+    # It is a fact about the ending, like `terminal_kind`, and it exists
+    # because `report_path is None` already means two other things: the run
+    # did not answer, and the write failed (`error` says which). A caller
+    # that cannot tell those three apart tells the user the wrong one.
+    # It only ever goes True → False: a job never gains a deliverable it
+    # already said it would not write.
+    deliverable_expected: bool = True
     announced: bool = False                 # completion surfaced in its chat session
     # What the run spent, all steps together (core.usage.Usage.to_dict()).
     # Kept as a plain dict: it is persisted, served over HTTP and rendered as
@@ -88,7 +103,17 @@ class Job:
 
     @property
     def report_path(self) -> str | None:
-        """Path of the main deliverable (kept as the common shortcut)."""
+        """Path of the main deliverable (kept as the common shortcut).
+
+        `None` is not one answer but three, and a caller that prints "no
+        report available" for all of them is wrong twice:
+
+        - the run never got there — `status` is FAILED or CANCELLED;
+        - it answered and the **write failed** — DONE, and `error` names the
+          format and the cause (#28);
+        - **no document was ever going to be written** — `deliverable_expected`
+          is False, `error` is untouched, and nothing went wrong (#84).
+        """
         main = next((o for o in self.outputs if o.role == "main"), None)
         return main.path if main else None
 
@@ -134,6 +159,7 @@ class Job:
             "error": self.error,
             "outputs": [asdict(o) for o in self.outputs],
             "report_path": self.report_path,      # derived, for consumers
+            "deliverable_expected": self.deliverable_expected,
             "announced": self.announced,
             "usage": self.usage,
         }

@@ -119,7 +119,11 @@ class JobStarted:
     sources: list[str] = field(default_factory=list)
     document_name: str = ""
     document_title: str = ""
-    formats: list[str] = field(default_factory=list)
+    # Three states, not two (#84): `None` is a request that named no format,
+    # `[]` is a request for **no document**, a list is those formats. A
+    # front-end that collapsed them would print a filename for a file nobody
+    # is going to write, which is the promise #55 exists to stop making.
+    formats: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -164,7 +168,7 @@ class Proposal:
     # they will look for on disk afterwards.
     document_name: str = ""
     document_title: str = ""
-    formats: list[str] = field(default_factory=list)
+    formats: list[str] | None = None    # see `JobStarted.formats` (#84)
 
 
 ChatEvent = Token | ToolStarted | ToolFinished | JobStarted | Message | Proposal
@@ -191,9 +195,20 @@ def _from_custom(payload: Any) -> ChatEvent | None:
             [str(ref) for ref in payload.get("sources") or []],
             str(payload.get("document_name") or ""),
             str(payload.get("document_title") or ""),
-            [str(fmt) for fmt in payload.get("formats") or []],
+            _formats(payload.get("formats")),
         )
     return None
+
+
+def _formats(value: Any) -> list[str] | None:
+    """The document formats of a payload, keeping `None` apart from `[]`.
+
+    The one coercion in this module that must NOT use `or []`: absent means
+    "the run decides" and empty means "no document" (#84), and a front-end
+    told the second when the first was meant would announce a file that is
+    coming, or say nothing about one that is not.
+    """
+    return None if value is None else [str(fmt) for fmt in value]
 
 
 def _text_of(message: Any) -> str:
@@ -297,7 +312,7 @@ class ChatRunner:
                 list(proposal.get("sources") or []),
                 str(proposal.get("document_name") or ""),
                 str(proposal.get("document_title") or ""),
-                list(proposal.get("formats") or []),
+                _formats(proposal.get("formats")),
             )
         else:
             # The transcript, and the model's last message only when nothing
