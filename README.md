@@ -219,6 +219,15 @@ backs it, rather than being planned and failing. An agent left with no
 capabilities at all still answers: the router sees an empty registry and
 replies directly instead of planning.
 
+What is retrieved is read by the **run**, not only by whoever writes the
+report: with a retrieval step before it in the plan, `research` writes its
+notes from those passages and quotes their ids, and it falls back to the
+model's own knowledge only when the plan retrieved nothing. Which of the two
+it did is on the job record (`grounded_on`) and in the report, because a
+figure read off a source and the same figure recalled are not the same
+claim. A file that was named and could not be opened travels with the
+passages, as a gap the notes have to declare rather than fill in.
+
 ### Pointing a request at a file
 
 `documents` searches; **`read_files` reads**. When a request names a document —

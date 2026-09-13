@@ -3,7 +3,10 @@
 `read_files` / `documents` → `research` → `analysis` → `critique`, and
 `slide_deck` when the request wants a presentation. The first step is what
 keeps a job from being the model talking to itself; the rest reason over
-whatever it found. The two grounding steps answer different questions —
+whatever it found — `research` writes its notes from the retrieved passages
+and the steps after it read those notes (#81), where until then the material
+reached the final generator and nothing else. The two grounding steps answer
+different questions —
 `read_files` opens the document the request NAMED, `documents` searches the
 configured material for a topic — which is why the planner is offered both
 rather than one step with a mode.

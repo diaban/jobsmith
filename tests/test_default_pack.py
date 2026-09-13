@@ -9,10 +9,13 @@ from jobsmith.agents.default._step import SUBJECT_ONLY_RULE
 from jobsmith.agents.default.analysis import AnalysisCapability
 from jobsmith.agents.default.critique import CritiqueCapability
 from jobsmith.agents.default.profile import GLOBAL_GENERATOR_PROMPT
+from jobsmith.agents.default.read_files import ReadFilesCapability
 from jobsmith.agents.default.research import ResearchCapability
+from jobsmith.agents.default.sources import Document
 from jobsmith.core.builder import build_agent
 from jobsmith.core.deps import Deps
 from jobsmith.core.registry import CapabilityRegistry
+from jobsmith.core.state import SOURCE_FILES_INPUT_KEY
 
 PACK_SCRIPT = {
     "key aspects": '{"aspects": ["history", "impact"]}',
@@ -175,3 +178,236 @@ async def test_pack_degrades_when_one_step_fails(checkpointer):
     assert out["results"]["analysis"]["ok"] is False       # recoverable failure
     assert out["terminal_kind"] == "answer"                # run still completes
     assert "# Analysis" not in out["merged_context"]       # failed step renders nothing
+
+
+# ------------------------------------------- the grounding reaches the notes
+
+
+def retrieved(step: str, *docs: tuple[str, str]) -> dict:
+    """A finished retrieval step's entry in `results`, as the pack emits it."""
+    return {step: {"ok": True, "data": {"documents": [
+        {"id": doc_id, "title": doc_id, "source": f"/{doc_id}", "text": text}
+        for doc_id, text in docs
+    ]}}}
+
+
+def notes_call(llm: FakeLLM) -> dict:
+    """The call that wrote the notes — by its system prompt, either mode.
+
+    Not by a substring of the script: the planner's own prompt renders every
+    capability's description, and this one's says "research notes".
+    """
+    return next(c for c in llm.calls if c["messages"][0]["content"].startswith(
+        (ResearchCapability.NOTES_SYSTEM, ResearchCapability.GROUNDED_NOTES_SYSTEM)))
+
+
+async def test_research_writes_from_what_the_retrieval_found():
+    """#81: the step at the far end of `web_search → research` reads it.
+
+    Before this, `investigate` built its messages from the query and the
+    aspects alone. The measured cost was a run where 14.7k characters of
+    sourced specifications sat in `results` while this step wrote product
+    sheets from the model's memory and `analysis` concluded from those.
+    """
+    llm = FakeLLM(PACK_SCRIPT)
+    out = await ResearchCapability(llm).build().ainvoke({
+        "query": "study X", "inputs": {},
+        **{"results": retrieved("web_search", ("u1", "the index peaks at 7 GB"))},
+    })
+    call = notes_call(llm)
+    assert "the index peaks at 7 GB" in call["messages"][1]["content"]
+    assert "[u1]" in call["messages"][1]["content"], "the id it can quote travels with it"
+    # and it is held to the standard of a step with a source, not to the one
+    # written for a step with only its memory
+    assert ResearchCapability.GROUNDED_NOTES_SYSTEM in call["messages"][0]["content"]
+    result = out["results"]["research"]
+    assert result["meta"]["grounded_on"] == ["web_search"]
+
+
+async def test_research_falls_back_to_its_own_knowledge_with_nothing_retrieved():
+    """The LLM-only agent is unchanged, to the prompt: no material, no change."""
+    llm = FakeLLM(PACK_SCRIPT)
+    out = await ResearchCapability(llm).build().ainvoke({"query": "study X", "inputs": {}})
+    call = notes_call(llm)
+    assert call["messages"][0]["content"].startswith(ResearchCapability.NOTES_SYSTEM)
+    assert "Retrieved material" not in call["messages"][1]["content"]
+    assert out["results"]["research"]["meta"]["grounded_on"] == []
+
+
+async def test_every_retrieval_step_reaches_it_not_only_the_first():
+    """The rule that is NOT `_material`'s (`_step.py`), and why.
+
+    There, the upstream tuple is a priority chain over restatements of one
+    thing — the analysis, else the notes it was drawn from — and reading the
+    second as well would hand the model the same content twice. Here the
+    entries are *sources*: a file the user named and what the web says today
+    are complementary, and dropping either because the other matched first
+    loses material nothing downstream can recover.
+    """
+    llm = FakeLLM(PACK_SCRIPT)
+    out = await ResearchCapability(llm).build().ainvoke({
+        "query": "study X", "inputs": {},
+        "results": {
+            **retrieved("read_files", ("mine.md", "the note the user handed over")),
+            **retrieved("web_search", ("u1", "what the web says today")),
+        },
+    })
+    material = notes_call(llm)["messages"][1]["content"]
+    assert "the note the user handed over" in material
+    assert "what the web says today" in material
+    assert "could NOT be read" not in material, "nothing was refused, so nothing is declared"
+    assert out["results"]["research"]["meta"]["grounded_on"] == ["read_files", "web_search"]
+
+
+async def test_a_failed_retrieval_step_is_not_material():
+    llm = FakeLLM(PACK_SCRIPT)
+    out = await ResearchCapability(llm).build().ainvoke({
+        "query": "study X", "inputs": {},
+        "results": {"documents": {"ok": False, "error": "nothing matched"}},
+    })
+    assert "Retrieved material" not in notes_call(llm)["messages"][1]["content"]
+    assert out["results"]["research"]["meta"]["grounded_on"] == []
+
+
+async def test_a_file_that_could_not_be_read_travels_with_the_material():
+    """`read_files`'s own rule, one step earlier than it was written for.
+
+    Its module docstring already says it: "a refusal is material, not
+    silence" — one unreadable file among three does not fail the step, and
+    the refusal goes into the generation context "because a model told
+    nothing about the missing file writes confidently over the hole". #81 put
+    a step that writes *sourced* notes between the two, and the refusal has
+    to cross it or the deliverable inherits a gap nothing in the run
+    mentions.
+    """
+    llm = FakeLLM(PACK_SCRIPT)
+    await ResearchCapability(llm).build().ainvoke({
+        "query": "study X", "inputs": {},
+        "results": {"read_files": {"ok": True, "data": {
+            "documents": [{"id": "a.md", "title": "a.md", "text": "the file that opened"}],
+            "unreadable": ["'gone.md': no such file"],
+        }}},
+    })
+    call = notes_call(llm)
+    user = call["messages"][1]["content"]
+    assert "gone.md" in user
+    # under its own label, after the material and not inside it: what is
+    # missing is not something to reason from, it is something to declare
+    assert user.index("the file that opened") < user.index("could NOT be read")
+    assert "gone.md" not in user.split("could NOT be read")[0]
+    # and the prompt says what to do with it
+    assert "never write it up from your own knowledge" in call["messages"][0]["content"]
+
+
+async def test_a_search_that_found_nothing_invents_no_refusal():
+    """The two ports are not symmetrical, and this is where that shows.
+
+    A file the user named and could not be opened is missing from the answer
+    they expect. A query that matched nothing returned nothing — the step
+    fails, and "the sources are silent about X" is not a document anyone
+    asked for. So `REFUSALS` names `read_files` and nothing else, rather than
+    giving the search an equivalent it does not have.
+    """
+    assert ResearchCapability.REFUSALS == (("read_files", "unreadable"),)
+    llm = FakeLLM(PACK_SCRIPT)
+    await ResearchCapability(llm).build().ainvoke({
+        "query": "study X", "inputs": {},
+        "results": {
+            **retrieved("web_search", ("u1", "what the web says")),
+            # a shape a search could produce, and must not be read as a refusal
+            "documents": {"ok": True, "data": {"documents": [], "unreadable": ["ignored"]}},
+        },
+    })
+    assert "could NOT be read" not in notes_call(llm)["messages"][1]["content"]
+
+
+async def test_the_material_is_bounded_and_says_where_it_was_cut():
+    """Since #75 a single web page can be 8 000 characters and there can be
+    ten of them, and every one of those blocks is re-sent to the generator
+    afterwards. The budget is shared out so no document is dropped whole, and
+    a cut is written into the text — a document silently shortened reads to
+    the model as a complete one."""
+    llm = FakeLLM(PACK_SCRIPT)
+    await ResearchCapability(llm, max_material_chars=200).build().ainvoke({
+        "query": "study X", "inputs": {},
+        "results": {
+            **retrieved("documents", ("a", "alpha " * 400)),
+            **retrieved("web_search", ("b", "beta " * 400)),
+        },
+    })
+    material = notes_call(llm)["messages"][1]["content"]
+    assert "alpha" in material and "beta" in material     # neither is dropped
+    assert material.count("truncated") == 2
+    assert len(material) < 700, "the bound holds, notes plus one line per cut"
+
+
+async def test_the_result_says_which_kind_of_notes_it_holds():
+    """A reader of the job record can tell a sourced figure from a recalled
+    one — the whole reason the two modes are not one prompt (#81)."""
+    llm = FakeLLM(PACK_SCRIPT)
+    capability = ResearchCapability(llm)
+    grounded = (await capability.build().ainvoke({
+        "query": "study X", "inputs": {},
+        "results": retrieved("documents", ("a.md", "a measured figure")),
+    }))["results"]["research"]
+    recalled = (await capability.build().ainvoke(
+        {"query": "study X", "inputs": {}}))["results"]["research"]
+
+    for rendered in (capability.render_context(grounded), capability.render_report(grounded)):
+        assert rendered is not None and "retrieved by documents" in rendered
+    for rendered in (capability.render_context(recalled), capability.render_report(recalled)):
+        assert rendered is not None and "own knowledge" in rendered
+
+
+async def test_the_planner_is_told_the_step_reads_what_was_retrieved():
+    """The description is the whole of what the planner reads. It used to say
+    'from the model's own knowledge (no external sources)', which was true and
+    is now false — a planner choosing on it would keep the step away from the
+    material it is supposed to read."""
+    description = ResearchCapability.spec.description
+    assert "no external sources" not in description
+    assert all(name in description for name in ("read_files", "documents", "web_search"))
+
+
+async def test_the_edge_the_plan_draws_carries_the_material(checkpointer):
+    """End to end, on the chain the deliverable renders as a graph.
+
+    `depends_on` is a scheduling constraint and every report draws it as a
+    data flow; on `read_files → research → analysis` it now is one.
+    """
+    llm = FakeLLM({
+        "planner": plan_json(
+            "read_files", "research", "analysis",
+            deps={"research": ["read_files"], "analysis": ["research"]},
+        ),
+        **PACK_SCRIPT,
+        "research notes": "Notes: the note says the index peaks at 7 GB.",
+        "ONLY the provided": "A sufficiently long final answer built from the pack context.",
+    })
+    registry = CapabilityRegistry([
+        ReadFilesCapability(_HandedOver("the index peaks at 7 GB")),
+        *default_capabilities(AgentContext(llm)),
+    ])
+    graph = build_agent(Deps(llm=llm), registry, checkpointer=checkpointer)
+    out = await graph.ainvoke(
+        {"query": "study the note", "job_id": "g1",
+         "inputs": {SOURCE_FILES_INPUT_KEY: ["note.md"]}},
+        config={"configurable": {"thread_id": "g1"}},
+    )
+    assert [s["capability"] for s in out["plan"]["steps"]] == [
+        "read_files", "research", "analysis"]
+    # the retrieved text reached the step the plan points at, not only the
+    # generator three steps later
+    notes_input = notes_call(llm)["messages"][1]["content"]
+    assert "the index peaks at 7 GB" in notes_input
+    assert out["results"]["research"]["meta"]["grounded_on"] == ["read_files"]
+
+
+class _HandedOver:
+    """A `DocumentReader` over one canned text — no filesystem, no port leak."""
+
+    def __init__(self, text: str):
+        self.text = text
+
+    async def read(self, ref: str):
+        return Document(id=ref, text=self.text, title=ref, source=f"/{ref}")
