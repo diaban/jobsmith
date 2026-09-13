@@ -33,7 +33,7 @@ from jobsmith.app.agent import build_app, pick_report_formats
 from jobsmith.app.providers import KeywordChatModel, make_llm, pick_provider
 from jobsmith.core.executor import Executor
 
-from .cases import EvalCase
+from .cases import FIXTURE_NAME, FIXTURE_REF, FIXTURE_TEXT, EvalCase
 from .deliverable import ensure_readable
 
 
@@ -101,14 +101,43 @@ async def _final_state(app: Any, job_id: str) -> dict[str, Any]:
     return dict(snapshot.values or {})
 
 
+def write_fixture(reports_dir: str) -> Path:
+    """Put the file a case may name where the deployment can read it.
+
+    `read_files` opens a path only inside a declared readable root, and under
+    `build_app` that is the reports directory — a scratch one per run. So the
+    fixture is written there and `resolve_inputs` puts its real path into the
+    case's `inputs`; see `FIXTURE_REF` in `cases.py` for why a case cannot
+    simply carry a path of its own.
+    """
+    path = Path(reports_dir) / FIXTURE_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(FIXTURE_TEXT, encoding="utf-8")
+    return path
+
+
+def resolve_inputs(inputs: dict[str, Any], fixture: Path | None) -> dict[str, Any]:
+    """A case's `inputs` with `FIXTURE_REF` replaced by the fixture's path."""
+    def swap(value: Any) -> Any:
+        if isinstance(value, str):
+            return value.replace(FIXTURE_REF, str(fixture)) if fixture else value
+        if isinstance(value, list):
+            return [swap(item) for item in value]
+        return value
+
+    return {key: swap(value) for key, value in inputs.items()}
+
+
 async def run_case(
-    app: Any, case: EvalCase, registry: tuple[str, ...], attempt: int = 1
+    app: Any, case: EvalCase, registry: tuple[str, ...], attempt: int = 1,
+    fixture: Path | None = None,
 ) -> Observation:
     """One case, one job, through the whole graph."""
     obs = Observation(case_id=case.id, query=case.query, attempt=attempt, registry=registry)
     started = time.perf_counter()
     try:
-        job = await app.manager.create_job(case.query, dict(case.inputs))
+        job = await app.manager.create_job(
+            case.query, resolve_inputs(dict(case.inputs), fixture))
         obs.job_id = job.job_id
         job = await app.manager.run_job(job.job_id)
         obs.plan_steps = list((job.plan or {}).get("steps", []))
@@ -162,6 +191,9 @@ async def run_suite(
     choice = resolve_provider(provider)
     llm = make_llm(choice)
     with TemporaryDirectory(prefix="jobsmith-eval-") as scratch:
+        # Written before the app is composed, into the directory it will
+        # declare readable: a case that names a file names this one.
+        fixture = write_fixture(reports_dir or scratch)
         app = await build_app(
             agent=agent,
             llm=llm,
@@ -176,7 +208,7 @@ async def run_suite(
 
             async def one(case: EvalCase, attempt: int) -> Observation:
                 async with semaphore:
-                    return await run_case(app, case, registry, attempt)
+                    return await run_case(app, case, registry, attempt, fixture)
 
             observations = await asyncio.gather(*[
                 one(case, attempt)

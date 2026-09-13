@@ -251,29 +251,33 @@ def render_summary(
         lines.append(f"baseline: {baseline.run_id} (rev {baseline.git_rev}) — Δ in points")
         lines.append("")
 
-    header = f"{'check':<24}{'passed':>9}{'rate':>9}{'Δ':>7}"
+    # Wide enough for the longest check name — a name that overflows its
+    # column shifts its whole row and makes the table unreadable exactly
+    # where a regression is being looked for.
+    width = max(24, max(len(n) for n in CHECK_NAMES) + 1)
+    header = f"{'check':<{width}}{'passed':>9}{'rate':>9}{'Δ':>7}"
     lines += [header, "-" * len(header)]
     for name in CHECK_NAMES:
         entry = result.checks.get(name, {"passed": 0, "applicable": 0})
         applicable = entry["applicable"]
         counts = f"{entry['passed']}/{applicable}" if applicable else "skipped"
         lines.append(
-            f"{name:<24}{counts:>9}{_pct(result.check_rate(name)):>9}"
+            f"{name:<{width}}{counts:>9}{_pct(result.check_rate(name)):>9}"
             f"{_delta(result.check_rate(name), baseline.check_rate(name) if baseline else None):>7}"
         )
     lines += ["-" * len(header)]
     total = f"{result.overall['passed']}/{result.overall['applicable']}"
     lines.append(
-        f"{'overall':<24}{total:>9}{_pct(result.pass_rate):>9}"
+        f"{'overall':<{width}}{total:>9}{_pct(result.pass_rate):>9}"
         f"{_delta(result.pass_rate, baseline.pass_rate if baseline else None):>7}"
     )
 
-    lines += ["", f"{'metric':<24}{'value':>9}{'Δ':>16}"]
+    lines += ["", f"{'metric':<{width}}{'value':>9}{'Δ':>16}"]
     for key in ("step_failure_rate", "mean_plan_steps", "mean_run_seconds"):
         now = result.metrics.get(key)
         before = baseline.metrics.get(key) if baseline else None
         value = "        —" if now is None else f"{now:9.3f}"
-        lines.append(f"{key:<24}{value}{_delta(now, before, points=False):>16}")
+        lines.append(f"{key:<{width}}{value}{_delta(now, before, points=False):>16}")
 
     if result.failures:
         lines += ["", f"failures ({len(result.failures)}):"]

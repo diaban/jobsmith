@@ -118,6 +118,22 @@ PLAN_CASE = EvalCase(id="c", query="q", expect_route="plan", min_steps=2,
 
 ANSWER = "a final answer long enough to pass the length floor"
 
+#: What a retrieval step brought back, and what a step that never read it
+#: writes instead: plausible, about the same subject, and built from none of
+#: it. The pair is the whole of #81 — the second is what the run that opened
+#: the issue produced, at 14.6k characters, while the first sat in `results`.
+RETRIEVED = (
+    "The pilot note records the deployment constraints the team measured: the "
+    "index must stay under two gigabytes, a query must answer within four "
+    "hundred milliseconds, and the nightly rebuild must finish inside a "
+    "two-hour window. Memory binds first, peaking at seven gigabytes."
+)
+RECALLED = (
+    "Deployments of this kind are usually bounded by three things: how large "
+    "the artefact grows, how quickly it can be served, and how long a full "
+    "refresh takes. Figures vary widely between installations."
+)
+
 
 def _obs(**kwargs) -> Observation:
     base = {
@@ -198,6 +214,21 @@ def test_a_clean_observation_passes_everything():
         # about it — the deliverable then reads exactly like a report (#59)
         ("refusal_declared", {"terminal_kind": "unanswered",
                               "report_text": "# t\n\nsomething plausible\n"}),
+        # a run whose retrieval nothing downstream ever read (#81)
+        ("grounding_reaches_reasoning", {
+            "registry": ("web_search", "research", "analysis"),
+            "plan_steps": [
+                {"capability": "web_search", "depends_on": []},
+                {"capability": "research", "depends_on": ["web_search"]},
+                {"capability": "analysis", "depends_on": ["research"]},
+            ],
+            "results": {
+                "web_search": {"ok": True, "data": {"documents": [
+                    {"id": "u1", "text": RETRIEVED}]}},
+                "research": {"ok": True, "data": {"notes": RECALLED}},
+                "analysis": {"ok": True, "data": {"analysis": RECALLED}},
+            },
+        }),
         # a deliverable with nothing of the subject or the material in it (#73)
         ("report_answers_request", {
             "query": "compare ergonomic chairs for a tall adult",
@@ -300,6 +331,83 @@ def test_a_refusal_that_merely_restates_the_request_is_not_an_answer():
                       "tall adult, as requested."),
     )
     assert _status(case, obs, "report_answers_request") == "fail"
+
+
+def test_grounding_reaches_reasoning_catches_the_run_that_opened_it():
+    """#81, as it actually arrived: the plan drew an edge that carried nothing.
+
+    `web_search → research → analysis`, every step ok, and the notes the
+    analysis reasoned over were written from the model's memory while the
+    retrieved specifications sat unread in `results`. Nothing else here sees
+    it: the deliverable was handed the material directly by the merger, so
+    `report_answers_request` was green for the whole of that run.
+    """
+    def observed(research: str, analysis: str) -> Observation:
+        return _obs(
+            query="list the deployment constraints and say which binds first",
+            registry=("web_search", "research", "analysis"),
+            plan_steps=[
+                {"capability": "web_search", "depends_on": []},
+                {"capability": "research", "depends_on": ["web_search"]},
+                {"capability": "analysis", "depends_on": ["research"]},
+            ],
+            results={
+                "web_search": {"ok": True, "data": {"documents": [
+                    {"id": "u1", "title": "note", "text": RETRIEVED}]}},
+                "research": {"ok": True, "data": {"notes": research}},
+                "analysis": {"ok": True, "data": {"analysis": analysis}},
+            },
+        )
+
+    name = "grounding_reaches_reasoning"
+    assert _status(PLAN_CASE, observed(RECALLED, RECALLED), name) == "fail"
+    # the same plan, with the steps actually reading what was retrieved
+    grounded = (
+        "Index: must stay under two gigabytes [u1]. Query: four hundred "
+        "milliseconds [u1]. Nightly rebuild: inside a two-hour window, "
+        "peaking at seven gigabytes of memory on the single node measured."
+    )
+    assert _status(PLAN_CASE, observed(grounded, grounded), name) == "pass"
+    # and one step reading it is enough for the material to be in the run
+    assert _status(PLAN_CASE, observed(grounded, RECALLED), name) == "pass"
+
+
+@pytest.mark.parametrize(
+    ("why", "changed"),
+    [
+        ("no step retrieved anything", {}),
+        ("nothing depends on the retrieval", {
+            "plan_steps": [
+                {"capability": "web_search", "depends_on": []},
+                {"capability": "research", "depends_on": []},
+            ],
+            "results": {
+                "web_search": {"ok": True, "data": {"documents": [
+                    {"id": "u1", "text": RETRIEVED}]}},
+                "research": {"ok": True, "data": {"notes": RECALLED}},
+            },
+        }),
+        ("the retrieval failed, so there is no material", {
+            "plan_steps": [
+                {"capability": "web_search", "depends_on": []},
+                {"capability": "research", "depends_on": ["web_search"]},
+            ],
+            "results": {
+                "web_search": {"ok": False, "error": "nothing usable"},
+                "research": {"ok": True, "data": {"notes": RECALLED}},
+            },
+        }),
+    ],
+)
+def test_grounding_reaches_reasoning_skips_what_it_cannot_measure(why, changed):
+    """A skip leaves the denominator, so each of these must be one, not a fail.
+
+    The middle case is the honest limit written into the docstring: this
+    measures the edges a plan **draws**. A plan that schedules the retrieval
+    and the reasoning side by side draws none, and whether it should have is
+    a question about planning.
+    """
+    assert _status(PLAN_CASE, _obs(**changed), "grounding_reaches_reasoning") == "skip", why
 
 
 def test_refusal_is_bare_catches_the_shape_the_prompts_forbade_and_got():
