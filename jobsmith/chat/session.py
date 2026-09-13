@@ -5,8 +5,10 @@ Composition (all prebuilt LangChain/LangGraph, no homemade tool plumbing):
     create_agent(model, job tools, system_prompt, middleware, checkpointer)
 
 - "Complexity detection" IS the function calling: the system prompt tells the
-  model to answer simple things directly and call `launch_job` for complex
-  tasks. The tool interrupt()s for human approval (see chat/tools.py).
+  model to answer simple things directly and call `launch_job` for anything
+  that needs the engine. The tool runs the task in the turn and promotes it
+  to the background when it turns out to be slow (see chat/tools.py) — the
+  model decides *whether* the engine is needed, never *how long* it will take.
 - Job completions AND in-flight progress are surfaced by
   `JobNotificationMiddleware`, which wraps the model call and injects transient
   system notices for this session's jobs. Wrapping the *request* keeps them out
@@ -27,20 +29,28 @@ from ..jobs.manager import JobManager
 from ..jobs.models import Job, JobStatus
 from .tools import make_job_tools, progress_line, progress_signature
 
-DEFAULT_CHAT_SYSTEM_PROMPT = """You are an assistant that can launch background jobs for complex tasks.
+DEFAULT_CHAT_SYSTEM_PROMPT = """You are an assistant that runs real tasks on a job engine.
 
 - Answer greetings, simple questions, and questions about what you can do directly.
-- For any request needing research, analysis, or several processing steps, call
-  launch_job: put the task in `query` and explain your reasoning in `rationale`
-  (the user must approve the launch).
-- Jobs run in the background — after launching one, keep chatting normally.
+- For any request needing research, analysis, reading a file, or several
+  processing steps, call launch_job: put the task in `query` and one line on
+  what it will do in `rationale`. Do not ask for permission first and do not
+  guess how long it will take — the task runs now and moves to the background
+  by itself if it turns out to be slow.
+- When launch_job says the answer has already been shown to the user, it means
+  exactly that: it was delivered word for word. Reply with at most one short
+  sentence (naming the file is usually enough). Never repeat, summarize or
+  rephrase the answer, and never comment on its content.
+- When launch_job says the task moved to the background, say so plainly. There
+  is no result yet: do not invent one.
 - When a [job update] notice appears, give the user a short synthesis
-  (2-3 sentences) of the result and the path to the markdown report file.
+  (2-3 sentences) of the result and the path to the report file.
 - A [job progress] notice means a job is STILL RUNNING: there is no result yet.
   Use it to answer "how is it going?", or to add one short clause when it is
   genuinely useful ("(the research step is done, analysis is running)"). Never
   present it as an answer, and never make the whole reply about it.
-- Use job_status / list_my_jobs / cancel_job to manage jobs when asked."""
+- Use job_status / list_my_jobs / cancel_job to manage jobs when asked; a
+  running task can be stopped, which is how a user undoes one."""
 
 NOTICE_MARKER = "background jobs finished"
 PROGRESS_MARKER = "background jobs still running"
@@ -263,17 +273,27 @@ class ChatSession:
         session_id: str | None = None,
         system_prompt: str = DEFAULT_CHAT_SYSTEM_PROMPT,
         checkpointer: Any = None,
+        sync_timeout: float | None = None,
+        approval_required: bool | None = None,
     ):
         self.manager = manager
         self.model = model
         self.session_id = session_id or uuid.uuid4().hex
         self.system_prompt = system_prompt
         self.checkpointer = checkpointer
+        # Both default to None, i.e. "ask the deployment" (`pick_*` in
+        # chat/tools.py). Injectable because a test has to be able to force
+        # either side of the clock, and because a composition root that wants
+        # to decide for itself should not have to set an environment variable.
+        self.sync_timeout = sync_timeout
+        self.approval_required = approval_required
 
     def build(self):
         return create_agent(
             self.model,
-            tools=make_job_tools(self.manager, self.session_id),
+            tools=make_job_tools(self.manager, self.session_id,
+                                 sync_timeout=self.sync_timeout,
+                                 approval_required=self.approval_required),
             system_prompt=self.system_prompt,
             middleware=[JobNotificationMiddleware(self.manager, self.session_id)],
             checkpointer=self.checkpointer,

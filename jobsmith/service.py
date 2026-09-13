@@ -27,7 +27,16 @@ from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any
 
-from .chat.runner import ChatEvent, ChatRunner, Message, Proposal, Token, ToolFinished, ToolStarted
+from .chat.runner import (
+    ChatEvent,
+    ChatRunner,
+    JobStarted,
+    Message,
+    Proposal,
+    Token,
+    ToolFinished,
+    ToolStarted,
+)
 from .jobs.report import is_binary_format
 
 # ------------------------------------------------------------------ the port
@@ -105,7 +114,7 @@ class ChatStreamError(RuntimeError):
     """
 
 
-# The five domain events of `chat/runner.py`, as the dicts the port carries.
+# The six domain events of `chat/runner.py`, as the dicts the port carries.
 # Dicts because they cross HTTP: the two backings must be indistinguishable,
 # and a front-end deserializing a dataclass would be a third implementation.
 # The two terminal shapes are byte-for-byte what `send`/`approve` have always
@@ -114,6 +123,7 @@ _EVENT_TYPES: dict[type, str] = {
     Token: "token",
     ToolStarted: "tool_started",
     ToolFinished: "tool_finished",
+    JobStarted: "job_started",
     Message: "message",
     Proposal: "proposal",
 }
@@ -172,8 +182,15 @@ class AgentService(ABC):
         """One turn, as it happens: the events of `chat/runner.py`, as dicts.
 
         The primitive, not a variant of `send`. A turn is a flow — tokens,
-        tool activity, then exactly one terminal — and `send` is that flow
-        drained, so the two can never disagree about what a turn produced.
+        tool activity, the notice that a job started, then exactly one
+        terminal — and `send` is that flow drained, so the two can never
+        disagree about what a turn produced.
+
+        A turn can now take as long as the task it runs (#83): a task runs
+        *in* the turn and is promoted to the background only when it outlives
+        `chat/tools.py`'s clock. That is a property of the flow, not of this
+        method — which is why nothing here has a timeout of its own to get
+        wrong.
 
         Never drops. Where `subscribe` sheds events under back-pressure, this
         one blocks the producer or raises `ChatStreamError`: a progress tick

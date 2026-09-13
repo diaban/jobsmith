@@ -60,7 +60,7 @@ NONE = "—"          # "nothing to show here", everywhere, so a column reads ev
 # status line that is overwritten, so it says what is happening rather than
 # what has happened.
 TOOL_ACTIVITY = {
-    "launch_job": "sizing up a background job",
+    "launch_job": "running the task",
     "job_status": "checking on a job",
     "list_my_jobs": "looking up your jobs",
     "cancel_job": "cancelling a job",

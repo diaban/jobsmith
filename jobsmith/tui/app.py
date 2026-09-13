@@ -3,7 +3,7 @@ that can show a job while it runs.
 
 It is not a second implementation of the REPL, it is a second *presentation*
 of the same flow: `cli/repl.py` and this both drive `stream` /
-`stream_approval` and both render the five events of `chat/runner.py`. What
+`stream_approval` and both render the six events of `chat/runner.py`. What
 differs is what the two can do while waiting. `run_repl` blocks the loop on
 `input()`, so nothing repaints until the human types; Textual owns the event
 loop and treats a keystroke as an event, so a running job can be on screen at
@@ -14,9 +14,13 @@ stdout pipeable on purpose.
 
 Three panes, and one rule each:
 
-* **chat** — the streamed turn, and the approval round trip. Tokens are
-  appended to the bubble as they arrive; the terminal event is not printed,
-  because the tokens already delivered it.
+* **chat** — the streamed turn, the job notice, and the approval round trip
+  when a deployment kept the gate. Tokens are appended to the bubble as they
+  arrive; the terminal event is not printed, because the tokens already
+  delivered it. A `job_started` becomes a card saying what the run will do
+  and how to stop it — cancellation is the undo the approval used to be the
+  gate for (#83), and this is the pane where the person can see it running
+  while it runs, which is the reason this UI exists at all.
 * **job list** — `list_jobs`, which answers with *summaries*: a row says what
   a summary knows and the detail pane loads the rest.
 * **job detail** — `get_job`: the plan drawn as a DAG, a per-step table, and
@@ -97,37 +101,70 @@ class Bubble(Static):
         self.update(f"[{self._style}]{self._speaker}[/]\n{body}")
 
 
+def _job_body(query: str, rationale: str, sources: Sequence[str],
+              document_name: str, document_title: str,
+              formats: Sequence[str]) -> str:
+    """What a run is about to do, as markup — the three guarantees of #83.
+
+    One renderer for the notice and for the proposal, because both have to
+    show the user the same things: the reformulated query (shown verbatim and
+    escaped, never summarised — `chat/tools.py` demands a self-contained one
+    and this is what catches a referent that has gone), the files it may open
+    (#60), and what the document will be called, titled and written as (#55).
+    """
+    reads = (f"[{render.DIM}]reads {escape(', '.join(sources))}[/]\n"
+             if sources else "")
+    written = deliverable_filenames(document_name, formats) or list(formats)
+    writes = (f"[{render.DIM}]writes {escape(', '.join(written))}[/]\n"
+              if written else "")
+    titled = (f"[{render.DIM}]titled {escape(document_title)}[/]\n"
+              if document_title else "")
+    return (f"[b]{escape(query)}[/b]\n"
+            f"[{render.DIM}]{escape(rationale)}[/]\n"
+            f"{reads}{titled}{writes}")
+
+
+class JobNoticeCard(Static):
+    """A job that just started, as something to read — not to answer (#83).
+
+    The card the approval used to be, minus the question. It says the same
+    three things (`_job_body`) plus the one the proposal could not carry: the
+    job id, because **cancellation is the undo the approval was the gate
+    for**, and an undo whose target has no name is not one. F8 twice in the
+    jobs pane is where that happens, which is the line at the bottom.
+    """
+
+    def __init__(self, job_id: str, query: str, rationale: str,
+                 sources: Sequence[str] = (), document_name: str = "",
+                 document_title: str = "", formats: Sequence[str] = ()) -> None:
+        super().__init__(classes="job-notice")
+        short = escape(job_id[:8])
+        self.update(
+            f"[{render.RUNNING}]running this as job {short}[/]\n"
+            + _job_body(query, rationale, sources, document_name,
+                        document_title, formats)
+            + f"\n[{render.DIM}]F3 then F8 twice stops it[/]"
+        )
+
+
 class ProposalCard(Static):
     """The human-in-the-loop interrupt, as something to answer.
 
-    The wording is the model's own — `chat/tools.py` demands a self-contained
-    query and that is what the human approves — so it is shown verbatim and
-    escaped, never summarised.
+    Off the nominal path since #83 — kept for a deployment that asked for the
+    gate back ($JOBSMITH_APPROVE_JOBS) and for the first capability that must
+    ask before it spends. It shows exactly what the notice above shows.
     """
 
     def __init__(self, query: str, rationale: str, sources: Sequence[str] = (),
                  document_name: str = "", document_title: str = "",
                  formats: Sequence[str] = ()) -> None:
         super().__init__(classes="proposal")
-        # The files it would be allowed to open, when there are any: approving
-        # the job is approving this list, so it is shown, not summarised away.
-        reads = (f"[{render.DIM}]reads {escape(', '.join(sources))}[/]\n"
-                 if sources else "")
-        # ...and what it would leave behind. The name is what the user will
-        # look for on disk, so a name they never saw would be the second
-        # silent decision #55 is about.
-        written = deliverable_filenames(document_name, formats) or list(formats)
-        writes = (f"[{render.DIM}]writes {escape(', '.join(written))}[/]\n"
-                  if written else "")
-        titled = (f"[{render.DIM}]titled {escape(document_title)}[/]\n"
-                  if document_title else "")
         self.update(
             f"[{render.ATTENTION}]a background job is proposed[/]\n"
-            f"[b]{escape(query)}[/b]\n"
-            f"[{render.DIM}]{escape(rationale)}[/]\n"
-            f"{reads}{titled}{writes}\n"
-            f"[b {render.DONE}]y[/] [{render.DIM}]launch it[/]     "
-            f"[b]n[/] [{render.DIM}]not now[/]"
+            + _job_body(query, rationale, sources, document_name,
+                        document_title, formats)
+            + f"\n[b {render.DONE}]y[/] [{render.DIM}]launch it[/]     "
+              f"[b]n[/] [{render.DIM}]not now[/]"
         )
 
 
@@ -171,6 +208,7 @@ class JobsmithApp(App[None]):
     #conversation { width: 1fr; padding: 1 2 0 2; }
     .bubble { margin: 0 0 1 0; }
     .proposal { background: $panel; border-left: thick $warning; padding: 1 2; margin: 0 0 1 0; }
+    .job-notice { background: $panel; border-left: thick $success; padding: 1 2; margin: 0 0 1 0; }
     #activity { height: 1; padding: 0 2; color: $text-accent; }
     #prompt { border: none; background: $panel; padding: 0 1; }
     #prompt:focus { border: none; }
@@ -480,6 +518,34 @@ class JobsmithApp(App[None]):
             self._activity(f"… {render.tool_activity(str(event.get('name') or ''))}")
         elif kind == "tool_finished":
             self._activity(f"✓ {render.tool_activity(str(event.get('name') or ''))}")
+        elif kind == "job_started":
+            self._job_started(event)
+
+    def _job_started(self, event: dict[str, Any]) -> None:
+        """A job began inside this turn: say what it will do, and how to stop it.
+
+        Mounted into the conversation rather than shown on the activity line:
+        the activity line is overwritten by the next thing that happens, and
+        what a run was handed is the one part of this the user may need to
+        read again — a file they did not mean to hand over, a document named
+        something they did not ask for.
+
+        The answer that follows lands in a bubble of its own, because
+        `self._answer` is reset per turn and the card is not a Bubble.
+        """
+        conversation = self.query_one("#conversation", VerticalScroll)
+        conversation.mount(JobNoticeCard(
+            str(event.get("job_id") or ""),
+            str(event.get("query") or ""),
+            str(event.get("rationale") or ""),
+            [str(s) for s in event.get("sources") or []],
+            str(event.get("document_name") or ""),
+            str(event.get("document_title") or ""),
+            [str(f) for f in event.get("formats") or []]))
+        conversation.scroll_end(animate=False)
+        # A card between the tokens and the ones that follow: the next token
+        # must open a NEW bubble, or it would be appended above the card.
+        self._answer = None
 
     def _activity(self, text: str) -> None:
         self.query_one("#activity", Static).update(text)

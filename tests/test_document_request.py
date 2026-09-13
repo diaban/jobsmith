@@ -19,10 +19,10 @@ from __future__ import annotations
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langgraph.types import Command
 from test_chat import launch_call, make_session
 from test_jobs import make_manager
 
+from jobsmith.chat import ChatRunner, JobStarted
 from jobsmith.core.paths import PathRefused
 from jobsmith.jobs.report import (
     NAME_MAX,
@@ -177,10 +177,10 @@ async def test_a_format_nothing_can_render_is_refused_in_front_of_the_asker(
 
 
 def test_the_filenames_shown_are_the_filenames_written():
-    """What a front-end puts on the approval card is what lands on disk."""
+    """What a front-end puts on the job notice is what lands on disk."""
     assert deliverable_filenames(NAME, ["markdown", "pdf"]) == [
         f"{NAME}.md", f"{NAME}.pdf"]
-    # nothing to call them yet: there is no job id at proposal time
+    # nothing to call them yet: a format with no name is not a filename
     assert deliverable_filenames("", ["markdown"]) == []
     assert "markdown" in available_formats()
 
@@ -190,37 +190,42 @@ def test_the_filenames_shown_are_the_filenames_written():
 CFG = {"configurable": {"thread_id": "doc-1"}}
 
 
-async def test_the_proposal_shows_the_document_and_the_approval_creates_it(
+async def test_the_notice_shows_the_document_the_run_then_creates(
     store, checkpointer, tmp_path
 ):
-    """The card is where a name stops being a silent decision: what the user
-    is shown is what reaches `create_job`."""
+    """The notice is where a name stops being a silent decision: what the
+    user is shown is what reaches `create_job`.
+
+    It was the approval card until #83. The guarantee is unchanged and the
+    moment is unchanged — before anything is written — but it is said rather
+    than asked, and the answer no longer waits on a keystroke.
+    """
     session, _ = make_session(store, checkpointer, tmp_path, [
         launch_call("compare the chairs", "several steps",
                     document_name="chair_comparison.md",   # the model wrote an extension
                     document_title="Comparatif des chaises",
                     formats=["markdown", "html"]),
-        AIMessage(content="launched"),
+        AIMessage(content="done"),
     ])
-    agent = session.build()
+    runner = ChatRunner(session.build())
 
-    out = await agent.ainvoke(
-        {"messages": [HumanMessage("compare the chairs please")]}, CFG)
-    (proposal,) = out["__interrupt__"]
-    assert proposal.value["document_name"] == NAME        # the extension was dropped
-    assert proposal.value["document_title"] == "Comparatif des chaises"
-    assert proposal.value["formats"] == ["markdown", "html"]
-    assert await session.manager.list_jobs() == []        # nothing created yet
+    events = [e async for e in runner.stream(session.session_id,
+                                             "compare the chairs please")]
 
-    await agent.ainvoke(Command(resume={"approved": True}), CFG)
+    (started,) = [e for e in events if isinstance(e, JobStarted)]
+    assert started.document_name == NAME                  # the extension was dropped
+    assert started.document_title == "Comparatif des chaises"
+    assert started.formats == ["markdown", "html"]
+
     (job,) = await session.manager.list_jobs()
     assert (job.document_name, job.document_title) == (NAME, "Comparatif des chaises")
     assert job.formats == ["markdown", "html"]
+    assert started.job_id == job.job_id
 
 
 async def test_a_refused_document_never_reaches_the_card(store, checkpointer, tmp_path):
     """A format nothing can render here is the model's to fix on the spot, so
-    the answer goes back to it as text and no approval is ever asked for."""
+    the answer goes back to it as text and nothing is ever created."""
     session, _ = make_session(store, checkpointer, tmp_path, [
         launch_call("compare the chairs", "several steps", formats=["docx"]),
         AIMessage(content="I cannot write docx here."),
@@ -230,7 +235,7 @@ async def test_a_refused_document_never_reaches_the_card(store, checkpointer, tm
     out = await agent.ainvoke(
         {"messages": [HumanMessage("compare the chairs as a docx")]}, CFG)
 
-    assert "__interrupt__" not in out                     # never proposed
+    assert await session.manager.list_jobs() == []        # never created
     tool_reply = next(m for m in out["messages"] if isinstance(m, ToolMessage))
     assert "NOT launched" in tool_reply.content
     assert "markdown" in tool_reply.content               # what IS possible here

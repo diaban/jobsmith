@@ -41,7 +41,14 @@ from jobsmith.core.usage import Usage
 from jobsmith.jobs.models import Job, JobOutput, JobStatus
 from jobsmith.service import AgentService, LocalAgentService, ServiceUnavailable
 from jobsmith.tui import MISSING, TuiUnavailable
-from jobsmith.tui.app import LIVE_LOST, UNREACHABLE, Bubble, JobsmithApp, ProposalCard
+from jobsmith.tui.app import (
+    LIVE_LOST,
+    UNREACHABLE,
+    Bubble,
+    JobNoticeCard,
+    JobsmithApp,
+    ProposalCard,
+)
 from jobsmith.tui.render import (
     MARKUP_ROLES,
     NONE,
@@ -404,12 +411,13 @@ async def test_moving_off_the_row_drops_an_armed_cancel():
 # ------------------------------------------------------- the streamed turn
 
 
-def make_service(store, checkpointer, tmp_path, responses):
+def make_service(store, checkpointer, tmp_path, responses, *, approval=False):
     manager = make_manager(store, checkpointer, tmp_path)
     model = ScriptedChatModel(responses=responses)
     saver = MemorySaver()
     service = LocalAgentService(manager, lambda session_id=None: ChatSession(
-        manager, model, session_id=session_id, checkpointer=saver))
+        manager, model, session_id=session_id, checkpointer=saver,
+        approval_required=approval))
     return service, manager
 
 
@@ -447,13 +455,60 @@ async def test_the_answer_is_drawn_as_it_arrives(store, checkpointer, tmp_path, 
         "the bubble did not grow by prefixes"
 
 
+async def test_the_job_notice_says_what_will_run_and_how_to_stop_it(
+    store, checkpointer, tmp_path
+):
+    """The nominal path on screen (#83): a card that is read, not answered.
+
+    It carries the three guarantees the approval used to — the reformulated
+    query, the files it may open, the document it will write — plus the job
+    id and how to stop it, because cancellation is the undo the gate was. The
+    prompt is NOT put into approval mode: nothing is waiting on the user.
+    """
+    service, manager = make_service(store, checkpointer, tmp_path, [
+        launch_call("survey sixel support", "it needs the web",
+                    source_files=["/notes/sixel.md"], document_name="sixel",
+                    document_title="Sixel support", formats=["markdown"]),
+        AIMessage(content="Saved."),
+    ])
+    session_id = await service.new_session()
+
+    app = JobsmithApp(service, session_id)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press(*"look into sixel")
+        await pilot.press("enter")
+        await settle(pilot)
+
+        (notice,) = app.query(JobNoticeCard)
+        shown = str(notice.content)
+        assert "survey sixel support" in shown
+        assert "/notes/sixel.md" in shown
+        assert "sixel.md" in shown                      # what it will write
+        assert "Sixel support" in shown                 # ...and its title
+        assert "stops it" in shown, "the undo is not offered anywhere"
+        assert not app.query(ProposalCard), "the nominal path still asked"
+        assert not app._awaiting_approval
+        assert app.query_one("#prompt").placeholder == "message the agent…"
+
+        (job,) = await manager.list_jobs()
+        assert job.job_id[:8] in shown, "the card cannot name the job to stop"
+        # the answer the run produced was written into the conversation
+        settled = await manager.get_job(job.job_id)
+        assert any(settled.final_answer in b.text for b in app.query(Bubble))
+
+
 async def test_a_proposal_is_approved_through_the_ui(store, checkpointer, tmp_path):
     """The round trip: the interrupt becomes a card, `y` resumes the graph,
-    and a job exists on the other side of it."""
+    and a job exists on the other side of it.
+
+    Behind `$JOBSMITH_APPROVE_JOBS` since #83 — the mechanism is kept, so its
+    UI is kept, and this is what stops the card rotting.
+    """
     service, manager = make_service(store, checkpointer, tmp_path, [
         launch_call("survey sixel support", "it needs the web"),
         AIMessage(content=ANSWER),
-    ])
+    ], approval=True)
     session_id = await service.new_session()
 
     app = JobsmithApp(service, session_id)
@@ -480,7 +535,7 @@ async def test_declining_a_proposal_creates_nothing(store, checkpointer, tmp_pat
     service, manager = make_service(store, checkpointer, tmp_path, [
         launch_call("survey sixel support", "it needs the web"),
         AIMessage(content="fine, not now"),
-    ])
+    ], approval=True)
     session_id = await service.new_session()
 
     app = JobsmithApp(service, session_id)

@@ -48,13 +48,18 @@ async def wait_done(client, job_id):
 
 
 async def test_daemon_client_full_chat_flow(store, checkpointer, tmp_path):
+    """The gate path over HTTP, which is the richest one the client answers:
+    a proposal terminal, an approval round trip, then the job. Kept with
+    `approval_required=True` since #83 made it the exception rather than the
+    rule — `test_service.py` drives the nominal one through both backings."""
     manager = make_manager(store, checkpointer, tmp_path)
     saver = MemorySaver()
     responses = [launch_call("analyse it", "multi-step"), AIMessage(content="launched!")]
 
     def session_factory(session_id=None):
         return ChatSession(manager, ScriptedChatModel(responses=list(responses)),
-                           session_id=session_id, checkpointer=saver)
+                           session_id=session_id, checkpointer=saver,
+                           approval_required=True)
 
     client = daemon_client_over(create_api(LocalAgentService(manager, session_factory)))
     try:

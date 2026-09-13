@@ -210,9 +210,16 @@ def _text(message: BaseMessage) -> str:
 
 
 class KeywordChatModel(BaseChatModel):
-    """Deterministic tool-calling chat model: proposes a job on analysis-ish
-    words, otherwise answers directly. Lets the whole chat/HITL/notification
-    flow run without any API key."""
+    """Deterministic tool-calling chat model: runs a job on analysis-ish
+    words, otherwise answers directly. Lets the whole chat/job/notification
+    flow run without any API key.
+
+    It answers the tool's own results the way the prompt asks a real model to
+    (#83) — one short line when the answer has already been delivered
+    verbatim, and no invented result when a task was promoted. A fake that
+    relayed the instruction back into the conversation would show a first-time
+    reader the opposite of the behaviour being demonstrated.
+    """
 
     COMPLEX_WORDS: ClassVar[tuple[str, ...]] = (
         "analyse", "analyze", "search", "cherche", "recherche", "research",
@@ -245,9 +252,21 @@ class KeywordChatModel(BaseChatModel):
         last = messages[-1]
         # 2. tool result (launch/status/cancel) → relay it
         if isinstance(last, ToolMessage):
-            if "DECLINED" in _text(last):
+            result = _text(last)
+            if "DECLINED" in result:
                 return self._reply("Understood, I won't launch that job.")
-            return self._reply(f"Noted — {_text(last)}")
+            # The answer is already in the turn: one short sentence, and never
+            # a word of it repeated — which is the whole instruction.
+            if "ALREADY been shown" in result:
+                where = next((line.split(": ", 1)[1] for line in result.splitlines()
+                              if line.startswith("The deliverable is saved at: ")), "")
+                return self._reply(f"Saved to {where.split(' —')[0]}." if where
+                                   else "That is everything the run produced.")
+            if "moved to the BACKGROUND" in result:
+                return self._reply(
+                    "That is taking a while, so it is now running in the "
+                    "background — I'll report back here when it lands.")
+            return self._reply(f"Noted — {result}")
         # 3. user message → job proposal or direct answer
         user = _text(last) if isinstance(last, HumanMessage) else ""
         if any(w in user.lower() for w in self.COMPLEX_WORDS):
@@ -256,7 +275,7 @@ class KeywordChatModel(BaseChatModel):
                 "args": {
                     "query": user,
                     "rationale": "Multi-step task detected (keywords): "
-                                 "a background job fits better than an inline answer.",
+                                 "running it on the job engine.",
                 },
                 "id": f"call_{uuid.uuid4().hex[:8]}",
             }

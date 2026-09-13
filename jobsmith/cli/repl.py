@@ -4,11 +4,11 @@ Identical experience whether it is backed by a daemon or by an embedded
 agent — only the lifetime of the jobs differs (see cli/client.py).
 
 Commands:
-  <any text>        chat (the agent may propose launching a job — approve y/N)
+  <any text>        chat (a real task runs here; /cancel stops it)
   /jobs             list jobs
   /job <id-prefix>  show a job's plan, artifacts and answer
   /report <id-pfx>  print a finished job's report (text formats)
-  /bg <any text>    bypass the chat: run that query as a job directly
+  /bg <any text>    run that query as a background job, without waiting
   /image <key>      attach an image input to the NEXT /bg job
   /cancel <id-pfx>  cancel a job
   /resume <id-pfx>  restart a stopped job from its checkpoint
@@ -37,7 +37,7 @@ BANNER = "\n".join(
 # the HTTP adapter and not in jobs/report.py. A TUI will word these its own way,
 # and neither wording belongs in chat/runner.py.
 TOOL_ACTIVITY = {
-    "launch_job": "sizing up a background job",
+    "launch_job": "running the task",
     "job_status": "checking on a job",
     "list_my_jobs": "looking up your jobs",
     "cancel_job": "cancelling a job",
@@ -47,6 +47,35 @@ TOOL_ACTIVITY = {
 def tool_activity(name: str) -> str:
     """Readable prose for a tool name; an unmapped tool still says something."""
     return TOOL_ACTIVITY.get(name, f"running {name}")
+
+
+def job_lines(event: dict, indent: str = "    ") -> list[str]:
+    """What a run is about to do, as lines — the three guarantees of #83.
+
+    One renderer for both shapes, because a notice and a proposal must show
+    the user the same things: the reformulated query (the engine never sees
+    the thread, and a reader is what catches a referent that has gone), the
+    files it may open (#60), and what the document will be called, titled and
+    written as (#55). A front-end that showed one and not the other would be
+    the "second silent decision" each of those issues is about.
+
+    `writes` prefers real filenames and falls back to the bare format names:
+    a name is only a name once there is a job id to hang it on, so a proposal
+    can legitimately have formats and nothing to call them.
+    """
+    lines = [f"{indent}task     : {event.get('query')}"]
+    if rationale := event.get("rationale"):
+        lines.append(f"{indent}approach : {rationale}")
+    if sources := event.get("sources"):
+        lines.append(f"{indent}reads    : {', '.join(sources)}")
+    if title := event.get("document_title"):
+        lines.append(f"{indent}titled   : {title}")
+    if files := deliverable_filenames(str(event.get("document_name") or ""),
+                                      event.get("formats") or []):
+        lines.append(f"{indent}writes   : {', '.join(files)}")
+    elif formats := event.get("formats"):
+        lines.append(f"{indent}writes   : {', '.join(formats)}")
+    return lines
 
 
 class TurnPrinter:
@@ -74,6 +103,24 @@ class TurnPrinter:
             self._note(f"… {tool_activity(event.get('name') or '')}")
         elif kind == "tool_finished":
             self._note(f"✓ {tool_activity(event.get('name') or '')}")
+        elif kind == "job_started":
+            self._job_started(event)
+
+    def _job_started(self, event: dict) -> None:
+        """The notice that replaced the approval card (#83).
+
+        On stdout, where the proposal block was: this is not "what it is
+        doing right now" — it is the record of what the user is being handed,
+        and the id is what they need to stop it. Which is the line that ends
+        it: approval was the gate, cancellation is the undo, and an undo
+        nobody is told about is not one.
+        """
+        self.end()
+        short = str(event.get("job_id") or "")[:8]
+        print(f"\n{self.indent}running this as job {short}:")
+        for line in job_lines(event, self.indent + "  "):
+            print(line)
+        print(f"{self.indent}  stop it  : /cancel {short}\n")
 
     def end(self) -> None:
         """Close the answer's line. The terminal event restates the reply the
@@ -209,6 +256,9 @@ async def run_repl(client: AgentClient, session_id: str) -> None:
                 )
                 pending_inputs.clear()
                 short = launched["job_id"][:8]
+                # `/bg` is the explicit escalation now, not a bypass: an
+                # ordinary message already reaches the engine, so what this
+                # buys is not waiting for it.
                 print(f"  started in background: {short}  (try /jobs, /job {short[:4]})")
             elif line.startswith("/"):
                 print("  unknown command (try /jobs, /job, /report, /bg, /image, "
@@ -218,24 +268,13 @@ async def run_repl(client: AgentClient, session_id: str) -> None:
                 try:
                     reply = await render_turn(client.stream(session_id, line), printer)
                     # human-in-the-loop: the agent proposes a job, you approve or not
+                    # Kept, and off the nominal path: a deployment that set
+                    # $JOBSMITH_APPROVE_JOBS still gets the gate, and so will
+                    # the first capability that must ask before it spends.
                     while reply.get("type") == "proposal":
                         print("\n  the agent proposes a background job:")
-                        print(f"    task     : {reply.get('query')}")
-                        print(f"    approach : {reply.get('rationale')}")
-                        # the files it would be allowed to open: approving the job
-                        # is approving this list, so it is never left unsaid
-                        if sources := reply.get("sources"):
-                            print(f"    reads    : {', '.join(sources)}")
-                        # ...and what it would leave behind: the name is the
-                        # thing they will look for on disk afterwards (#55)
-                        if title := reply.get("document_title"):
-                            print(f"    titled   : {title}")
-                        if files := deliverable_filenames(
-                                str(reply.get("document_name") or ""),
-                                reply.get("formats") or []):
-                            print(f"    writes   : {', '.join(files)}")
-                        elif formats := reply.get("formats"):
-                            print(f"    writes   : {', '.join(formats)}")
+                        for line in job_lines(reply):
+                            print(line)
                         answer = await loop.run_in_executor(None, input, "  launch it? [y/N] ")
                         approved = answer.strip().lower() in ("y", "yes", "o", "oui")
                         reply = await render_turn(

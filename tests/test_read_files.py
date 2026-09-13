@@ -16,13 +16,10 @@ job names that report, and the second job actually reads it.
 """
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 from conftest import FakeLLM, ScriptedChatModel, plan_json
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.types import Command
 from test_chat import launch_call
 from test_jobs import make_manager
 
@@ -32,7 +29,7 @@ from jobsmith.agents.default.read_files import ReadFilesCapability, named_files
 from jobsmith.agents.default.sources import Document, DocumentUnavailable, LocalFileReader
 from jobsmith.app import build_app
 from jobsmith.app.providers import KeywordChatModel, KeywordLLM
-from jobsmith.chat import ChatSession
+from jobsmith.chat import ChatRunner, ChatSession, JobStarted
 from jobsmith.core.builder import build_agent
 from jobsmith.core.deps import Deps
 from jobsmith.core.paths import PathRefused, resolve_within, safe_name
@@ -333,34 +330,33 @@ async def test_a_job_reads_the_report_the_previous_job_wrote(tmp_path):
         await app.aclose()
 
 
-# ------------------------------------------------------------- the approval
+# --------------------------------------------- the files are shown, not gated
 
 
-async def test_the_files_a_job_would_open_are_shown_and_approved(store, checkpointer,
-                                                                 tmp_path):
-    """A path the user never saw would be a second silent decision."""
+async def test_the_files_a_job_will_open_are_shown_before_it_opens_them(
+    store, checkpointer, tmp_path
+):
+    """A path the user never saw would be a second silent decision.
+
+    That guarantee used to hang on the approval card; since #83 there is no
+    card on the nominal path, so it hangs on the notice the run emits before
+    it starts — same list, same moment, one fewer question.
+    """
     manager = make_manager(store, checkpointer, tmp_path)
     model = ScriptedChatModel(responses=[
         launch_call("summarise the attached report", "several steps",
                     source_files=["artifacts/abc.md", "  "]),
-        AIMessage(content="Launched."),
+        AIMessage(content="Done."),
     ])
     session = ChatSession(manager, model, checkpointer=MemorySaver())
-    agent = session.build()
-    cfg = {"configurable": {"thread_id": session.session_id}}
+    runner = ChatRunner(session.build())
 
-    out = await agent.ainvoke({"messages": [HumanMessage("summarise it")]}, cfg)
-    (interrupted,) = out["__interrupt__"]
-    assert interrupted.value["sources"] == ["artifacts/abc.md"]   # blanks dropped
+    events = [e async for e in runner.stream(session.session_id, "summarise it")]
 
-    await agent.ainvoke(Command(resume={"approved": True}), cfg)
+    (started,) = [e for e in events if isinstance(e, JobStarted)]
+    assert started.sources == ["artifacts/abc.md"]   # blanks dropped
     (job,) = await manager.list_jobs(session_id=session.session_id)
     assert job.inputs[SOURCE_FILES_INPUT_KEY] == ["artifacts/abc.md"]
-    for _ in range(200):
-        await asyncio.sleep(0.01)
-        job = await manager.get_job(job.job_id)
-        if job.status in (JobStatus.DONE, JobStatus.FAILED):
-            break
 
 
 async def test_a_launch_that_names_no_file_carries_no_key(store, checkpointer, tmp_path):
@@ -369,16 +365,14 @@ async def test_a_launch_that_names_no_file_carries_no_key(store, checkpointer, t
     manager = make_manager(store, checkpointer, tmp_path)
     model = ScriptedChatModel(responses=[
         launch_call("analyse the alpha data", "several steps"),
-        AIMessage(content="Launched."),
+        AIMessage(content="Done."),
     ])
     session = ChatSession(manager, model, checkpointer=MemorySaver())
-    agent = session.build()
-    cfg = {"configurable": {"thread_id": session.session_id}}
+    runner = ChatRunner(session.build())
 
-    out = await agent.ainvoke({"messages": [HumanMessage("analyse it")]}, cfg)
-    (interrupted,) = out["__interrupt__"]
-    assert interrupted.value["sources"] == []
+    events = [e async for e in runner.stream(session.session_id, "analyse it")]
 
-    await agent.ainvoke(Command(resume={"approved": True}), cfg)
+    (started,) = [e for e in events if isinstance(e, JobStarted)]
+    assert started.sources == []
     (job,) = await manager.list_jobs(session_id=session.session_id)
     assert SOURCE_FILES_INPUT_KEY not in job.inputs

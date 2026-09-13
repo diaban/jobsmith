@@ -21,7 +21,7 @@ from typing import Any
 
 from ..agents import get_agent
 from ..agents.base import AgentContext, open_agent_resources
-from ..chat import ChatSession
+from ..chat import DEFAULT_CHAT_SYSTEM_PROMPT, ChatSession
 from ..core.artifacts import LocalArtifactStore
 from ..core.builder import AgentBuilder
 from ..core.deps import Deps
@@ -143,8 +143,13 @@ async def build_app(
     def session_factory(session_id: str | None = None) -> ChatSession:
         # Same checkpointer as the job graph: thread_id namespaces conversations
         # (session_id) apart from job runs (job_id), so both survive a restart.
-        prompt = {"system_prompt": definition.chat_prompt} if definition.chat_prompt else {}
-        return ChatSession(manager, chat_model, session_id=session_id,
-                           checkpointer=checkpointer, **prompt)
+        # Named rather than splatted from a dict: a `**kwargs` of unrelated
+        # values types as one lowest common denominator, so every keyword
+        # after it stops being checked — which is exactly what the type gate
+        # is here to catch (see CLAUDE.md on #31).
+        return ChatSession(
+            manager, chat_model, session_id=session_id, checkpointer=checkpointer,
+            system_prompt=definition.chat_prompt or DEFAULT_CHAT_SYSTEM_PROMPT,
+        )
 
     return AgentApp(manager, session_factory, definition.name, resources, registry, stack)

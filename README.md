@@ -1,8 +1,10 @@
 # jobsmith
 
-A conversational agent that answers simple messages directly and turns complex
-ones into **background jobs** — with your approval — then keeps chatting while
-they run and hands you a written report when they finish.
+A conversational agent that answers simple messages directly and **runs real
+tasks** for everything else — planning them into a DAG of capabilities,
+executing it, and writing a report. A task runs in the conversation and
+answers there; one that turns out to be slow moves to the background on its
+own, and comes back in the same conversation when it is done.
 
 Underneath, it is a domain-agnostic framework: a planner emits a DAG of
 pluggable **capabilities**, an executor fans them out in parallel, and every run
@@ -11,13 +13,23 @@ of agents — a new one supplies only its capabilities and its voice.
 
 ```
 you> what can you do?
-     → answered inline, no job
+     → answered inline, no job (the chat model, talking on its own)
+
+you> summarise the two files I gave you
+     → says what it is about to run, what it will read, what it will write
+     → runs it now: read_files → analysis
+     → answers in this turn, word for word, and names the report file
 
 you> compare hexagonal and layered architectures for an LLM agent
-     → the agent proposes a background job, explains its approach, waits for y/N
-     → runs research → analysis → critique in the background
+     → same start — but research → analysis → critique takes minutes
+     → after 20 seconds it says so and carries on in the background
      → later, in the same conversation: a synthesis + the path to the report
 ```
+
+Nothing predicts which of the two a task will be. It starts, and the clock
+decides — a prediction would be wrong in both directions, because what a run
+costs is set by the plan, and the plan does not exist yet when the guess would
+have to be made.
 
 ---
 
@@ -49,13 +61,16 @@ $ jobsmith chat
 
 agent> compare hexagonal and layered architectures for an LLM agent
 
-  the agent proposes a background job:
-    task     : compare hexagonal and layered architectures for an LLM agent
-    approach : Three steps — gather the trade-offs of each style, analyse them
-               against an agent's constraints, then critique the conclusion.
-  launch it? [y/N] y
+  running this as job 17abcd66:
+      task     : compare hexagonal and layered architectures for an LLM agent
+      approach : Three steps — gather the trade-offs of each style, analyse them
+                 against an agent's constraints, then critique the conclusion.
+      writes   : architecture_comparison.md
+      stop it  : /cancel 17abcd66
 
-  Started in the background (17abcd66). Ask me anything meanwhile.
+  … running the task
+  It is taking longer than 20s, so it is now running in the background —
+  I will report back here when it lands.
 
 agent> /jobs
   job 17abcd66  [running]  'compare hexagonal and layered architectures for a'
@@ -66,23 +81,32 @@ agent> and which one does LangGraph itself use?
   [the job finishes — the next turn carries the synthesis and the report path]
 ```
 
+Three things are on that notice on purpose, and they used to be on a y/N card:
+the **query as the engine will see it** (the job never sees the conversation,
+so reading it is what catches a "that" whose referent has gone), the **files it
+may open**, and **what it will write**. What changed is that they are stated
+rather than asked — and `stop it` is the line that replaces the gate:
+cancelling is now the undo.
+
 ---
 
 ## Driving it
 
 ### Chat (the default)
 
-`jobsmith chat` is a conversation. The agent decides whether to answer or to
-propose a job; you approve. The answer is printed **as it is written** and what
-the agent is doing meanwhile (`… sizing up a background job`) shows on stderr,
-so stdout stays the conversation and nothing else. In-REPL commands:
+`jobsmith chat` is a conversation. The agent decides whether to answer from its
+own knowledge or to run a task on the engine; it does not ask permission, it
+says what it is doing. The answer is printed **as it is written** — and when a
+task answers, its answer is printed *verbatim*, never a summary of it — while
+what the agent is doing meanwhile (`… running the task`) shows on stderr, so
+stdout stays the conversation and nothing else. In-REPL commands:
 
 | command | |
 |---|---|
 | `/jobs` | list this session's jobs |
 | `/job <id>` | plan, steps, results, answer |
 | `/report <id>` | print the finished deliverable |
-| `/bg <text>` | skip the chat, run it as a job now |
+| `/bg <text>` | run it as a background job and do not wait for it |
 | `/image <key>` | attach an image input to the next `/bg` job |
 | `/cancel <id>` | cancel a running job |
 | `/resume <id>` | restart a stopped job from its checkpoint |
@@ -112,9 +136,10 @@ jobsmith ui --theme tide-dark    # or $JOBSMITH_THEME; ctrl+p switches live
 ```
 
 Cancelling asks twice, and only from the jobs pane where the row is on
-screen. While a turn is being written the prompt refuses new input rather than
-cutting it, and while a job proposal waits only `y`/`n` answer it — anything
-else is handed back with the text still in the box.
+screen — which is also the undo for a task running in the turn. While a turn is
+being written the prompt refuses new input rather than cutting it; a task
+running in the turn is exactly when that matters, and it is why this UI shows
+the plan filling in while you wait instead of a still screen.
 
 It sits **beside** `jobsmith chat`, never instead of it: a TUI takes the whole
 screen and cannot be piped, and every other command here keeps stdout
@@ -211,10 +236,10 @@ with the job as an input, and the step opens it:
 
 ```
 you : make a one-pager out of the report from this morning
-      (the agent proposes a job, and the proposal says which files it will read)
+      (the notice says which files the run will read, before it reads them)
       task     : condense artifacts/8aea26ec.md into a one-page brief
       reads    : artifacts/8aea26ec.md
-      launch it? [y/N]
+      stop it  : /cancel 4f21b0aa
 ```
 
 That loop — jobsmith writes a report, you ask for something to be made of it —
@@ -224,24 +249,25 @@ then has to land inside the directory jobs write their own files into, or the
 `--docs` directory when there is one. Anything else is refused with a message
 saying so, whether it was spelled `../../etc/passwd`, hidden behind a symlink,
 or written as an absolute path to somewhere else. Nothing widens that set at
-runtime, and the files are listed in the approval before the job exists — you
-are the one handing them over.
+runtime, and the files are named in the notice before the run opens them —
+you are the one handing them over, so you are the one who gets to see the
+list.
 
 ### Naming what comes out
 
 The person who knows what a document is for is the one asking for it, so the
 request decides what it is **called**, what it is **titled**, and which
-**formats** are written — and the proposal shows all three before anything
-runs:
+**formats** are written — and the notice shows all three before anything is
+written:
 
 ```
 you : compare the chairs for a home office, one page. Call it
       rapport_chaises_gabarit, markdown and PDF.
-      (the agent proposes a job, and the proposal says what it will leave behind)
+      (the notice says what the run will leave behind)
       task     : compare ergonomic chairs for a home-office workstation …
       titled   : Comparatif des chaises ergonomiques
       writes   : rapport_chaises_gabarit.md, rapport_chaises_gabarit.pdf
-      launch it? [y/N]
+      stop it  : /cancel 9c04e17b
 ```
 
 Say nothing and nothing is silently decided for you either: the model proposes
@@ -253,8 +279,8 @@ The name is a *filename*, never a location: no directories, no traversal, no
 absolute paths, bounded in length, refused (not flattened) when it is anything
 else. A named deliverable lands in the job's own folder next to the files its
 steps produced, so two jobs called `rapport` keep two files. And a format
-nothing can render *here* is refused at the proposal — where you can still
-ask for another one — rather than at the end of a run that spent three
+nothing can render *here* is refused before the job exists — where you can
+still ask for another one — rather than at the end of a run that spent three
 minutes first.
 
 `POST /jobs` takes the same three (`document_name`, `document_title`,
@@ -514,9 +540,9 @@ handle per-provider tool formats), the job engine uses a dependency-light
 
 | | |
 |---|---|
-| `POST /sessions` · `POST /sessions/{id}/messages` | chat; a reply is `{"type": "message"}` or `{"type": "proposal"}` |
+| `POST /sessions` · `POST /sessions/{id}/messages` | chat; a reply is `{"type": "message"}`, or `{"type": "proposal"}` where the approval gate was kept. A task runs inside the turn, so this can take as long as the task |
 | `POST /sessions/{id}/approval` | answer a proposal — `{"approved": bool}` |
-| `.../messages/stream` · `.../approval/stream` | the same turn as SSE: `token`, `tool_started`, `tool_finished`, then that same reply |
+| `.../messages/stream` · `.../approval/stream` | the same turn as SSE: `token`, `tool_started`, `tool_finished`, `job_started`, then that same reply |
 | `GET /jobs` · `GET /jobs/{id}` | listing and full detail (plan, timings, results) |
 | `POST /jobs` · `POST /jobs/{id}/cancel` | direct launch, cancellation |
 | `GET /jobs/{id}/outputs[/{name}]` · `/report` | the deliverables (`/report` is text-only: `415` on a PDF, pointing at the download) |
@@ -535,6 +561,8 @@ handle per-provider tool formats), the job engine uses a dependency-light
 | `$TAVILY_SEARCH_DEPTH` | `advanced` (default) or `basic` — how hard `web_search` digs; `basic` costs less per call and retrieves less. Anything else is refused at startup |
 | extra `.[tui]` | enables `jobsmith ui`; absent, the command says what to install |
 | `$JOBSMITH_THEME` | the UI's theme (default `ember-dark`); `--theme NAME` overrides it, `ctrl+p` switches it for the session |
+| `$JOBSMITH_SYNC_TIMEOUT` | seconds a task may hold the conversation before it is promoted to the background (default `20`). `0` never waits — every task goes to the background, which is what jobsmith did before |
+| `$JOBSMITH_APPROVE_JOBS` | `1` restores the y/N approval card before a task runs. Off by default: the agent says what it is doing, and cancelling is the undo |
 | extra `.[pptx]` | enables the `slide_deck` step — a `.pptx` annex next to the report; absent, the capability is not registered |
 | `--db memory\|<file.db>\|<postgres DSN>` | persistence (default: `$JOBSMITH_DB`, else memory) |
 | `$JOBSMITH_PRICES` | per-model prices for the cost estimate, as inline JSON or a path to a JSON file (USD per million tokens) |
@@ -644,14 +672,21 @@ it on fakes; `make chat AGENT=banking` opens it in the normal REPL.
 
 ## Status and known limits
 
-Working end to end: chat with HITL job launch, DAG planning and parallel
-execution, persistence (memory/SQLite/Postgres), the daemon/client split, the
-HTTP API with SSE, markdown deliverables.
+Working end to end: chat that runs tasks in the turn and promotes the slow
+ones, DAG planning and parallel execution, persistence
+(memory/SQLite/Postgres), the daemon/client split, the HTTP API with SSE,
+markdown deliverables.
 
 Honest v1 boundaries:
 
 - **Cancellation and SSE are in-process.** A client can cancel a job the daemon
-  runs; cross-process preemption writes a best-effort tombstone.
+  runs; cross-process preemption writes a best-effort tombstone. This matters
+  more than it used to: cancelling is the undo that replaced the approval card,
+  so it is the only control over a task already running.
+- **The answer lives in the turn and in a file, and nothing yet decides which.**
+  A task that finishes in the conversation delivers its answer there word for
+  word *and* writes the report; a promoted one only writes it. That is a
+  deliberate seam, not a settled question.
 - **Resume restarts, it does not re-plan.** `jobsmith resume <id>` re-enters a
   cancelled or interrupted job's checkpoint and runs only the steps that never
   finished — the ones already paid for are kept as they are. A job that

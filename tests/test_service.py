@@ -3,6 +3,14 @@
 The property worth protecting is that a front-end cannot tell where the work
 happens. So the same sequence is driven through the local service and through
 HTTP, and the answers must match — not merely "both work".
+
+There is a **second** property, and this suite used to be blind to it: a
+caller that waits (`send`) and a caller that renders (`stream`) must be told
+the same thing about one turn. Comparing the two backings cannot see that —
+both are the same code, so both are wrong together and the comparison passes.
+`test_a_turn_answers_the_same_whether_it_is_waited_for_or_watched` is the one
+that looks, and #83 is why it had to be written: the tokens and the terminal
+stopped coming from the same message the moment a tool could write into a turn.
 """
 from __future__ import annotations
 
@@ -48,7 +56,15 @@ def test_the_api_adds_no_use_case_of_its_own():
         assert leaked not in source, f"{leaked} belongs in the service, not the API adapter"
 
 
-def _service_over(store, checkpointer, tmp_path):
+def _service_over(store, checkpointer, tmp_path, *, approval=True, sync_timeout=None):
+    """A service whose model always launches the same job.
+
+    `approval=True` by default because most of what is asserted below is the
+    *proposal* terminal — the richest dict the port carries, and the one a
+    front-end is most likely to render differently on two backings. Since #83
+    that path is the exception (`$JOBSMITH_APPROVE_JOBS`), so the nominal one
+    gets its own parity test rather than being folded into these.
+    """
     manager = make_manager(store, checkpointer, tmp_path)
     saver = MemorySaver()
     responses = [launch_call("analyse it", "multi-step", document_name="chair_notes",
@@ -58,7 +74,8 @@ def _service_over(store, checkpointer, tmp_path):
     def session_factory(session_id=None):
         from jobsmith.chat import ChatSession
         return ChatSession(manager, ScriptedChatModel(responses=list(responses)),
-                           session_id=session_id, checkpointer=saver)
+                           session_id=session_id, checkpointer=saver,
+                           approval_required=approval, sync_timeout=sync_timeout)
 
     return LocalAgentService(manager, session_factory)
 
@@ -329,12 +346,98 @@ async def test_a_turn_is_the_same_flow_through_either_backing(
         assert {"type": "tool_finished", "name": "launch_job"} in answering
         tokens = [e["text"] for e in answering if e["type"] == "token"]
         assert len(tokens) > 1, "the answer arrived in one piece on this backing"
-        assert "".join(tokens) == "launched!"
-        assert answering[-1] == {"type": "message", "content": "launched!"}
+        # The gate decides WHETHER the task runs, never how: an approved run
+        # is the same synchronous run as an un-gated one, so the turn carries
+        # the job's answer and then the model's own sentence — and the
+        # terminal carries both, which is what `test_a_turn_answers_the_same_
+        # whether_it_is_waited_for_or_watched` is about.
+        assert "".join(tokens).endswith("launched!")
+        assert answering[-1] == {"type": "message", "content": "".join(tokens)}
 
         # ...and `send` is that same flow drained, on either backing
         assert await client.send(session_id, "anything else?") == {
             "type": "message", "content": "launched!"}
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
+async def test_a_turn_answers_the_same_whether_it_is_waited_for_or_watched(
+    store, checkpointer, tmp_path, over_http
+):
+    """#50's invariant, on the turn where it can now break.
+
+    `send` is `terminal_of(self.stream(...))`, so a turn is driven in one
+    place — but that only guarantees the two callers see the same *flow*, not
+    that the terminal says what the flow delivered. The terminal used to be
+    the model's own last message, which was the same string while the tokens
+    came from that message too. #83 broke the tie: the job's answer is
+    written into the turn by the tool and the model's reply is one sentence,
+    so a terminal built from the model hands a caller that waits an answer
+    with the result cut out of it — `POST /sessions/{id}/messages`, which is
+    the surface a web UI will use (#8).
+
+    Two sessions of the same scripted model, one drained by `stream` and one
+    by `send`, and the texts must be identical. The parity tests above cannot
+    catch this: they compare the two backings, and both would be wrong in the
+    same way.
+    """
+    service = _service_over(store, checkpointer, tmp_path, approval=False)
+    client = daemon_client_over(create_api(service)) if over_http else service
+    try:
+        watched_id = await client.new_session()
+        events = [e async for e in client.stream(watched_id, "please analyse it")]
+        rendered = "".join(e["text"] for e in events if e["type"] == "token")
+
+        waited_id = await client.new_session()
+        terminal = await client.send(waited_id, "please analyse it")
+
+        assert terminal["type"] == "message"
+        assert terminal["content"] == rendered
+        # ...and it is a turn that really ran a job, or this proves nothing
+        (job,) = await client.list_jobs(session_id=waited_id)
+        answer = (await client.get_job(job["job_id"]))["final_answer"]
+        assert answer and answer in terminal["content"], \
+            "a caller that waits was not given the answer the run produced"
+        assert terminal["content"].endswith("launched!"), \
+            "...nor the model's own sentence, in the order it was written"
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
+async def test_a_task_runs_inside_the_turn_on_either_backing(
+    store, checkpointer, tmp_path, over_http
+):
+    """The nominal path of #83, and it must cross HTTP identically.
+
+    Two things are new on the wire and both are part of the port now: the
+    `job_started` notice (which carries the three guarantees the approval
+    card used to, plus the job id), and the job's answer arriving as tokens
+    of the turn — verbatim, because the model never sees it. A daemon-backed
+    front-end that got either of those differently would be written against
+    two ports.
+    """
+    service = _service_over(store, checkpointer, tmp_path, approval=False)
+    client = daemon_client_over(create_api(service)) if over_http else service
+    try:
+        session_id = await client.new_session()
+        events = [e async for e in client.stream(session_id, "please analyse it")]
+
+        (started,) = [e for e in events if e["type"] == "job_started"]
+        (job,) = await client.list_jobs(session_id=session_id)
+        assert started == {"type": "job_started", "job_id": job["job_id"],
+                           "query": "analyse it", "rationale": "multi-step",
+                           "sources": [], "document_name": "chair_notes",
+                           "document_title": "Comparatif", "formats": ["markdown"]}
+
+        finished = await client.get_job(job["job_id"])
+        assert finished["status"] == "done"
+        answer = finished["final_answer"]
+        assert answer, "the job did not answer, so there is nothing to deliver"
+        streamed = "".join(e["text"] for e in events if e["type"] == "token")
+        assert answer in streamed
+        assert events[-1] == {"type": "message", "content": streamed}
     finally:
         await client.aclose()
 
