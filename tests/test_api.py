@@ -1,7 +1,11 @@
-"""HTTP entrypoint: chat sessions with HITL over HTTP, jobs endpoints, report.
+"""HTTP entrypoint: chat sessions over HTTP, jobs endpoints, report.
 
 The SSE /events endpoint streams forever, which httpx's ASGITransport cannot
 consume — its pub/sub mechanism is covered by test_jobs.py's subscribe test.
+
+The two approval tests build their app with `approval=True`: since #83 the
+gate is off the nominal path, and these are what keep the route it is
+reached through honest (see `chat/tools.py::pick_approval_required`).
 """
 from __future__ import annotations
 
@@ -21,7 +25,7 @@ from jobsmith.jobs.report import compose_reporters, make_reporter
 from jobsmith.service import LocalAgentService
 
 
-def make_app(store, checkpointer, tmp_path, responses):
+def make_app(store, checkpointer, tmp_path, responses, *, approval=False):
     manager = make_manager(store, checkpointer, tmp_path)
     checkpointer_for_sessions = MemorySaver()
 
@@ -31,6 +35,7 @@ def make_app(store, checkpointer, tmp_path, responses):
             ScriptedChatModel(responses=list(responses)),
             session_id=session_id,
             checkpointer=checkpointer_for_sessions,
+            approval_required=approval,
         )
 
     return create_api(LocalAgentService(manager, session_factory)), manager
@@ -53,7 +58,7 @@ async def test_chat_flow_proposal_approval_report(store, checkpointer, tmp_path)
     app, _ = make_app(store, checkpointer, tmp_path, [
         launch_call("analyse the data", "several steps needed"),
         AIMessage(content="Job launched — report coming."),
-    ])
+    ], approval=True)
     async with client_for(app) as client:
         sid = (await client.post("/sessions")).json()["session_id"]
 
@@ -159,7 +164,7 @@ async def test_chat_flow_decline_creates_no_job(store, checkpointer, tmp_path):
     app, _ = make_app(store, checkpointer, tmp_path, [
         launch_call("big task", "complex"),
         AIMessage(content="Ok, not launching it."),
-    ])
+    ], approval=True)
     async with client_for(app) as client:
         sid = (await client.post("/sessions")).json()["session_id"]
         await client.post(f"/sessions/{sid}/messages", json={"text": "do the big task"})

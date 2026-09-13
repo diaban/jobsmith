@@ -8,11 +8,12 @@ emits for a chat agent — the `("messages", (chunk, metadata))` pairs, the
 below, so the service, the HTTP adapter and every UI are written against a
 vocabulary that does not move when LangChain reshapes its agent.
 
-Five events, and no more, because a turn only ever shows five things:
+Six events, and no more, because a turn only ever shows six things:
 
     Token          the answer being written
     ToolStarted    the model asked for a tool, by its real name
     ToolFinished   that tool answered
+    JobStarted     a job began inside this turn, and here is what it will do
     Message        the turn is over, here is the reply
     Proposal       the turn is over, it is waiting for an approval
 
@@ -26,6 +27,22 @@ a human. Turning it into readable prose is the presentation layer's business,
 for the same reason `REPORT_MEDIA_TYPES` lives in `api/app.py` and not in
 `jobs/report.py`: the CLI and a future TUI word it differently, and neither
 wording belongs in the thing that reports the fact.
+
+**A third stream mode, and the sixth event** (#83). A task now runs *inside*
+the turn by default, so two things have to reach the reader from a place the
+other two modes cannot see — from inside a tool, while it is running: what
+the job is about to do (`JobStarted`, the approval card's payload said as a
+notice), and the answer the job produced. LangGraph's `custom` mode is that
+channel; `_from_custom` is the only place its payloads are read, so the tool
+and the front-ends stay strangers.
+
+The job's answer arrives as `Token`, not as an event of its own, and that is
+the decision rather than an economy: a front-end already renders tokens as
+the turn's answer, and this IS the turn's answer — the one the user asked
+for. Nothing between here and the screen rewrites it, which is the whole
+point (see `chat/tools.py`: the model is told the answer was delivered and
+is asked NOT to restate it, because a model handed 2 000 words paraphrases
+them).
 """
 from __future__ import annotations
 
@@ -41,10 +58,30 @@ _MODEL_NODE = "model"
 _TOOLS_NODE = "tools"
 _INTERRUPT = "__interrupt__"
 
+# The custom-stream vocabulary, declared where it is *read* rather than where
+# it is written: `chat/tools.py` imports these, so the protocol between a tool
+# and this translator has exactly one definition. Anything else on that
+# channel is ignored — a payload nobody here understands is not a turn event.
+CUSTOM_JOB_STARTED = "job_started"
+CUSTOM_ANSWER = "answer"
+
+# All three are needed and none is redundant: `messages` carries the answer as
+# the model writes it, `updates` carries what a token cannot show (which tool
+# was called, that the run stopped on an interrupt), and `custom` carries what
+# a *tool* has to say while it runs.
+_STREAM_MODES = ["messages", "updates", "custom"]
+
 
 @dataclass(frozen=True)
 class Token:
-    """A piece of the answer, as the model writes it."""
+    """A piece of the answer being written in this turn.
+
+    Usually the model's own words. It is also how a job's answer reaches the
+    reader (#83): a task that finished inside the turn writes its answer here
+    **verbatim**, because it is the answer that was asked for and a model
+    asked to relay it would paraphrase it. A front-end needs to know neither
+    — it renders the turn's answer as it arrives, which is what this is.
+    """
     text: str
 
 
@@ -58,6 +95,31 @@ class ToolStarted:
 class ToolFinished:
     """That tool answered."""
     name: str
+
+
+@dataclass(frozen=True)
+class JobStarted:
+    """A job began inside this turn, and here is what it will do.
+
+    The payload the approval card used to carry, said as a **notice** instead
+    of asked as a question (#83). Three guarantees hung on that card and all
+    three survive here, as visibility rather than as a gate: the reformulated
+    `query` (the engine never sees the thread, so a reader is what catches a
+    referent that has gone), the `sources` it may open (#60), and the document
+    it will write (#55). What the card could not carry is `job_id`, because at
+    proposal time no job existed — and it is the load-bearing addition, since
+    cancellation is now the undo the approval used to be the gate for.
+
+    Not a terminal: a turn that starts a job carries on, and ends on a
+    `Message` like any other.
+    """
+    job_id: str
+    query: str
+    rationale: str = ""
+    sources: list[str] = field(default_factory=list)
+    document_name: str = ""
+    document_title: str = ""
+    formats: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -89,7 +151,33 @@ class Proposal:
     formats: list[str] = field(default_factory=list)
 
 
-ChatEvent = Token | ToolStarted | ToolFinished | Message | Proposal
+ChatEvent = Token | ToolStarted | ToolFinished | JobStarted | Message | Proposal
+
+
+def _from_custom(payload: Any) -> ChatEvent | None:
+    """One custom-stream payload as a turn event, or None if it is not ours.
+
+    Tolerant on purpose: the channel is shared with anything else that
+    might one day write to it, and an unknown payload is not a defect in
+    the turn. What it must never do is *guess* — an event nobody can name
+    is dropped, never rendered as an answer.
+    """
+    if not isinstance(payload, dict):
+        return None
+    kind = payload.get("event")
+    if kind == CUSTOM_ANSWER:
+        return Token(str(payload.get("text") or ""))
+    if kind == CUSTOM_JOB_STARTED:
+        return JobStarted(
+            str(payload.get("job_id") or ""),
+            str(payload.get("query") or ""),
+            str(payload.get("rationale") or ""),
+            [str(ref) for ref in payload.get("sources") or []],
+            str(payload.get("document_name") or ""),
+            str(payload.get("document_title") or ""),
+            [str(fmt) for fmt in payload.get("formats") or []],
+        )
+    return None
 
 
 def _text_of(message: Any) -> str:
@@ -126,7 +214,7 @@ class ChatRunner:
         return self._translate(self.agent.astream(
             {"messages": [HumanMessage(text)]},
             config=self._config(session_id),
-            stream_mode=["messages", "updates"],
+            stream_mode=_STREAM_MODES,
         ))
 
     def resume(self, session_id: str, approved: bool) -> AsyncIterator[ChatEvent]:
@@ -136,15 +224,16 @@ class ChatRunner:
         return self._translate(self.agent.astream(
             Command(resume={"approved": approved}),
             config=self._config(session_id),
-            stream_mode=["messages", "updates"],
+            stream_mode=_STREAM_MODES,
         ))
 
     async def _translate(self, stream: AsyncIterator[Any]) -> AsyncIterator[ChatEvent]:
-        """LangGraph's two stream modes → the events above, terminal last.
+        """LangGraph's three stream modes → the events above, terminal last.
 
-        Both modes are needed and neither is redundant: `messages` carries the
-        answer as it is written, `updates` carries the facts a token cannot
-        show — which tool was called, and that the run stopped on an interrupt.
+        See `_STREAM_MODES` for why each one is there. Order is the stream's
+        own, so a tool's notice lands where it happened: after the
+        `ToolStarted` that announced the call and before the `ToolFinished`
+        that closed it.
 
         Exactly one terminal is always yielded, last. A caller draining this
         for a reply (`AgentService.send`) must never have to decide what an
@@ -158,6 +247,9 @@ class ChatRunner:
                 # here too, and a tool's output is not the answer being written.
                 if isinstance(message, AIMessage) and (text := _text_of(message)):
                     yield Token(text)
+            elif mode == "custom":
+                if (event := _from_custom(chunk)) is not None:
+                    yield event
             elif mode == "updates":
                 for node, value in chunk.items():
                     if node == _INTERRUPT:

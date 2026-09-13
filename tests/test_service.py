@@ -48,7 +48,15 @@ def test_the_api_adds_no_use_case_of_its_own():
         assert leaked not in source, f"{leaked} belongs in the service, not the API adapter"
 
 
-def _service_over(store, checkpointer, tmp_path):
+def _service_over(store, checkpointer, tmp_path, *, approval=True, sync_timeout=None):
+    """A service whose model always launches the same job.
+
+    `approval=True` by default because most of what is asserted below is the
+    *proposal* terminal — the richest dict the port carries, and the one a
+    front-end is most likely to render differently on two backings. Since #83
+    that path is the exception (`$JOBSMITH_APPROVE_JOBS`), so the nominal one
+    gets its own parity test rather than being folded into these.
+    """
     manager = make_manager(store, checkpointer, tmp_path)
     saver = MemorySaver()
     responses = [launch_call("analyse it", "multi-step", document_name="chair_notes",
@@ -58,7 +66,8 @@ def _service_over(store, checkpointer, tmp_path):
     def session_factory(session_id=None):
         from jobsmith.chat import ChatSession
         return ChatSession(manager, ScriptedChatModel(responses=list(responses)),
-                           session_id=session_id, checkpointer=saver)
+                           session_id=session_id, checkpointer=saver,
+                           approval_required=approval, sync_timeout=sync_timeout)
 
     return LocalAgentService(manager, session_factory)
 
@@ -329,12 +338,51 @@ async def test_a_turn_is_the_same_flow_through_either_backing(
         assert {"type": "tool_finished", "name": "launch_job"} in answering
         tokens = [e["text"] for e in answering if e["type"] == "token"]
         assert len(tokens) > 1, "the answer arrived in one piece on this backing"
-        assert "".join(tokens) == "launched!"
+        # The gate decides WHETHER the task runs, never how: an approved run
+        # is the same synchronous run as an un-gated one, so the turn carries
+        # the job's answer and then the model's own sentence.
+        assert "".join(tokens).endswith("launched!")
         assert answering[-1] == {"type": "message", "content": "launched!"}
 
         # ...and `send` is that same flow drained, on either backing
         assert await client.send(session_id, "anything else?") == {
             "type": "message", "content": "launched!"}
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
+async def test_a_task_runs_inside_the_turn_on_either_backing(
+    store, checkpointer, tmp_path, over_http
+):
+    """The nominal path of #83, and it must cross HTTP identically.
+
+    Two things are new on the wire and both are part of the port now: the
+    `job_started` notice (which carries the three guarantees the approval
+    card used to, plus the job id), and the job's answer arriving as tokens
+    of the turn — verbatim, because the model never sees it. A daemon-backed
+    front-end that got either of those differently would be written against
+    two ports.
+    """
+    service = _service_over(store, checkpointer, tmp_path, approval=False)
+    client = daemon_client_over(create_api(service)) if over_http else service
+    try:
+        session_id = await client.new_session()
+        events = [e async for e in client.stream(session_id, "please analyse it")]
+
+        (started,) = [e for e in events if e["type"] == "job_started"]
+        (job,) = await client.list_jobs(session_id=session_id)
+        assert started == {"type": "job_started", "job_id": job["job_id"],
+                           "query": "analyse it", "rationale": "multi-step",
+                           "sources": [], "document_name": "chair_notes",
+                           "document_title": "Comparatif", "formats": ["markdown"]}
+
+        finished = await client.get_job(job["job_id"])
+        assert finished["status"] == "done"
+        answer = finished["final_answer"]
+        assert answer, "the job did not answer, so there is nothing to deliver"
+        assert answer in "".join(e["text"] for e in events if e["type"] == "token")
+        assert events[-1] == {"type": "message", "content": "launched!"}
     finally:
         await client.aclose()
 

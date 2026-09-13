@@ -41,10 +41,13 @@ from jobsmith.service import ChatStreamError, LocalAgentService, ServiceUnavaila
 ANSWER = "A reasonably long answer that no single chunk should carry."
 
 
-def make_agent(store, checkpointer, tmp_path, responses, **model_kwargs):
+def make_agent(store, checkpointer, tmp_path, responses, *, approval=False,
+               **model_kwargs):
     manager = make_manager(store, checkpointer, tmp_path)
     model = ScriptedChatModel(responses=responses, **model_kwargs)
-    return ChatSession(manager, model, checkpointer=MemorySaver()).build(), manager, model
+    session = ChatSession(manager, model, checkpointer=MemorySaver(),
+                          approval_required=approval)
+    return session.build(), manager, model
 
 
 async def collect(events) -> list[Any]:
@@ -106,11 +109,16 @@ async def test_a_finished_job_is_still_announced_on_a_streamed_turn(
 async def test_a_turn_that_proposes_a_job_ends_on_a_proposal(store, checkpointer, tmp_path):
     """The two terminals are the duality `_reply` always carried, and the
     stream always ends on exactly one of them — a caller draining for a reply
-    must never have to interpret an exhausted stream."""
+    must never have to interpret an exhausted stream.
+
+    On the gate path since #83, which is the point of keeping the gate: this
+    is the only shape of turn that ends on something other than a `Message`,
+    and it is a mechanism a future irreversible capability will need.
+    """
     agent, _, _ = make_agent(store, checkpointer, tmp_path, [
         launch_call("analyse it", "multi-step"),
         AIMessage(content=ANSWER),
-    ])
+    ], approval=True)
     runner = ChatRunner(agent)
 
     events = await collect(runner.stream("s1", "please analyse it"))
@@ -121,8 +129,10 @@ async def test_a_turn_that_proposes_a_job_ends_on_a_proposal(store, checkpointer
     after = await collect(runner.resume("s1", True))
     assert [e.name for e in after if isinstance(e, ToolFinished)] == ["launch_job"]
     assert after[-1] == Message(ANSWER)
-    # a tool's output is not the answer being written
-    assert "launched in the background" not in "".join(
+    # a tool's *result* is not the answer being written: what the model was
+    # told about the run stays out of the stream, and only what the run
+    # produced is written into it.
+    assert "ALREADY been shown" not in "".join(
         e.text for e in after if isinstance(e, Token))
 
 
@@ -215,7 +225,7 @@ def test_a_tool_is_named_in_prose_here_and_nowhere_else():
     The mapping lives with the presentation, so an unmapped tool still says
     something rather than leaking a bare identifier into a sentence.
     """
-    assert tool_activity("launch_job") == "sizing up a background job"
+    assert tool_activity("launch_job") == "running the task"
     assert tool_activity("something_new") == "running something_new"
 
 
@@ -235,8 +245,40 @@ async def test_the_answer_goes_to_stdout_and_the_activity_to_stderr(capsys):
     out, err = capsys.readouterr()
     assert terminal == {"type": "message", "content": "all done"}
     assert out == "  all done\n"          # printed once, as it arrived
-    assert "… sizing up a background job" in err
-    assert "✓ sizing up a background job" in err
+    assert "… running the task" in err
+    assert "✓ running the task" in err
+
+
+async def test_the_repl_shows_what_the_run_will_do_and_how_to_stop_it(capsys):
+    """The notice that replaced the card (#83), rendered.
+
+    Three guarantees used to hang on an approval and now hang on this block:
+    the reformulated query, the files it may open, the document it will
+    write. The fourth line is the one the card could never carry — the job
+    id, because cancellation is the undo the gate used to be, and an undo
+    nobody is told about is not one.
+    """
+    async def events():
+        for event in (
+            {"type": "job_started", "job_id": "abcdef0123456789",
+             "query": "compare the two chairs", "rationale": "several steps",
+             "sources": ["/notes/chairs.md"], "document_name": "chairs",
+             "document_title": "Comparatif", "formats": ["markdown", "html"]},
+            {"type": "token", "text": "the answer"},
+            {"type": "message", "content": "saved"},
+        ):
+            yield event
+
+    await render_turn(events(), TurnPrinter())
+    out, _ = capsys.readouterr()
+
+    assert "running this as job abcdef01" in out
+    assert "task     : compare the two chairs" in out
+    assert "reads    : /notes/chairs.md" in out
+    assert "titled   : Comparatif" in out
+    assert "writes   : chairs.md, chairs.html" in out
+    assert "stop it  : /cancel abcdef01" in out
+    assert "the answer" in out
 
 
 async def test_the_repl_streams_a_turn_and_still_asks_for_approval(capsys, monkeypatch):

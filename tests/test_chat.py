@@ -1,4 +1,12 @@
-"""Chat layer: HITL job launch, decline, session scoping, job notices."""
+"""Chat layer: a task in the turn, promotion to the background, job notices.
+
+The gate is not gone, it is off the nominal path (#83): the tests that drive
+`interrupt()` build their session with `approval=True`, which is what
+`$JOBSMITH_APPROVE_JOBS` sets in a deployment. They are kept because the
+mechanism is kept — a future capability that spends money will want it, and
+rebuilding an approval round trip through a port, an HTTP route and three
+front-ends is the expensive half.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -10,16 +18,19 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 from test_jobs import make_manager
 
-from jobsmith.chat import ChatSession
+from jobsmith.chat import ChatRunner, ChatSession, JobStarted, Token, ToolFinished
 from jobsmith.chat.session import (
     NOTICE_MARKER,
     PROGRESS_MARKER,
     JobNotificationMiddleware,
 )
 from jobsmith.chat.tools import (
+    DEFAULT_SYNC_TIMEOUT,
     MAX_CONTEXT_CHARS,
     MAX_CONTEXT_TURNS,
     MAX_TURN_CHARS,
+    pick_approval_required,
+    pick_sync_timeout,
     progress_line,
     progress_signature,
     recent_conversation,
@@ -41,22 +52,289 @@ def launch_call(query: str, rationale: str, **args) -> AIMessage:
 
 
 def make_session(
-    store, checkpointer, tmp_path, responses, *, llm=None
+    store, checkpointer, tmp_path, responses, *, llm=None,
+    approval=False, sync_timeout=None,
 ) -> tuple[ChatSession, ScriptedChatModel]:
     manager = make_manager(store, checkpointer, tmp_path, llm=llm)
     model = ScriptedChatModel(responses=responses)
-    session = ChatSession(manager, model, checkpointer=MemorySaver())
+    session = ChatSession(manager, model, checkpointer=MemorySaver(),
+                          approval_required=approval, sync_timeout=sync_timeout)
     return session, model
 
 
 CFG = {"configurable": {"thread_id": "chat-1"}}
 
 
-async def test_launch_job_interrupts_then_runs_on_approval(store, checkpointer, tmp_path):
+# ---------------- The nominal path: the task runs inside the turn ------------
+
+
+async def test_a_task_runs_in_the_turn_and_nothing_is_asked_first(
+    store, checkpointer, tmp_path
+):
+    """#83's whole claim, in one test: no card, a real run, an answer now.
+
+    The engine used to be reachable only by handing the user a y/N and
+    telling them to come back later. It is reached by asking, and the job
+    exists — with its plan, its results and its deliverable — by the time the
+    turn ends.
+    """
+    session, _ = make_session(store, checkpointer, tmp_path, [
+        launch_call("analyse the alpha data", "needs several capability steps"),
+        AIMessage(content="Done — the report is on disk."),
+    ])
+    agent = session.build()
+
+    out = await agent.ainvoke(
+        {"messages": [HumanMessage("please analyse the alpha data")]}, CFG)
+
+    assert "__interrupt__" not in out, "the nominal path still asked for approval"
+    (summary,) = await session.manager.list_jobs(session_id=session.session_id)
+    job = await session.manager.get_job(summary.job_id)   # summaries carry no results
+    assert job.status is JobStatus.DONE
+    assert job.report_path is not None
+    assert job.results, "the job engine did not actually run"
+
+
+async def test_the_answer_is_delivered_verbatim_and_not_through_the_model(
+    store, checkpointer, tmp_path
+):
+    """The decision the tool result forces (#83).
+
+    A tool result is read by the model, which then writes the reply from it —
+    so an answer handed back that way is an answer the model rewrites. It is
+    written straight into the turn instead, and the model is told it has been
+    delivered. Both halves are asserted: the reader gets the words, the model
+    never sees them.
+    """
+    session, model = make_session(store, checkpointer, tmp_path, [
+        launch_call("analyse the alpha data", "multi-step"),
+        AIMessage(content="Saved."),
+    ])
+    runner = ChatRunner(session.build())
+
+    events = [e async for e in runner.stream(session.session_id, "analyse the alpha data")]
+    (job,) = await session.manager.list_jobs(session_id=session.session_id)
+
+    delivered = "".join(e.text for e in events if isinstance(e, Token))
+    assert job.final_answer and job.final_answer in delivered, \
+        "the job's answer never reached the reader"
+    tool_result = next(m for m in model.calls[-1] if isinstance(m, ToolMessage))
+    assert job.final_answer not in tool_result.content, \
+        "the answer went back through the model, which is where it gets rewritten"
+    assert "ALREADY been shown" in tool_result.content
+    assert job.report_path in tool_result.content   # ...and where the file is
+
+
+async def test_the_notice_carries_the_three_guarantees_the_card_used_to(
+    store, checkpointer, tmp_path
+):
+    """What approval was really for: the user *seeing* three decisions.
+
+    The reformulated query (the engine never sees the thread), the files the
+    run may open (#60), and what the document will be called, titled and
+    written as (#55). Plus the one the card could not carry — the job id,
+    because cancellation is the undo the gate used to be.
+    """
+    session, _ = make_session(store, checkpointer, tmp_path, [
+        launch_call("analyse the alpha cohort's Q3 churn", "multi-step",
+                    source_files=["/notes/churn.md"], document_name="churn.md",
+                    document_title="Churn Q3", formats=["markdown"]),
+        AIMessage(content="Saved."),
+    ])
+    runner = ChatRunner(session.build())
+
+    events = [e async for e in runner.stream(session.session_id, "analyse that")]
+
+    (started,) = [e for e in events if isinstance(e, JobStarted)]
+    assert started.query == "analyse the alpha cohort's Q3 churn"
+    assert started.sources == ["/notes/churn.md"]
+    assert started.document_name == "churn"          # the extension was dropped
+    assert started.document_title == "Churn Q3"
+    assert started.formats == ["markdown"]
+    (job,) = await session.manager.list_jobs(session_id=session.session_id)
+    assert started.job_id == job.job_id, "the notice cannot name the job to cancel"
+    # ...and it is said BEFORE the answer, which is the point of a notice
+    assert events.index(started) < min(
+        i for i, e in enumerate(events) if isinstance(e, Token))
+
+
+async def test_a_slow_task_is_promoted_and_the_turn_says_so(store, checkpointer, tmp_path):
+    """Promotion is "stop waiting", not "change how it runs".
+
+    With the clock at zero the tool never waits, so the job is exactly what
+    it always was — a background task — and the turn ends saying the answer
+    is not coming in it.
+    """
+    session, model = make_session(store, checkpointer, tmp_path, [
+        launch_call("a long one", "multi-step"),
+        AIMessage(content="It is running in the background."),
+    ], sync_timeout=0)
+    agent = session.build()
+
+    await agent.ainvoke({"messages": [HumanMessage("do the long one")]}, CFG)
+
+    tool_result = next(m for m in model.calls[-1] if isinstance(m, ToolMessage))
+    assert "BACKGROUND" in tool_result.content
+    assert "do not invent one" in tool_result.content
+    (job,) = await session.manager.list_jobs(session_id=session.session_id)
+    assert job.status in (JobStatus.QUEUED, JobStatus.RUNNING)
+    # ...and it was NOT cancelled by the turn ending: it runs to the end and
+    # the completion notice is what brings it back.
+    settled = await poll_until_settled(session.manager, job.job_id)
+    assert settled.status is JobStatus.DONE
+    assert settled.announced is False, "a promoted job must still be announced later"
+
+
+async def test_a_turn_that_dies_mid_wait_does_not_take_the_job_with_it(
+    store, checkpointer, tmp_path
+):
+    """The payoff of the implementation shape, and the reason for it.
+
+    The task is `start_job` + wait, never `run_job`: a job is a background
+    task from the first instant, so the only thing a cancelled turn cancels
+    is the *waiting*. A UI killing its worker (`@work`), a client hanging up
+    mid-stream, a REPL interrupted — none of them lose a run that is halfway
+    through. Driving the run inside the turn instead would make every one of
+    those a job silently thrown away.
+    """
+    from test_jobs import CountingEcho
+
+    # Long enough to be cancelled inside, short enough to finish afterwards:
+    # the claim is that it finishes, so it has to be allowed to.
+    slow = CountingEcho("slow", delay=0.5)
+    llm = FakeLLM({"planner": plan_json("slow")},
+                  default="A sufficiently long final answer for the job test.")
+    manager = make_manager(store, checkpointer, tmp_path, caps=[slow], llm=llm)
+    model = ScriptedChatModel(responses=[launch_call("a long one", "multi-step"),
+                                         AIMessage(content="Saved.")])
+    session = ChatSession(manager, model, checkpointer=MemorySaver())
+    agent = session.build()
+
+    turn = asyncio.create_task(
+        agent.ainvoke({"messages": [HumanMessage("do the long one")]}, CFG))
+    for _ in range(500):                       # wait until the step is really running
+        await asyncio.sleep(0.01)
+        if slow.runs:
+            break
+    assert slow.runs == 1, "the job never started, so nothing is being tested"
+
+    turn.cancel()                              # the UI's worker, the client hanging up
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+
+    (job,) = await manager.list_jobs(session_id=session.session_id)
+    settled = await poll_until_settled(manager, job.job_id)
+    assert settled.status is JobStatus.DONE, "the turn's death killed the job"
+    assert settled.announced is False, "nobody heard the answer: it must still be news"
+
+
+async def test_a_task_answered_in_the_turn_is_never_announced_as_news(
+    store, checkpointer, tmp_path
+):
+    """Where the two paths collide, and it bites inside a single turn.
+
+    The completion notice exists to bring a finished job back into a later
+    conversation, and it hands the model the whole answer with "give the user
+    a short synthesis". A job that finished inside this turn is finished
+    *before* the model writes its reply — so without being marked announced
+    it is injected into that very call, telling the model to summarize the
+    answer the tool result just told it not to touch. The paraphrase this
+    change exists to prevent, arriving through the other door.
+    """
+    session, model = make_session(store, checkpointer, tmp_path, [
+        launch_call("analyse the alpha data", "multi-step"),
+        AIMessage(content="Saved."),
+        AIMessage(content="Anything else?"),
+    ])
+    agent = session.build()
+
+    await agent.ainvoke({"messages": [HumanMessage("analyse it")]}, CFG)
+
+    (job,) = await session.manager.list_jobs(session_id=session.session_id)
+    assert (await session.manager.get_job(job.job_id)).announced is True
+    # the model call that wrote the reply saw no completion notice...
+    assert not notices(model.calls[-1], NOTICE_MARKER)
+    finished = await session.manager.get_job(job.job_id)
+    assert finished.final_answer not in str(model.calls[-1]), \
+        "the answer was handed to the model after all, as a notice"
+
+    await agent.ainvoke({"messages": [HumanMessage("thanks")]}, CFG)
+    assert not notices(model.calls[-1], NOTICE_MARKER)   # ...nor did the next one
+
+
+async def test_a_task_that_fails_in_the_turn_says_so_and_offers_no_answer(
+    store, checkpointer, tmp_path
+):
+    """The other half of delivering in the turn: there is nothing to deliver.
+
+    `_delivered` mirrors `_notice_for`'s branches for the reasons #41 and #59
+    gave — a stop is not a failure, a run with no answer must not be
+    announced as one that has one — and it must never leave the model
+    inventing a result to fill the silence.
+    """
+    llm = FakeLLM({"planner": "not json at all"})
+    session, model = make_session(store, checkpointer, tmp_path, [
+        launch_call("analyse the alpha data", "multi-step"),
+        AIMessage(content="It failed, sorry."),
+    ], llm=llm)
+    runner = ChatRunner(session.build())
+
+    events = [e async for e in runner.stream(session.session_id, "analyse it")]
+
+    (summary,) = await session.manager.list_jobs(session_id=session.session_id)
+    job = await session.manager.get_job(summary.job_id)
+    assert job.status is JobStatus.FAILED
+    # nothing was written into the turn before the tool answered: a run with
+    # no answer must deliver silence, not an empty paragraph
+    finished = next(i for i, e in enumerate(events) if isinstance(e, ToolFinished))
+    assert not [e for e in events[:finished] if isinstance(e, Token)]
+    tool_result = next(m for m in model.calls[-1] if isinstance(m, ToolMessage))
+    assert "FAILED" in tool_result.content and job.error in tool_result.content
+    assert "ALREADY been shown" not in tool_result.content
+    assert job.announced is True, "a failure reported here must not be news again"
+
+
+def test_pick_sync_timeout_follows_the_house_precedence(monkeypatch):
+    monkeypatch.delenv("JOBSMITH_SYNC_TIMEOUT", raising=False)
+    assert pick_sync_timeout() == DEFAULT_SYNC_TIMEOUT
+    assert pick_sync_timeout(3) == 3.0
+    monkeypatch.setenv("JOBSMITH_SYNC_TIMEOUT", "5")
+    assert pick_sync_timeout() == 5.0
+    assert pick_sync_timeout(1.5) == 1.5           # the argument still wins
+    monkeypatch.setenv("JOBSMITH_SYNC_TIMEOUT", "0")
+    assert pick_sync_timeout() == 0.0              # 0 is a value, not "unset"
+    monkeypatch.setenv("JOBSMITH_SYNC_TIMEOUT", "soon")
+    assert pick_sync_timeout() == DEFAULT_SYNC_TIMEOUT
+
+
+def test_pick_approval_required_is_off_unless_a_deployment_says_so(monkeypatch):
+    monkeypatch.delenv("JOBSMITH_APPROVE_JOBS", raising=False)
+    assert pick_approval_required() is False
+    assert pick_approval_required(True) is True
+    monkeypatch.setenv("JOBSMITH_APPROVE_JOBS", "1")
+    assert pick_approval_required() is True
+    assert pick_approval_required(False) is False
+    monkeypatch.setenv("JOBSMITH_APPROVE_JOBS", "no")
+    assert pick_approval_required() is False
+
+
+# ---------------- The gate, kept and off the nominal path --------------------
+
+
+async def test_the_kept_gate_still_interrupts_and_runs_on_approval(
+    store, checkpointer, tmp_path
+):
+    """`$JOBSMITH_APPROVE_JOBS` restores the whole round trip.
+
+    Deliberately still here after #83: the mechanism is what a capability
+    that spends money or does something irreversible will hang off, and it
+    reaches from the tool through the port and the HTTP route into three
+    front-ends. Deleting it would mean building all of that again.
+    """
     session, _ = make_session(store, checkpointer, tmp_path, [
         launch_call("analyse the alpha data", "needs several capability steps"),
         AIMessage(content="Job launched — I'll share the report when it's done."),
-    ])
+    ], approval=True)
     agent = session.build()
 
     out = await agent.ainvoke({"messages": [HumanMessage("please analyse the alpha data")]}, CFG)
@@ -71,7 +349,7 @@ async def test_launch_job_interrupts_then_runs_on_approval(store, checkpointer, 
 
     (job,) = await session.manager.list_jobs(session_id=session.session_id)
     assert job.query == "analyse the alpha data"
-    for _ in range(200):  # background task → poll to completion
+    for _ in range(200):  # the approved run still settles
         await asyncio.sleep(0.01)
         job = await session.manager.get_job(job.job_id)
         if job.status is JobStatus.DONE:
@@ -84,7 +362,7 @@ async def test_declined_launch_creates_no_job(store, checkpointer, tmp_path):
     session, _ = make_session(store, checkpointer, tmp_path, [
         launch_call("big task", "complex"),
         AIMessage(content="Understood, I won't launch it."),
-    ])
+    ], approval=True)
     agent = session.build()
 
     await agent.ainvoke({"messages": [HumanMessage("do the big task")]}, CFG)
@@ -317,7 +595,6 @@ async def test_launch_carries_referent_from_an_earlier_turn(store, checkpointer,
         {"messages": [HumanMessage("we saw a Q3 churn spike in the alpha cohort")]}, CFG
     )
     await agent.ainvoke({"messages": [HumanMessage("analyse that")]}, CFG)
-    await agent.ainvoke(Command(resume={"approved": True}), CFG)
 
     (job,) = await session.manager.list_jobs(session_id=session.session_id)
     assert job.query == "analyse that"          # the model's wording is untouched
@@ -342,7 +619,6 @@ async def test_planner_prompt_receives_the_conversation(store, checkpointer, tmp
 
     await agent.ainvoke({"messages": [HumanMessage("the beta migration rollback")]}, CFG)
     await agent.ainvoke({"messages": [HumanMessage("analyse it")]}, CFG)
-    await agent.ainvoke(Command(resume={"approved": True}), CFG)
 
     (job,) = await session.manager.list_jobs(session_id=session.session_id)
     await poll_until_settled(session.manager, job.job_id)
@@ -358,11 +634,16 @@ async def test_planner_prompt_receives_the_conversation(store, checkpointer, tmp
 
 
 async def test_proposal_shows_the_context_that_will_travel(store, checkpointer, tmp_path):
-    """What the user approves must include what is being attached."""
+    """What the user approves must include what is being attached.
+
+    Kept on the gate path: `context` is the one field of that payload the
+    notice does NOT carry, because a notice is read while the answer is being
+    written and the excerpt is machinery, not a decision to check.
+    """
     session, _ = make_session(store, checkpointer, tmp_path, [
         launch_call("analyse that", "multi-step"),
         AIMessage(content="Launched."),
-    ])
+    ], approval=True)
     agent = session.build()
 
     out = await agent.ainvoke({"messages": [HumanMessage("look into the alpha data")]}, CFG)
@@ -380,7 +661,6 @@ async def test_model_supplied_inputs_survive_the_attachment(store, checkpointer,
     agent = session.build()
 
     await agent.ainvoke({"messages": [HumanMessage("the deck I uploaded")]}, CFG)
-    await agent.ainvoke(Command(resume={"approved": True}), CFG)
 
     (job,) = await session.manager.list_jobs(session_id=session.session_id)
     assert job.inputs["image_s3_keys"] == ["k1"]

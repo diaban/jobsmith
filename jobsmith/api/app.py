@@ -8,11 +8,14 @@ backs the CLI, so a command behaves identically whether it runs embedded or
 against this API.
 
 - Chat tab:   POST /sessions, then POST /sessions/{id}/messages. A reply is
-  either {"type": "message"} or {"type": "proposal"} (the agent wants to
-  launch a background job — human-in-the-loop); the client answers with
-  POST /sessions/{id}/approval {"approved": bool}. Both have a `/stream`
-  twin that answers the same turn as SSE, event by event, ending on that
-  same reply.
+  either {"type": "message"} or {"type": "proposal"} — the latter only where
+  a deployment kept the approval gate ($JOBSMITH_APPROVE_JOBS); the client
+  answers it with POST /sessions/{id}/approval {"approved": bool}. Both have
+  a `/stream` twin that answers the same turn as SSE, event by event, ending
+  on that same reply. On the nominal path a task runs inside the turn (#83),
+  so a turn can be as long as the task and the stream carries a `job_started`
+  event and the answer as it is delivered; the non-streaming route waits for
+  all of it.
 - Jobs tab:   GET /jobs (+?session_id/?status), GET /jobs/{id} (plan/DAG,
   step timestamps, artifacts), POST /jobs (direct launch, bypassing chat),
   POST /jobs/{id}/cancel, POST /jobs/{id}/resume (restart a stopped job from
