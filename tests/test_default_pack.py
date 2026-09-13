@@ -255,6 +255,7 @@ async def test_every_retrieval_step_reaches_it_not_only_the_first():
     material = notes_call(llm)["messages"][1]["content"]
     assert "the note the user handed over" in material
     assert "what the web says today" in material
+    assert "could NOT be read" not in material, "nothing was refused, so nothing is declared"
     assert out["results"]["research"]["meta"]["grounded_on"] == ["read_files", "web_search"]
 
 
@@ -266,6 +267,58 @@ async def test_a_failed_retrieval_step_is_not_material():
     })
     assert "Retrieved material" not in notes_call(llm)["messages"][1]["content"]
     assert out["results"]["research"]["meta"]["grounded_on"] == []
+
+
+async def test_a_file_that_could_not_be_read_travels_with_the_material():
+    """`read_files`'s own rule, one step earlier than it was written for.
+
+    Its module docstring already says it: "a refusal is material, not
+    silence" — one unreadable file among three does not fail the step, and
+    the refusal goes into the generation context "because a model told
+    nothing about the missing file writes confidently over the hole". #81 put
+    a step that writes *sourced* notes between the two, and the refusal has
+    to cross it or the deliverable inherits a gap nothing in the run
+    mentions.
+    """
+    llm = FakeLLM(PACK_SCRIPT)
+    await ResearchCapability(llm).build().ainvoke({
+        "query": "study X", "inputs": {},
+        "results": {"read_files": {"ok": True, "data": {
+            "documents": [{"id": "a.md", "title": "a.md", "text": "the file that opened"}],
+            "unreadable": ["'gone.md': no such file"],
+        }}},
+    })
+    call = notes_call(llm)
+    user = call["messages"][1]["content"]
+    assert "gone.md" in user
+    # under its own label, after the material and not inside it: what is
+    # missing is not something to reason from, it is something to declare
+    assert user.index("the file that opened") < user.index("could NOT be read")
+    assert "gone.md" not in user.split("could NOT be read")[0]
+    # and the prompt says what to do with it
+    assert "never write it up from your own knowledge" in call["messages"][0]["content"]
+
+
+async def test_a_search_that_found_nothing_invents_no_refusal():
+    """The two ports are not symmetrical, and this is where that shows.
+
+    A file the user named and could not be opened is missing from the answer
+    they expect. A query that matched nothing returned nothing — the step
+    fails, and "the sources are silent about X" is not a document anyone
+    asked for. So `REFUSALS` names `read_files` and nothing else, rather than
+    giving the search an equivalent it does not have.
+    """
+    assert ResearchCapability.REFUSALS == (("read_files", "unreadable"),)
+    llm = FakeLLM(PACK_SCRIPT)
+    await ResearchCapability(llm).build().ainvoke({
+        "query": "study X", "inputs": {},
+        "results": {
+            **retrieved("web_search", ("u1", "what the web says")),
+            # a shape a search could produce, and must not be read as a refusal
+            "documents": {"ok": True, "data": {"documents": [], "unreadable": ["ignored"]}},
+        },
+    })
+    assert "could NOT be read" not in notes_call(llm)["messages"][1]["content"]
 
 
 async def test_the_material_is_bounded_and_says_where_it_was_cut():

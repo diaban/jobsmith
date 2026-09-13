@@ -200,7 +200,8 @@ notes from those passages and quotes their ids, and it falls back to the
 model's own knowledge only when the plan retrieved nothing. Which of the two
 it did is on the job record (`grounded_on`) and in the report, because a
 figure read off a source and the same figure recalled are not the same
-claim.
+claim. A file that was named and could not be opened travels with the
+passages, as a gap the notes have to declare rather than fill in.
 
 ### Pointing a request at a file
 

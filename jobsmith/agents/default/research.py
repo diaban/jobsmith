@@ -77,6 +77,24 @@ class ResearchCapability(Capability):
         ("web_search", "documents"),
     )
 
+    #: The other half of a retrieval step's result: what was asked for and
+    #: could NOT be obtained. It is `read_files`'s rule, stated in its own
+    #: module docstring — "a refusal is material, not silence" — applied one
+    #: step earlier than it was written for: it put the refusal in the
+    #: generation context because "a model told nothing about the missing
+    #: file writes confidently over the hole", and #81 put a step that writes
+    #: sourced notes in between. A gap the notes never mention is a gap the
+    #: deliverable inherits with no way of knowing.
+    #:
+    #: Only `read_files` has one, and that is a fact about the two ports
+    #: rather than an omission here: a search that matched nothing returned
+    #: nothing (the step fails, and "the sources say nothing about X" is not
+    #: a document anyone named), while a file that could not be read was
+    #: pointed at by the user and is missing from the answer they expect.
+    #: `documents` and `web_search` are deliberately absent rather than given
+    #: an invented equivalent.
+    REFUSALS: ClassVar[tuple[tuple[str, str], ...]] = (("read_files", "unreadable"),)
+
     #: What the retrieved material may spend of the prompt, in characters.
     #:
     #: The worst case handed to this step is real: since #75 `web_search`
@@ -142,7 +160,10 @@ class ResearchCapability(Capability):
         "line and add what you know yourself, marked as your own knowledge. "
         "Mark doubt only where the material is thin on a point or its "
         "documents disagree — never as a general warning, and never on a "
-        "point the material states plainly."
+        "point the material states plainly. A document listed as impossible "
+        "to read was asked for and never opened: name it in the notes as a "
+        "gap in the material, and never write it up from your own knowledge "
+        "as though it had been read."
     )
 
     def __init__(self, llm: LLMClient, *, max_aspects: int = 5,
@@ -170,8 +191,8 @@ class ResearchCapability(Capability):
         # lenient by design: an unparseable reply degrades to one broad aspect
         return {"aspects": aspects[: self.max_aspects] or [state["query"]]}
 
-    def _retrieved(self, state: ResearchState) -> tuple[str, list[str]]:
-        """The passages a retrieval step found, and which steps found them.
+    def _retrieved(self, state: ResearchState) -> tuple[str, list[str], list[str]]:
+        """What the retrieval found, what it could not, and which steps ran.
 
         `results` is NotRequired and read as such: the executor seeds every
         sub-graph with the parent state, so it is there whenever a step ran
@@ -193,7 +214,20 @@ class ResearchCapability(Capability):
             text = self._bounded(str(doc["text"]).strip(), budget // (len(found) - index))
             budget -= len(text)
             blocks.append(f"## [{doc.get('id') or '?'}] {doc.get('title') or ''}\n\n{text}")
-        return "\n\n".join(blocks), list(dict.fromkeys(name for name, _ in found))
+        # Read from the SAME results the material came from — a step that
+        # failed outright reaches neither this nor `ContextMerger`, which is
+        # the boundary `render_context` already draws and not one to move
+        # here. In practice a refusal only ever travels beside material: one
+        # unreadable file among three is what leaves the step `ok`.
+        refused = [
+            str(why)
+            for name, key in self.REFUSALS
+            if (result := (state.get("results") or {}).get(name)) and result.get("ok")
+            for why in ((result.get("data") or {}).get(key) or [])
+            if str(why).strip()
+        ]
+        return ("\n\n".join(blocks), refused,
+                list(dict.fromkeys(name for name, _ in found)))
 
     def _bounded(self, text: str, budget: int) -> str:
         """`text` within its share of the budget, cut on a word and marked."""
@@ -213,16 +247,23 @@ class ResearchCapability(Capability):
         # list — the fallback here is the same one it uses, so an aspect list
         # that somehow never arrived degrades to the request itself.
         aspects = state.get("aspects") or [state["query"]]
-        material, grounded_on = self._retrieved(state)
-        listed = "Aspects:\n" + "\n".join(f"- {a}" for a in aspects)
+        material, refused, grounded_on = self._retrieved(state)
         # The material first, the task last. A prompt whose instruction sits
         # in front of 32 000 characters of documents is an instruction the
         # model has to hold across all of them; behind them, it is the last
         # thing read and the one the notes are written against.
-        user = (
-            f"Retrieved material:\n{material}\n\nRequest: {state['query']}\n\n{listed}"
-            if material else f"Request: {state['query']}\n\n{listed}"
-        )
+        parts = []
+        if material:
+            parts.append(f"Retrieved material:\n{material}")
+            if refused:
+                # Its own labelled block, never mixed into the material: what
+                # is missing is not something to reason from, it is something
+                # to declare. Same shape as `ReadFilesCapability.render_context`.
+                parts.append("Documents that could NOT be read:\n"
+                             + "\n".join(f"- {why}" for why in refused))
+        parts += [f"Request: {state['query']}",
+                  "Aspects:\n" + "\n".join(f"- {a}" for a in aspects)]
+        user = "\n\n".join(parts)
         system = self.GROUNDED_NOTES_SYSTEM if material else self.NOTES_SYSTEM
         try:
             notes = await self.llm.chat(
