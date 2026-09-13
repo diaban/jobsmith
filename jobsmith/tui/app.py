@@ -101,22 +101,37 @@ class Bubble(Static):
         self.update(f"[{self._style}]{self._speaker}[/]\n{body}")
 
 
+def _formats_of(event: dict[str, Any]) -> list[str] | None:
+    """A payload's document formats, keeping `None` apart from `[]` (#84).
+
+    Absent means the run decides; empty means there is to be no file, and the
+    card says so. `or []` would make the second look like the first.
+    """
+    formats = event.get("formats")
+    return None if formats is None else [str(f) for f in formats]
+
+
 def _job_body(query: str, rationale: str, sources: Sequence[str],
               document_name: str, document_title: str,
-              formats: Sequence[str]) -> str:
+              formats: Sequence[str] | None) -> str:
     """What a run is about to do, as markup — the three guarantees of #83.
 
     One renderer for the notice and for the proposal, because both have to
     show the user the same things: the reformulated query (shown verbatim and
     escaped, never summarised — `chat/tools.py` demands a self-contained one
     and this is what catches a referent that has gone), the files it may open
-    (#60), and what the document will be called, titled and written as (#55).
+    (#60), and what the document will be called, titled and written as (#55)
+    — including that there will be **no** document, when that is what was
+    asked (#84): an empty `formats` is a decision, and a decision shown by
+    drawing nothing is indistinguishable from one nobody took.
     """
     reads = (f"[{render.DIM}]reads {escape(', '.join(sources))}[/]\n"
              if sources else "")
-    written = deliverable_filenames(document_name, formats) or list(formats)
+    written = deliverable_filenames(document_name, formats) or list(formats or [])
     writes = (f"[{render.DIM}]writes {escape(', '.join(written))}[/]\n"
-              if written else "")
+              if written else
+              f"[{render.DIM}]writes no file — the answer stays here[/]\n"
+              if formats is not None else "")
     titled = (f"[{render.DIM}]titled {escape(document_title)}[/]\n"
               if document_title else "")
     return (f"[b]{escape(query)}[/b]\n"
@@ -136,7 +151,7 @@ class JobNoticeCard(Static):
 
     def __init__(self, job_id: str, query: str, rationale: str,
                  sources: Sequence[str] = (), document_name: str = "",
-                 document_title: str = "", formats: Sequence[str] = ()) -> None:
+                 document_title: str = "", formats: Sequence[str] | None = None) -> None:
         super().__init__(classes="job-notice")
         short = escape(job_id[:8])
         self.update(
@@ -157,7 +172,7 @@ class ProposalCard(Static):
 
     def __init__(self, query: str, rationale: str, sources: Sequence[str] = (),
                  document_name: str = "", document_title: str = "",
-                 formats: Sequence[str] = ()) -> None:
+                 formats: Sequence[str] | None = None) -> None:
         super().__init__(classes="proposal")
         self.update(
             f"[{render.ATTENTION}]a background job is proposed[/]\n"
@@ -541,7 +556,7 @@ class JobsmithApp(App[None]):
             [str(s) for s in event.get("sources") or []],
             str(event.get("document_name") or ""),
             str(event.get("document_title") or ""),
-            [str(f) for f in event.get("formats") or []]))
+            _formats_of(event)))
         conversation.scroll_end(animate=False)
         # A card between the tokens and the ones that follow: the next token
         # must open a NEW bubble, or it would be appended above the card.
@@ -558,7 +573,7 @@ class JobsmithApp(App[None]):
             [str(s) for s in terminal.get("sources") or []],
             str(terminal.get("document_name") or ""),
             str(terminal.get("document_title") or ""),
-            [str(f) for f in terminal.get("formats") or []]))
+            _formats_of(terminal)))
         conversation.scroll_end(animate=False)
         self._awaiting_approval = True
         prompt = self.query_one("#prompt", Input)
@@ -650,7 +665,7 @@ class JobsmithApp(App[None]):
         self.query_one("#detail-meta", Static).update(render.job_meta(job))
         self.query_one("#detail-dag", Static).update(render.dag(job))
         self.query_one("#detail-steps", Static).update(render.steps_table(job))
-        await self._show_files(job_id)
+        await self._show_files(job)
         answer = job.get("final_answer") or ""
         error = job.get("error") or ""
         body = f"[{render.DIM}]answer[/]\n{escape(answer)}" if answer else ""
@@ -661,7 +676,7 @@ class JobsmithApp(App[None]):
             body = (body + "\n\n" if body else "") + f"[{render.FAILED}]{escape(error)}[/]"
         self.query_one("#detail-answer", Static).update(body or f"[{render.DIM}]no answer yet[/]")
 
-    async def _show_files(self, job_id: str) -> None:
+    async def _show_files(self, job: dict[str, Any]) -> None:
         """What the job produced — from `list_outputs`, and honest about where.
 
         Three things this pane must not do, all of them promises the port
@@ -685,6 +700,7 @@ class JobsmithApp(App[None]):
         one, and never between two events about the same step. F5 asks again
         from scratch, which is what makes a file deleted later reachable.
         """
+        job_id = str(job.get("job_id") or "")
         outputs = await self.service.list_outputs(job_id) or []
         names = tuple(str(o.get("name") or "") for o in outputs)
         if self._files_of != (job_id, names):
@@ -695,6 +711,11 @@ class JobsmithApp(App[None]):
             outputs,
             missing=self._missing,
             where=render.where_files_are(self.service.mode, job_id) if outputs else "",
+            # A run that was asked for no document has no file coming, and
+            # "no file yet" would say the opposite (#84). The job dict is
+            # what carries the fact, which is why this takes the record and
+            # not just an id.
+            expected=bool(job.get("deliverable_expected", True)),
         ))
 
     def action_reload(self) -> None:

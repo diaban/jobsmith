@@ -66,7 +66,9 @@ async def test_chat_flow_proposal_approval_report(store, checkpointer, tmp_path)
                                json={"text": "please analyse the data"})).json()
         assert r == {"type": "proposal", "query": "analyse the data",
                      "rationale": "several steps needed", "sources": [],
-                     "document_name": "", "document_title": "", "formats": []}
+                     # `null`, not `[]`: the model named no format, which is
+                     # "the run decides" — `[]` would mean "no document" (#84)
+                     "document_name": "", "document_title": "", "formats": None}
 
         r = (await client.post(f"/sessions/{sid}/approval", json={"approved": True})).json()
         assert r["type"] == "message" and "report coming" in r["content"]

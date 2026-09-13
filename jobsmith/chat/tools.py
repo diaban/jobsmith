@@ -357,6 +357,12 @@ def _delivered(job: Job) -> str:
     ]
     if job.report_path:
         done.append(f"The deliverable is saved at: {job.report_path} — worth naming.")
+    elif not job.deliverable_expected:
+        # No file, and nothing went wrong: none was asked for (#84). Said out
+        # loud because the alternative is a model that invents a path, or
+        # apologises for a failure that did not happen.
+        done.append("No file was written and none was asked for — do not "
+                    "mention a document, and do not apologise for its absence.")
     elif job.error:
         done.append(f"No deliverable file was saved ({job.error}) — say so.")
     if len(job.outputs) > 1:
@@ -439,17 +445,26 @@ def make_job_tools(
         is shown this list and is handing those files over, so a path they did
         not mention has no business in it.
 
-        `document_name` is what the file should be CALLED — a short filename
+        `formats` decides WHETHER there is a file and which. Pass the formats
+        the user asked for (`["markdown"]`, `["markdown", "pdf"]`, ...) when
+        they want a document — a report, a file to keep, something to send or
+        to print; the FIRST one is the main deliverable. Pass `[]` when they
+        asked for an answer and explicitly no file. Leave it out when they
+        said nothing about it, and the run decides: a task that actually
+        researches or analyses something leaves a document, a question
+        answered on the spot does not. Ask for what the user asked for and
+        nothing more, and never promise a file in your own prose — only this
+        argument produces one.
+
+        `document_name` is what that file should be CALLED — a short filename
         with no extension, no directory and no spaces (`chair_comparison`).
         Use the user's own name when they gave one; when they did not, propose
         a short one from the subject rather than leaving it: the alternative is
-        a file named after a job id. `document_title` is the heading INSIDE the
-        document, in the language of the request, and is a different decision —
-        naming one never names the other. `formats` is which files are written
-        (`["markdown"]`, `["markdown", "pdf"]`, ...); the FIRST is the main
-        deliverable. Ask for what the user asked for and nothing more, and
-        never promise a file in your own prose — only these arguments produce
-        one. The user is shown all three before the run starts.
+        a file named after a job id. Do not name a document you asked for none
+        of. `document_title` is the heading INSIDE the document, in the
+        language of the request, and is a different decision — naming one
+        never names the other. The user is shown all three before the run
+        starts.
 
         When the task finishes in this turn, its answer is delivered to the
         user WORD FOR WORD by this tool: your own reply must then be at most
@@ -473,7 +488,9 @@ def make_job_tools(
         # model can fix on the spot, and the answer goes back to it as text.
         # `PathRefused` is a `ValueError`, so one arm covers both.
         try:
-            wanted = ensure_formats_available(formats or [])
+            # `None` and `[]` are two different answers here (#84): "you
+            # decide" and "no document". `formats or []` would collapse them.
+            wanted = ensure_formats_available(formats)
             given = (document_name or "").strip()
             name = document_stem(given) if given else ""
         except ValueError as refused:
