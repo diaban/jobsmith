@@ -49,6 +49,29 @@ class EvalCase:
     note: str = ""
 
 
+#: A file a case can name, and the reference it names it by.
+#:
+#: `read_files` opens a path only inside a root the deployment declared
+#: readable, which under `build_app` is the reports directory — a scratch one
+#: per run here. A case therefore cannot carry a path: it carries this
+#: placeholder, and the harness writes the fixture into that directory and
+#: swaps the real path in. A hard-coded path would be a path to one machine.
+#:
+#: The content is deliberately short, specific and domain-neutral: short so
+#: what a step did with it is legible in the step's own output, specific so
+#: that "this text reached the reasoning" is a question a bag of words can
+#: answer at all.
+FIXTURE_REF = "{fixture}"
+FIXTURE_NAME = "deployment-note.md"
+FIXTURE_TEXT = """# Pilot note
+
+This note records the deployment constraints the pilot team measured. The
+index must stay under two gigabytes, a query must answer within four hundred
+milliseconds, and the nightly rebuild must finish inside a two-hour window.
+Memory binds first: the rebuild peaks at seven gigabytes on the single node.
+"""
+
+
 GOLDEN_CASES: tuple[EvalCase, ...] = (
     # ---------------- triage: obviously direct ----------------
     EvalCase(
@@ -180,6 +203,26 @@ GOLDEN_CASES: tuple[EvalCase, ...] = (
             "specifications and delivered a data-collection plan. Only a real "
             "model can be measured on it — the keyword fake has no notion of "
             "verification, and would reach the same terminal either way"
+        ),
+    ),
+
+    # ---------------- the material has to reach the reasoning ----------------
+    EvalCase(
+        id="plan_named_file_grounds_the_steps",
+        query=(
+            "read the note I named, list the deployment constraints it "
+            "records, and say which one binds first"
+        ),
+        expect_route="plan",
+        min_steps=2,
+        must_include=("read_files",),
+        inputs={"source_files": [FIXTURE_REF]},
+        note=(
+            "the request names a file, so the run has real material — and "
+            "`grounding_reaches_reasoning` asks whether the steps that ran "
+            "after the retrieval contain any of it (#81). Compound on "
+            "purpose: the property only exists where something is planned "
+            "downstream of the retrieval"
         ),
     ),
 

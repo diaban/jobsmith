@@ -28,6 +28,7 @@ moved the very strings the checks searched for.
 """
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -260,6 +261,133 @@ def check_steps_all_ok(case: EvalCase, obs: Observation) -> Check:
     return _check(name, not failed, f"failed step(s): {', '.join(failed)}")
 
 
+#: How many of a body of text's own words a check looks at, and what share of
+#: that vocabulary another text has to carry to count as being built from it.
+#: Round numbers rather than tuned ones, and the same share everywhere they
+#: are used because the claim is always the same one: a text that names a
+#: third of what a body of words keeps coming back to is plainly about it,
+#: and one that names almost none of it is not. Deliberately not higher — a
+#: text built from material is a reading of it, not a copy, and a good one
+#: names the figures without repeating the category word in every sentence.
+#:
+#: Two checks share them, at two points of the same run:
+#: `grounding_reaches_reasoning` asks whether the material reached the steps
+#: that ran after it, `report_answers_request` whether it reached the
+#: document — the second was green throughout the run that made the first
+#: necessary, which is why one is not the other measured twice.
+MATERIAL_TERMS = 20
+MIN_TERM_SHARE = 1 / 3
+
+
+#: How a retrieval step's material is recognised, without naming one.
+#:
+#: Every port in this project that brings material in — a local directory, a
+#: named file, the web — publishes it under the same `documents` key, as
+#: passages carrying an id and a `text`. That shape is what this looks for,
+#: rather than a list of capability names: `evals` is agent-agnostic (the
+#: leakage gate scans it), and a golden set that knew `web_search` by name
+#: would score one pack and skip every other. An agent whose retrieval emits
+#: something else is skipped here, never failed — the honest answer when the
+#: harness cannot see what was retrieved.
+GROUNDING_DATA_KEY = "documents"
+
+
+def _retrieved(obs: Observation) -> dict[str, str]:
+    """What each step of this run retrieved, as text, by step name."""
+    found = {}
+    for step, result in obs.results.items():
+        if not result.get("ok"):
+            continue
+        passages = (result.get("data") or {}).get(GROUNDING_DATA_KEY)
+        if not isinstance(passages, list):
+            continue
+        text = " ".join(
+            str(p.get("text") or "") for p in passages if isinstance(p, dict)
+        ).strip()
+        if text:
+            found[step] = text
+    return found
+
+
+def _downstream_of(obs: Observation, sources: set[str]) -> list[str]:
+    """The steps that depend on `sources`, directly or through other steps.
+
+    The plan's own edges, closed transitively: `web_search → research →
+    analysis` means the analysis is downstream of the search even though it
+    names only the research. Sources are excluded from their own downstream —
+    two retrieval steps in a chain are both material, neither is a reader.
+    """
+    reached = set(sources)
+    for _ in range(len(obs.plan_steps)):        # a fixpoint, the DAG is acyclic
+        for step in obs.plan_steps:
+            if set(step["depends_on"]) & reached:
+                reached.add(step["capability"])
+    return [s["capability"] for s in obs.plan_steps
+            if s["capability"] in reached and s["capability"] not in sources]
+
+
+def check_grounding_reaches_reasoning(case: EvalCase, obs: Observation) -> Check:
+    """What a retrieval step found is in the steps that ran after it.
+
+    The defect this exists for (#81) is invisible to every other check: the
+    plan is valid, every step reports ok, the deliverable quotes the material
+    — and not one step between the retrieval and the writing ever read it.
+    Measured on the run that opened the issue, `web_search` returned 14.7k
+    characters of sourced specifications, `research` then wrote 14.6k
+    characters of product sheets from the model's memory, and `analysis` drew
+    its conclusions from those. The retrieved table entered the run at the
+    generator, three steps too late, and `report_answers_request` (#73) was
+    green throughout: it reads the *deliverable*, which did carry the
+    material, having been handed it directly.
+
+    So this asks the same question one layer earlier, and against the steps'
+    own results: a third of what the retrieved documents keep coming back to
+    (minus the request's own words, which prove nothing) has to appear in
+    what the downstream steps produced. It is the same blunt bag of words as
+    its neighbour, and the same threshold: a step that read the material
+    names some of it, a step that did not names almost none.
+
+    Two honest limits. It measures the edges the plan **draws** — a plan that
+    schedules retrieval and reasoning side by side draws none, and skips
+    here, which is a planning question and not this one. And, like every
+    check built on `frequent_terms`, it detects abandonment, never
+    regurgitation: a step that pasted the documents into its own output
+    scores perfectly.
+    """
+    name = "grounding_reaches_reasoning"
+    if obs.error:
+        return _skip(name, "run did not complete")
+    if not obs.plan_steps:
+        return _skip(name, "no plan in this run")
+    retrieved = _retrieved(obs)
+    if not retrieved:
+        return _skip(name, "no step retrieved any material in this run")
+    downstream = _downstream_of(obs, set(retrieved))
+    if not downstream:
+        return _skip(name, "no step of the plan depends on the retrieval")
+    material = frequent_terms(
+        normalize(" ".join(retrieved.values())),
+        exclude=terms(obs.query) | PROCESS_WORDS,
+        limit=MATERIAL_TERMS,
+    )
+    if not material:
+        return _skip(name, "the retrieved material added nothing to the request's own words")
+    # Whatever those steps put in their results, whatever its shape: a
+    # capability's payload is its own business (`core/state.py`), so this
+    # reads it as text rather than learning any capability's keys.
+    produced = terms(normalize(json.dumps(
+        [obs.results.get(step, {}).get("data") for step in downstream],
+        ensure_ascii=False,
+    )))
+    carried = [t for t in material if t in produced]
+    return _check(
+        name,
+        len(carried) >= MIN_TERM_SHARE * len(material),
+        f"{', '.join(downstream)} carry {len(carried)}/{len(material)} of what "
+        f"{', '.join(retrieved)} retrieved ({', '.join(t for t in material if t not in produced)})",
+    )
+
+
 # ---------------------------------------------------------------- deliverable
 
 def _report_applies(case: EvalCase, obs: Observation, name: str) -> Check | None:
@@ -386,18 +514,6 @@ def check_report_reader_facing(case: EvalCase, obs: Observation) -> Check:
     answer = normalize(obs.final_answer or "").lower()
     hits = [m for m in PRODUCER_FACING_MARKERS if m in answer]
     return _check(name, not hits, f"addressed to the producer: {', '.join(hits)}")
-
-
-#: How many of the material's own words a check looks at, and what share of a
-#: vocabulary a deliverable has to carry to count as being about it. Round
-#: numbers rather than tuned ones, and the same share in both places because
-#: the claim is the same one twice: a text that names a third of what a body
-#: of words keeps coming back to is plainly about it, and one that names
-#: almost none of it is not. Deliberately not higher — an answer is a
-#: paraphrase, not a copy, and a good one names the products and the figures
-#: without repeating the category word in every sentence.
-MATERIAL_TERMS = 20
-MIN_TERM_SHARE = 1 / 3
 
 
 def check_report_answers_request(case: EvalCase, obs: Observation) -> Check:
@@ -567,6 +683,7 @@ CHECKS: tuple[Callable[[EvalCase, Observation], Check], ...] = (
     check_plan_excluded_steps,
     check_steps_all_ran,
     check_steps_all_ok,
+    check_grounding_reaches_reasoning,
     check_report_written,
     check_report_title,
     check_report_answer,
@@ -592,6 +709,7 @@ CHECK_NAMES: tuple[str, ...] = (
     "plan_excluded_steps",
     "steps_all_ran",
     "steps_all_ok",
+    "grounding_reaches_reasoning",
     "report_written",
     "report_title",
     "report_answer",
