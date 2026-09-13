@@ -14,7 +14,7 @@ Six events, and no more, because a turn only ever shows six things:
     ToolStarted    the model asked for a tool, by its real name
     ToolFinished   that tool answered
     JobStarted     a job began inside this turn, and here is what it will do
-    Message        the turn is over, here is the reply
+    Message        the turn is over, here is the whole reply
     Proposal       the turn is over, it is waiting for an approval
 
 The two terminals are not an invention of the stream: they are the duality
@@ -124,7 +124,23 @@ class JobStarted:
 
 @dataclass(frozen=True)
 class Message:
-    """Terminal: the turn ended with a reply."""
+    """Terminal: the turn ended with a reply — the whole of what it produced.
+
+    `content` is the concatenation of every `Token` this turn yielded, in
+    order, so a caller that **waits** ends up with exactly the text a caller
+    that **renders** saw. That is #50's invariant, and it is not a nicety: a
+    turn is driven in one place precisely so the two can never be told
+    different things about it.
+
+    It used to be the model's own last message, which was the same string
+    while the tokens and the terminal came from that message. #83 broke that
+    tie — a job's answer is written into the turn by the tool, and the
+    model's reply is then "at most one short sentence" — so a terminal built
+    from the model would have dropped the answer entirely for anyone who did
+    not render the flow (`POST /sessions/{id}/messages`, the surface a web
+    UI will use). Composing from the tokens leaves no second source of truth
+    to drift: whatever the reader saw IS the reply.
+    """
     content: str
 
 
@@ -238,17 +254,28 @@ class ChatRunner:
         Exactly one terminal is always yielded, last. A caller draining this
         for a reply (`AgentService.send`) must never have to decide what an
         exhausted stream with no terminal meant.
+
+        **`Message` is the transcript, not the model's last message.** Every
+        `Token` yielded is kept, and the terminal is their concatenation —
+        see `Message` for why that has to be the definition rather than a
+        convenience.
         """
-        answer, proposal = "", None
+        transcript: list[str] = []
+        # Only ever a stand-in: see `Message`. Kept because a model that does
+        # not stream at all would otherwise make the terminal empty.
+        last_model_text, proposal = "", None
         async for mode, chunk in stream:
             if mode == "messages":
                 message, _metadata = chunk
                 # AI messages only: the tools node publishes its ToolMessages
                 # here too, and a tool's output is not the answer being written.
                 if isinstance(message, AIMessage) and (text := _text_of(message)):
+                    transcript.append(text)
                     yield Token(text)
             elif mode == "custom":
                 if (event := _from_custom(chunk)) is not None:
+                    if isinstance(event, Token):
+                        transcript.append(event.text)
                     yield event
             elif mode == "updates":
                 for node, value in chunk.items():
@@ -258,10 +285,7 @@ class ChatRunner:
                         continue
                     elif node == _MODEL_NODE:
                         for message in value.get("messages") or []:
-                            # The whole message, not the accumulated tokens:
-                            # this is the same value `messages[-1].content`
-                            # had before the turn became a flow.
-                            answer = _text_of(message)
+                            last_model_text = _text_of(message)
                             for call in getattr(message, "tool_calls", None) or []:
                                 yield ToolStarted(call["name"])
                     elif node == _TOOLS_NODE:
@@ -276,4 +300,11 @@ class ChatRunner:
                 list(proposal.get("formats") or []),
             )
         else:
-            yield Message(answer)
+            # The transcript, and the model's last message only when nothing
+            # was streamed at all — a model with no `_astream` of its own
+            # yields one chunk through LangChain's fallback, but one that
+            # emitted none must not turn a written answer into an empty
+            # terminal. It can never mask a missing job answer: that arrives
+            # as a Token, so a job that answered leaves a non-empty
+            # transcript and this branch is not reached.
+            yield Message("".join(transcript) if transcript else last_model_text)

@@ -128,12 +128,18 @@ async def test_a_turn_that_proposes_a_job_ends_on_a_proposal(store, checkpointer
 
     after = await collect(runner.resume("s1", True))
     assert [e.name for e in after if isinstance(e, ToolFinished)] == ["launch_job"]
-    assert after[-1] == Message(ANSWER)
+    # The terminal is the whole of what the turn produced — the approved run's
+    # answer and then the model's sentence — not the model's message alone.
+    # It was `Message(ANSWER)` while the two were the same string; #83 broke
+    # that tie, and a terminal that stayed the model's message would hand a
+    # caller that waits an answer with the run's result cut out of it.
+    streamed = "".join(e.text for e in after if isinstance(e, Token))
+    assert after[-1] == Message(streamed)
+    assert streamed.endswith(ANSWER) and len(streamed) > len(ANSWER)
     # a tool's *result* is not the answer being written: what the model was
     # told about the run stays out of the stream, and only what the run
     # produced is written into it.
-    assert "ALREADY been shown" not in "".join(
-        e.text for e in after if isinstance(e, Token))
+    assert "ALREADY been shown" not in streamed
 
 
 async def test_send_is_the_stream_drained(store, checkpointer, tmp_path):
@@ -372,3 +378,33 @@ async def test_a_cut_short_turn_is_announced_and_the_repl_survives_it(capsys, mo
     assert "half a sen" in out
     assert "cut short" in err
     assert out.rstrip().endswith("bye")    # the loop kept going
+
+
+async def test_the_terminal_falls_back_only_when_nothing_was_streamed():
+    """The one branch the transcript rule needs, and its bound.
+
+    A model with no `_astream` of its own still reaches the `messages` mode
+    through LangChain's one-chunk fallback, so this is a corner — but a model
+    that emitted no chunk at all must not turn a written answer into an empty
+    terminal. It can never mask a missing job answer, because that arrives as
+    a Token: any turn a job answered in has a non-empty transcript and never
+    reaches here.
+    """
+    from langchain_core.messages import AIMessage as AI
+
+    from jobsmith.chat.runner import CUSTOM_ANSWER
+
+    async def silent_model():
+        yield "updates", {"model": {"messages": [AI(content="the whole answer")]}}
+
+    async def a_job_answered():
+        # a tool wrote into the turn; the model then streamed nothing
+        yield "custom", {"event": CUSTOM_ANSWER, "text": "what the run produced"}
+        yield "updates", {"model": {"messages": [AI(content="one sentence")]}}
+
+    runner = ChatRunner(agent=None)
+    assert [e async for e in runner._translate(silent_model())][-1] == \
+        Message("the whole answer")
+    # the job's answer is never traded for the model's message
+    assert [e async for e in runner._translate(a_job_answered())][-1] == \
+        Message("what the run produced")

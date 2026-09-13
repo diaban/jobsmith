@@ -3,6 +3,14 @@
 The property worth protecting is that a front-end cannot tell where the work
 happens. So the same sequence is driven through the local service and through
 HTTP, and the answers must match — not merely "both work".
+
+There is a **second** property, and this suite used to be blind to it: a
+caller that waits (`send`) and a caller that renders (`stream`) must be told
+the same thing about one turn. Comparing the two backings cannot see that —
+both are the same code, so both are wrong together and the comparison passes.
+`test_a_turn_answers_the_same_whether_it_is_waited_for_or_watched` is the one
+that looks, and #83 is why it had to be written: the tokens and the terminal
+stopped coming from the same message the moment a tool could write into a turn.
 """
 from __future__ import annotations
 
@@ -340,13 +348,59 @@ async def test_a_turn_is_the_same_flow_through_either_backing(
         assert len(tokens) > 1, "the answer arrived in one piece on this backing"
         # The gate decides WHETHER the task runs, never how: an approved run
         # is the same synchronous run as an un-gated one, so the turn carries
-        # the job's answer and then the model's own sentence.
+        # the job's answer and then the model's own sentence — and the
+        # terminal carries both, which is what `test_a_turn_answers_the_same_
+        # whether_it_is_waited_for_or_watched` is about.
         assert "".join(tokens).endswith("launched!")
-        assert answering[-1] == {"type": "message", "content": "launched!"}
+        assert answering[-1] == {"type": "message", "content": "".join(tokens)}
 
         # ...and `send` is that same flow drained, on either backing
         assert await client.send(session_id, "anything else?") == {
             "type": "message", "content": "launched!"}
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
+async def test_a_turn_answers_the_same_whether_it_is_waited_for_or_watched(
+    store, checkpointer, tmp_path, over_http
+):
+    """#50's invariant, on the turn where it can now break.
+
+    `send` is `terminal_of(self.stream(...))`, so a turn is driven in one
+    place — but that only guarantees the two callers see the same *flow*, not
+    that the terminal says what the flow delivered. The terminal used to be
+    the model's own last message, which was the same string while the tokens
+    came from that message too. #83 broke the tie: the job's answer is
+    written into the turn by the tool and the model's reply is one sentence,
+    so a terminal built from the model hands a caller that waits an answer
+    with the result cut out of it — `POST /sessions/{id}/messages`, which is
+    the surface a web UI will use (#8).
+
+    Two sessions of the same scripted model, one drained by `stream` and one
+    by `send`, and the texts must be identical. The parity tests above cannot
+    catch this: they compare the two backings, and both would be wrong in the
+    same way.
+    """
+    service = _service_over(store, checkpointer, tmp_path, approval=False)
+    client = daemon_client_over(create_api(service)) if over_http else service
+    try:
+        watched_id = await client.new_session()
+        events = [e async for e in client.stream(watched_id, "please analyse it")]
+        rendered = "".join(e["text"] for e in events if e["type"] == "token")
+
+        waited_id = await client.new_session()
+        terminal = await client.send(waited_id, "please analyse it")
+
+        assert terminal["type"] == "message"
+        assert terminal["content"] == rendered
+        # ...and it is a turn that really ran a job, or this proves nothing
+        (job,) = await client.list_jobs(session_id=waited_id)
+        answer = (await client.get_job(job["job_id"]))["final_answer"]
+        assert answer and answer in terminal["content"], \
+            "a caller that waits was not given the answer the run produced"
+        assert terminal["content"].endswith("launched!"), \
+            "...nor the model's own sentence, in the order it was written"
     finally:
         await client.aclose()
 
@@ -381,8 +435,9 @@ async def test_a_task_runs_inside_the_turn_on_either_backing(
         assert finished["status"] == "done"
         answer = finished["final_answer"]
         assert answer, "the job did not answer, so there is nothing to deliver"
-        assert answer in "".join(e["text"] for e in events if e["type"] == "token")
-        assert events[-1] == {"type": "message", "content": "launched!"}
+        streamed = "".join(e["text"] for e in events if e["type"] == "token")
+        assert answer in streamed
+        assert events[-1] == {"type": "message", "content": streamed}
     finally:
         await client.aclose()
 
