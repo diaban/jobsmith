@@ -130,20 +130,25 @@ async def test_the_deck_is_built_from_what_the_other_steps_produced():
     assert "nothing found" not in user            # a failed step has no material
 
 
-async def test_the_internal_review_reaches_the_deck_labelled_as_a_review():
-    """#58: the deck is the one deliverable that reads the material directly.
+async def test_the_caveats_reach_the_deck_labelled_as_evidence():
+    """#58, and what #82 changed about it.
 
-    `critique` is agent-facing by design — its own prompt asks it to challenge
-    the work and suggest improvements — so a block tagged only `[critique]` is
-    material the model has no reason to treat differently, and it did not: the
-    run that opened #58 shipped slides titled *État actuel et risques* and
-    *Prochaines étapes* to someone who had asked about a subject. The block now
-    carries what it *is*, and `DESIGN_SYSTEM` says what to do with a block of
-    that kind. Read off `MATERIAL` rather than retyped here: the label and the
+    The deck is the one deliverable that reads the material directly, so a
+    block tagged only `[critique]` is material the model has no reason to
+    treat differently — and it did not: the run that opened #58 shipped slides
+    titled *État actuel et risques* and *Prochaines étapes* to someone who had
+    asked about a subject. The fix was the block saying what it *is*, plus
+    `DESIGN_SYSTEM` saying what to do with a block of that kind.
+
+    #82 changed what it is: the step checks the findings against the material
+    instead of reviewing the work, so the label saying "OF THE WORK" would now
+    be false — while what it must not become, a slide of its own, is
+    unchanged. Read off `MATERIAL` rather than retyped: the label and the
     prompt are the fix, and a test that copies them proves neither travelled.
     """
     roles = {name: role for name, _key, role in SlideDeckCapability.MATERIAL}
-    assert "OF THE WORK" in roles["critique"]
+    assert "OF THE WORK" not in roles["critique"], "the step no longer reviews the work"
+    assert "caveats" in roles["critique"] and "never the subject of a slide" in roles["critique"]
 
     cap, llm = make_capability()
     await run_capability(cap, job_id="job1", results={

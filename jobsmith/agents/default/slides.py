@@ -189,9 +189,10 @@ class SlideDeckCapability(Capability):
         "at a glance — never sentences, never paragraphs.\n"
         "- Use ONLY the provided material. If it is thin, make fewer slides "
         "rather than padding them.\n"
-        "- Each block of material is labelled with what it is. A block that "
-        "reviews the WORK is evidence: correct the slides with it, drop what "
-        "it undermines, and never give it a slide of its own.\n"
+        "- Each block of material is labelled with what it is. A block of "
+        "caveats — what the material does not support, where it disagrees "
+        "with itself — is evidence: correct the slides with it, drop what it "
+        "undermines, and never give it a slide of its own.\n"
         "- Every slide is about the subject. None is about the state of the "
         "work, what is still missing, what remains to be done, options for "
         "the reader to choose between, or a template to fill in; no slide "
@@ -206,22 +207,24 @@ class SlideDeckCapability(Capability):
     #: Fixed rather than derived from `results`, which arrives in wave order
     #: (a consumer must never iterate that, see `core/state.py`).
     #:
-    #: The third field is the fix for #58. `critique` is agent-facing by
-    #: design — it reviews the work, not the subject — and a deck handed that
-    #: block under a bare `[critique]` tag rendered it faithfully: two slides
-    #: of gaps and next steps, shown to someone who asked about the subject.
-    #: It stays in the material because a review that says a claim is
-    #: unsupported is worth knowing before it reaches a slide; what changes is
-    #: that the block now says what it is, and `DESIGN_SYSTEM` says what to do
-    #: with a block of that kind.
+    #: The third field is the fix for #58: a deck handed `critique` under a
+    #: bare `[critique]` tag rendered it faithfully — two slides of gaps and
+    #: next steps, shown to someone who asked about the subject — so the
+    #: block says what it is and `DESIGN_SYSTEM` says what to do with a block
+    #: of that kind. **What it is changed with #82**: the step no longer
+    #: reviews the work, it checks the findings against the material, so the
+    #: label that said "OF THE WORK" would now be false. What it must not
+    #: become — a slide of its own — is unchanged, and for the same reason:
+    #: caveats belong on the claims they bear on.
     MATERIAL: tuple[tuple[str, str, str], ...] = (
         ("analysis", "analysis", "findings about the subject"),
         ("research", "notes", "research notes about the subject"),
         (
             "critique",
             "critique",
-            "an internal review OF THE WORK, not of the subject — evidence "
-            "only, never the subject of a slide",
+            "caveats on those findings — what the material does not support, "
+            "where it disagrees with itself: evidence to correct the slides "
+            "with, never the subject of a slide",
         ),
     )
 
