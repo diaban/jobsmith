@@ -353,7 +353,8 @@ def dag(job: dict[str, Any]) -> str:
 
 
 def outputs_block(
-    outputs: list[dict[str, Any]], *, missing: Collection[str] = (), where: str = ""
+    outputs: list[dict[str, Any]], *, missing: Collection[str] = (), where: str = "",
+    expected: bool = True,
 ) -> str:
     """The files the job produced, deliverables first — the order it records.
 
@@ -371,9 +372,15 @@ def outputs_block(
     the reader can reach. `missing` is the other half of the same promise —
     a file deleted since the job finished is said to be gone rather than
     drawn as a path to nothing.
+
+    `expected` is the same promise about the empty case (#84): "no file yet"
+    reads as *not yet*, and for a run nobody asked a document of there is no
+    yet — nothing is coming. The fact is `deliverable_expected` on the job
+    record; the wording is this layer's, like every other one here.
     """
     if not outputs:
-        return f"[{DIM}]no file yet[/]"
+        return f"[{DIM}]no file yet[/]" if expected else (
+            f"[{DIM}]no file — none was asked for[/]")
     lines = [f"[{DIM}]files[/]"]
     for output in outputs:
         name = str(output.get("name") or Path(str(output.get("path") or "")).name)

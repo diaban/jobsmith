@@ -133,20 +133,28 @@ class JobManager:
         session_id: str | None = None,
         document_name: str = "",
         document_title: str = "",
-        formats: Sequence[str] | str = (),
+        formats: Sequence[str] | str | None = None,
     ) -> Job:
         """Record a job, including what the requester asked the document to be.
 
         Both document decisions are checked HERE, before a job exists, because
         this is the last point at which whoever asked is still listening: the
-        chat tool calls it behind the approval it just showed, the API answers
-        a request, the CLI a command. A name with a separator in it and a
+        chat tool calls it behind the notice it just wrote, the API answers a
+        request, the CLI a command. A name with a separator in it and a
         format nothing can render are the two ways to ask for a file this
         deployment cannot produce, and both refuse in the caller's terms —
         never three minutes later, at the write, in a run that already spent
         its tokens.
+
+        `formats` also carries the decision #55 stopped one field short of
+        (#84): `None` says the request named no format and leaves the choice
+        to whoever writes the file, while **`[]` says there is to be no file**.
+        The second is recorded as `deliverable_expected=False` here and now,
+        because it is known here and now — and a QUEUED job that reads as
+        expecting a document it will never get is exactly the confusion this
+        field exists to remove.
         """
-        wanted = list(ensure_formats_available(formats))
+        wanted = ensure_formats_available(formats)
         job = Job(
             job_id=uuid.uuid4().hex,
             status=JobStatus.QUEUED,
@@ -155,6 +163,7 @@ class JobManager:
             document_name=document_stem(document_name) if document_name.strip() else "",
             document_title=document_title.strip(),
             formats=wanted,
+            deliverable_expected=wanted != [],
             session_id=session_id,
             created_at=now_iso(),
         )
@@ -267,14 +276,70 @@ class JobManager:
             if errors:
                 await self.repo.save_errors(job.job_id, errors)
             job.status = JobStatus.DONE if job.terminal_kind in DELIVERED else JobStatus.FAILED
-            if job.status is JobStatus.DONE:
+            if job.status is JobStatus.DONE and self._deliverable_wanted(job):
                 # The reporter reads job.usage, so settle it before writing.
                 job.usage = ledger.total().to_dict()
                 self._write_outputs(job)
             else:
+                # Either the run stopped, or it answered and nobody wanted a
+                # document of it. Only the second is a decision, and only it
+                # is recorded — the flag goes True → False and never back, so
+                # a job that asked for no file does not silently re-promise
+                # one by failing.
+                if job.status is JobStatus.DONE:
+                    job.deliverable_expected = False
+                # The files its steps left behind are still this job's,
+                # whichever of the two it was.
                 self._collect_artifacts(job)
             await self._persist_summary(job)
         return job
+
+    @staticmethod
+    def _deliverable_wanted(job: Job) -> bool:
+        """Is this run meant to leave a document behind (#84)?
+
+        The write used to ask one question — did the run reach a DELIVERED
+        terminal — so a greeting sent down the `direct` route produced a file
+        with a title, the request quoted back, an empty plan table and a
+        mermaid diagram of nothing. The graph has a route for *this needs no
+        capability*; it had no outcome for *this needs no document*.
+
+        **The request decides, and the run decides only when the request said
+        nothing.** Explicitly, in that order:
+
+        - `formats == []` — the request asked for no document. Honoured
+          whatever the run turned out to be; this is the channel #55 built and
+          left one field short.
+        - `formats` non-empty — the request asked for these. Honoured
+          whatever the run turned out to be, including a `direct` one: a
+          reader who asked for a PDF gets a PDF, and handing them nothing
+          because of how the router triaged their sentence would be a second
+          silent decision.
+        - the request said nothing (`None`) — then **a run that built
+          something files it, and a run that did not, does not**. "Built
+          something" is having planned and executed capabilities: the
+          generator wrote the answer from their material, for a reader of a
+          document, and the provenance section has a plan to record. A run
+          that answered with no plan at all went through `DirectResponder`,
+          whose prompt says "answer directly, concisely and helpfully" and
+          was never given a deliverable's audience or register — that text is
+          a chat turn, and a chat turn with a provenance section stapled to
+          it is not a deliverable, it is the defect.
+
+        Deliberately NOT the duration, and not the execution mode: "fais-moi
+        un comparatif en PDF" wants a file if it takes eight seconds, and
+        "c'est quoi la différence entre X et Y" wants an answer if it takes
+        three minutes. Nor a length threshold on the answer, which would be
+        the kind of implicit rule this repo refuses.
+
+        The empty plan joins the direct route here exactly as it does in the
+        graph (`AgentBuilder._route_after_planner`): every step dropped as
+        inapplicable is a run with nothing to report on, and it is answered
+        by the same node.
+        """
+        if job.formats is not None:
+            return bool(job.formats)
+        return bool((job.plan or {}).get("steps"))
 
     def _write_outputs(self, job: Job) -> None:
         """Produce the deliverables of a job that answered — and survive failing to.
@@ -298,11 +363,15 @@ class JobManager:
         A separate `try` on purpose: the run's own `except` means "the graph
         blew up", which a full disk is not.
 
-        **Only a job that reached a DELIVERED terminal gets here** — one that
-        answered, or one that declared it could not (#59), which is a run with
-        something to hand back either way. Running the Reporter for a run that
-        *stopped* would write a report of nothing; `_collect_artifacts` is the
-        half that still applies, and it is called on its own there.
+        **Only a job that reached a DELIVERED terminal AND was meant to leave
+        a document gets here** — one that answered, or one that declared it
+        could not (#59), which is a run with something to hand back either
+        way, and one whose request or whose shape asked for a file
+        (`_deliverable_wanted`, #84). Running the Reporter for a run that
+        *stopped* would write a report of nothing, and running it for a run
+        nobody asked a document of writes a chat turn with a provenance
+        section; `_collect_artifacts` is the half that still applies to both,
+        and it is called on its own there.
         """
         reporter = self._reporter_for(job)
         try:
@@ -348,9 +417,12 @@ class JobManager:
         invariant (exactly one main, the first format asked for) is what
         `report_path`, `jobsmith report` and `/report` read, and a step's
         chart must not become the thing the report points at. A job that did
-        not answer passes no deliverables at all, so it has no `main`,
-        `report_path` stays None and `/report` still 404s — the annexes are
-        offered as what they are, not dressed up as a partial success.
+        not answer — and one nobody asked a document of (#84) — passes no
+        deliverables at all, so it has no `main`, `report_path` stays None
+        and `/report` still 404s. The annexes are offered as what they are,
+        not dressed up as a partial success; and a run that wanted no report
+        can still have produced files, which is why this half never depends
+        on the other.
 
         `job.outputs` is **assigned**, never appended to: a cancelled job that
         collects and is then resumed keeps the earlier attempt's results (the

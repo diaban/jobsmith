@@ -61,9 +61,11 @@ class JobIn(BaseModel):
     inputs: dict[str, Any] | None = None
     session_id: str | None = None
     # what the deliverable should be called, be titled and be written as (#55)
+    # — and whether there is to be one at all (#84): `formats` absent or null
+    # leaves it to the run, `[]` asks for no document, a list asks for those.
     document_name: str = ""
     document_title: str = ""
-    formats: list[str] = []
+    formats: list[str] | None = None
 
 
 # `JobOutput.format` is free-form domain vocabulary ("markdown", "html", ...);
@@ -76,6 +78,17 @@ REPORT_MEDIA_TYPES = {
     "html": "text/html",
     "text": "text/plain",
 }
+
+
+#: What a 404 on /report says when the job deliberately produced no file
+#: (#84). Wording, like `REPORT_MEDIA_TYPES`, is the adapter's business: the
+#: fact is `deliverable_expected` on the record and every front-end words it
+#: for its own reader.
+NO_DOCUMENT_DETAIL = (
+    "this job produced no document: none was asked for. Its answer is on the "
+    "job record (GET /jobs/{id}), and any file its steps produced is listed by "
+    "GET /jobs/{id}/outputs"
+)
 
 
 def _report_media_type(job: dict) -> str:
@@ -210,6 +223,14 @@ def create_api(service: LocalAgentService) -> FastAPI:
         made the two endpoints one — /report would then sometimes hand back
         a file to save rather than a page to read, and a client could no
         longer tell the shortcut apart from the download.
+
+        A job that was never going to write one is still a 404 — there is no
+        such resource, which is what the code says — but the *detail* says
+        which absence it is (#84). "not DONE yet?" is a guess, and it is the
+        wrong guess for a run that finished, answered, and was asked for no
+        file: a client that reads it tells its user to wait for something
+        that already happened. The machine-readable form of the same fact is
+        `deliverable_expected` on `GET /jobs/{id}`.
         """
         job = await _job_or_404(job_id)
         try:
@@ -217,7 +238,8 @@ def create_api(service: LocalAgentService) -> FastAPI:
         except BinaryDeliverable as refused:
             raise HTTPException(415, str(refused)) from refused
         if report is None:
-            raise HTTPException(404, "no report for this job (not DONE yet?)")
+            raise HTTPException(404, NO_DOCUMENT_DETAIL if not job.get(
+                "deliverable_expected", True) else "no report for this job (not DONE yet?)")
         return Response(report, media_type=_report_media_type(job))
 
     # ---------------- live events ----------------

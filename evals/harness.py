@@ -58,6 +58,11 @@ class Observation:
     final_answer: str | None = None
     report_path: str | None = None
     report_text: str | None = None
+    #: Was this run meant to leave a document at all (#84)? False for one the
+    #: request asked no file of, and for one that answered with no plan — a
+    #: chat turn, which is not a deliverable. The report checks skip such a
+    #: run instead of scoring it on a file it was never going to write.
+    deliverable_expected: bool = True
     report_format: str = "markdown"   # which Reporter wrote it (checks read through it)
     material: str = ""                # the merged context the generator was handed
     registry: tuple[str, ...] = ()
@@ -146,6 +151,7 @@ async def run_case(
         obs.terminal_kind = job.terminal_kind
         obs.final_answer = job.final_answer
         obs.report_path = job.report_path
+        obs.deliverable_expected = job.deliverable_expected
         main = next((o for o in job.outputs if o.role == "main"), None)
         if main is not None:
             obs.report_format = main.format

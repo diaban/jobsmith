@@ -92,13 +92,17 @@ class JobNotificationMiddleware(AgentMiddleware):
     def _notice_for(job: Job) -> str:
         """What the model is told about one finished job.
 
-        A DONE job can have no main deliverable: the run answered and only
-        the write failed, which is why the manager keeps it DONE with
-        `job.error` set. Rendering `report_path` unconditionally then
-        announces "Report file: None" and never says why — the answer, the
-        thing that survived, arrives next to a lie. So the path is stated
-        when there is one, and the reason when there is not; either way the
-        answer is delivered, since that is the whole point of staying DONE.
+        A DONE job can have no main deliverable for two unrelated reasons,
+        and telling the user the wrong one is the defect each branch exists
+        to avoid. The run answered and only the **write failed**, which is
+        why the manager keeps it DONE with `job.error` set — rendering
+        `report_path` unconditionally then announces "Report file: None" and
+        never says why, so the answer, the thing that survived, arrives next
+        to a lie. Or **no document was ever asked for** (#84), where the
+        write-failed wording would report a failure that did not happen. So
+        the path is stated when there is one, the absence is named for what
+        it is when there is not, and either way the answer is delivered —
+        which is the whole point of staying DONE.
 
         A job that did NOT reach an answer can still have left files behind
         (#41: the manager collects them at every terminal). Announcing the
@@ -160,6 +164,12 @@ class JobNotificationMiddleware(AgentMiddleware):
         lines = [f"Job {job.job_id[:8]} ({job.query[:60]!r}) is DONE."]
         if job.report_path:
             lines.append(f"Report file: {job.report_path}")
+        elif not job.deliverable_expected:
+            # No file, and no failure: none was asked for (#84). The branch
+            # below would report a write that never happened, which is the
+            # same class of untruth as announcing a cancellation as a failure.
+            lines.append("No file was written and none was asked for — do not "
+                         "mention a document, and do not apologise for it.")
         else:
             reason = job.error or "the deliverable could not be written"
             lines.append(f"No report file was saved ({reason}) — say so, then "

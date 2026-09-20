@@ -44,6 +44,11 @@ class EvalCase:
     #: reach (#61): a step planned for a request it does not serve delivers
     #: the wrong file, and the plan is where that is visible.
     must_exclude: tuple[str, ...] = ()
+    #: Should this request leave a document behind (#84)? None makes no
+    #: claim. It is the case's own reading of the request, deliberately not
+    #: read back off the job: a run records what it decided, and "was that
+    #: the right decision" is a question only the request can answer.
+    expect_document: bool | None = None
     tiers: tuple[str, ...] = BOTH
     inputs: dict = field(default_factory=dict)
     note: str = ""
@@ -78,18 +83,25 @@ GOLDEN_CASES: tuple[EvalCase, ...] = (
         id="direct_capabilities",
         query="what can you do?",
         expect_route="direct",
-        note="a question about the assistant itself needs no capability at all",
+        expect_document=False,
+        note=(
+            "a question about the assistant itself needs no capability at all "
+            "— and no document either: the file it used to leave was a chat "
+            "turn with a provenance section stapled to it (#84)"
+        ),
     ),
     EvalCase(
         id="direct_greeting",
         query="hello there",
         expect_route="direct",
-        note="a greeting must not cost a planning round-trip",
+        expect_document=False,
+        note="a greeting must not cost a planning round-trip, nor leave a file",
     ),
     EvalCase(
         id="direct_identity",
         query="who are you, and how do you work?",
         expect_route="direct",
+        expect_document=False,
     ),
     EvalCase(
         id="direct_thanks",
@@ -145,6 +157,7 @@ GOLDEN_CASES: tuple[EvalCase, ...] = (
         ),
         expect_route="plan",
         min_steps=1,
+        expect_document=True,
         must_exclude=("read_files",),
         note=(
             "no file was named, so the step that reads one must be dropped as "

@@ -230,6 +230,43 @@ async def test_a_document_that_cannot_be_produced_is_refused_by_both_backings(
 
 
 @pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
+async def test_a_job_that_wanted_no_document_reads_the_same_on_both_backings(
+    store, checkpointer, tmp_path, over_http
+):
+    """`formats=[]` is an ask the port has to carry, and the *absence* it
+    produces is one a front-end has to be able to name (#84).
+
+    Both halves cross HTTP here. The ask must survive as `[]` and not as
+    `null` — a JSON client that collapses them turns "no document" into "you
+    decide", and the job silently gets a file. And the answer must be the
+    same three facts on both sides: no report (None, not an exception — there
+    genuinely is none), no error, and `deliverable_expected` False saying
+    which absence it is. A caller that has to ask which backing it holds
+    before it can say why there is no file is a caller written against two
+    ports.
+    """
+    service = _service_over(store, checkpointer, tmp_path)
+    client = daemon_client_over(create_api(service)) if over_http else service
+    try:
+        launched = await client.launch_job("just answer me", formats=[])
+        job = await wait_done(client, launched["job_id"])
+
+        assert job["formats"] == []
+        assert job["deliverable_expected"] is False
+        assert job["report_path"] is None and job["error"] is None
+        assert job["final_answer"]                  # the answer is not the casualty
+        assert await client.get_report(job["job_id"]) is None
+        assert await client.list_outputs(job["job_id"]) == []
+
+        # ...while saying nothing still lets the run decide, on both backings
+        silent = await wait_done(client, (await client.launch_job("compare them"))["job_id"])
+        assert silent["formats"] is None and silent["deliverable_expected"] is True
+        assert silent["report_path"] is not None
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
 async def test_a_binary_deliverable_is_refused_the_same_way_by_both_backings(
     store, checkpointer, tmp_path, over_http
 ):

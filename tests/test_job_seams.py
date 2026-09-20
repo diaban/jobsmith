@@ -152,7 +152,8 @@ async def test_a_broken_runner_fails_the_job_rather_than_the_caller(tmp_path):
 async def test_resuming_goes_through_the_runner_port_too(tmp_path):
     """A resume asks the runner what is still pending and re-enters it — no
     graph, no checkpoint API, nothing the manager knows about LangGraph."""
-    mgr = make_manager(tmp_path, Terminal("answer", "Finished on the second try.", None),
+    mgr = make_manager(tmp_path, PlanReady(PLAN),
+                       Terminal("answer", "Finished on the second try.", None),
                        pending=("cap_alpha",))
     job = await mgr.create_job("resume me")
     await mgr.cancel_job(job.job_id)
@@ -249,7 +250,8 @@ async def test_how_many_deliverables_a_job_has_is_the_reporter_s_business(tmp_pa
                               role="alternate")]
 
     reporter = TwoFormats()
-    mgr = make_manager(tmp_path, Terminal("answer", "Done.", None), reporter=reporter)
+    mgr = make_manager(tmp_path, PlanReady(PLAN), Terminal("answer", "Done.", None),
+                       reporter=reporter)
     job = await mgr.create_job("q")
     done = await mgr.run_job(job.job_id)
 
@@ -274,7 +276,8 @@ async def test_a_failed_report_write_leaves_the_job_done_and_persisted(tmp_path)
         def write(self, job, directory):
             raise OSError("No space left on device")
 
-    mgr = make_manager(tmp_path, Terminal("answer", "The answer.", None), reporter=Boom())
+    mgr = make_manager(tmp_path, PlanReady(PLAN), Terminal("answer", "The answer.", None),
+                       reporter=Boom())
     job = await mgr.create_job("q")
     done = await mgr.run_job(job.job_id)
 
@@ -300,7 +303,7 @@ async def test_deliverables_already_written_survive_a_later_failure(tmp_path):
         def write(self, job, directory):
             raise RuntimeError("renderer exploded")
 
-    mgr = make_manager(tmp_path, Terminal("answer", "The answer.", None),
+    mgr = make_manager(tmp_path, PlanReady(PLAN), Terminal("answer", "The answer.", None),
                        reporter=MultiReporter([MarkdownReport(), Boom()]))
     job = await mgr.create_job("q")
     done = await mgr.run_job(job.job_id)

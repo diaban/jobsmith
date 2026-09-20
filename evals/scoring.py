@@ -391,13 +391,52 @@ def check_grounding_reaches_reasoning(case: EvalCase, obs: Observation) -> Check
 # ---------------------------------------------------------------- deliverable
 
 def _report_applies(case: EvalCase, obs: Observation, name: str) -> Check | None:
+    """Is there a deliverable for this run to be scored on?
+
+    The fourth condition is #84's, and it is the one that is not about how
+    the run *ended*: a run is asked for a document, or it is not. A request
+    that named `formats: []` and a run that answered with no plan both leave
+    no file — deliberately — and scoring a document that was never going to
+    exist is how a check stops meaning anything. `no_unwanted_document` is
+    what scores those runs, on the property they actually have.
+    """
     if case.expect_terminal != "answer":
         return _skip(name, "case expects no deliverable")
     if obs.error:
         return _skip(name, "run did not complete")
     if obs.terminal_kind != "answer":
         return _skip(name, "the run produced no answer to report")
+    if case.expect_document is False or not obs.deliverable_expected:
+        return _skip(name, "the run was asked for no document")
     return None
+
+
+def check_document_as_requested(case: EvalCase, obs: Observation) -> Check:
+    """A file exists exactly when the request warranted one (#84).
+
+    The one check here that is scored against the **case** rather than
+    against the run, and it has to be: a job records what it decided, so
+    asking the record whether the decision was right is asking the defect to
+    report itself. `/bg "bonjour"` used to leave a markdown report with an
+    empty plan table and a mermaid diagram of nothing — green end to end,
+    every deliverable check passing, on a file nobody wanted.
+
+    `report_written` cannot ask this. It scores a run that was *meant* to
+    produce a file, which is the half that was never in doubt.
+    """
+    name = "document_as_requested"
+    if case.expect_document is None:
+        return _skip(name, "case makes no claim about a document")
+    if obs.error:
+        return _skip(name, "run did not complete")
+    if obs.terminal_kind is None:
+        return _skip(name, "the run reached no terminal")
+    wrote = bool(obs.report_path)
+    return _check(
+        name, wrote == case.expect_document,
+        f"expected {'a document' if case.expect_document else 'no document'}, "
+        f"{'wrote ' + str(obs.report_path) if wrote else 'wrote none'}",
+    )
 
 
 def check_report_written(case: EvalCase, obs: Observation) -> Check:
@@ -588,6 +627,8 @@ def check_refusal_declared(case: EvalCase, obs: Observation) -> Check:
         return _skip(name, "run did not complete")
     if obs.terminal_kind != TERMINAL_UNANSWERED:
         return _skip(name, "the run answered")
+    if not obs.deliverable_expected:
+        return _skip(name, "the run was asked for no document")
     if not obs.report_text:
         return _check(name, False, "no deliverable to declare it in")
     return _check(name, _deliverable(obs).contains(UNANSWERED_NOTICE),
@@ -685,6 +726,7 @@ CHECKS: tuple[Callable[[EvalCase, Observation], Check], ...] = (
     check_steps_all_ok,
     check_grounding_reaches_reasoning,
     check_report_written,
+    check_document_as_requested,
     check_report_title,
     check_report_answer,
     check_report_provenance,
@@ -711,6 +753,7 @@ CHECK_NAMES: tuple[str, ...] = (
     "steps_all_ok",
     "grounding_reaches_reasoning",
     "report_written",
+    "document_as_requested",
     "report_title",
     "report_answer",
     "report_provenance",

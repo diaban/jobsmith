@@ -86,7 +86,7 @@ class StoreJobRepository:
             inputs=s.get("inputs") or {},
             document_name=s.get("document_name") or "",
             document_title=s.get("document_title") or "",
-            formats=list(s.get("formats") or []),   # absent on records before #55
+            formats=_stored_formats(s),
             session_id=s.get("session_id"),
             created_at=s.get("created_at", ""),
             updated_at=s.get("updated_at", ""),
@@ -95,9 +95,33 @@ class StoreJobRepository:
             final_answer=s.get("final_answer"),
             error=s.get("error"),
             outputs=[JobOutput(**o) for o in (s.get("outputs") or [])],
+            deliverable_expected=bool(s.get("deliverable_expected", True)),
             announced=bool(s.get("announced")),
             usage=s.get("usage") or {},      # absent on records written before #2
         )
+
+
+def _stored_formats(summary: dict[str, Any]) -> list[str] | None:
+    """`Job.formats` as it was recorded — keeping `None` apart from `[]` (#84).
+
+    The two are different asks now ("you decide" and "no document"), so the
+    obvious `list(s.get("formats") or [])` would read every silent job as one
+    that refused a file. Two vintages of record have to survive it:
+
+    - **before #55** the key is absent — `None`, which is what it meant;
+    - **between #55 and #84** it is `[]` for a job that named no format, which
+      also meant `None`. Such a record is recognised by carrying no
+      `deliverable_expected` key at all, so the empty list is read as silence
+      rather than as a refusal it could not yet express.
+
+    Anything a record written since says, it says on purpose.
+    """
+    formats = summary.get("formats")
+    if formats is None:
+        return None
+    if not formats and "deliverable_expected" not in summary:
+        return None                     # a pre-#84 record: empty meant unstated
+    return list(formats)
 
 
 __all__ = ["JobRepository", "StoreJobRepository"]

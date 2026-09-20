@@ -30,7 +30,7 @@ import sys
 from ..agents import agent_names
 from ..service import BinaryDeliverable, ServiceUnavailable
 from .client import DEFAULT_URL, AgentClient, open_client
-from .repl import run_repl, show_job
+from .repl import no_document_note, run_repl, show_job
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -165,7 +165,12 @@ async def cmd_report(client: AgentClient, args) -> int:
         print(f"{refused}\n(jobsmith outputs {args.job_id} lists the files)")
         return 1
     if report is None:
-        print("no report available (is the job done?)")
+        # Three absences, one of them not a problem at all (#84). "is the job
+        # done?" is the wrong question for a run that finished and answered
+        # and was asked for no file: it sends the reader back to wait for
+        # something that already happened.
+        print(no_document_note(job) if job is not None and not job.get(
+            "deliverable_expected", True) else "no report available (is the job done?)")
         return 1
     print(report)
     return 0

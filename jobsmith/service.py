@@ -226,7 +226,7 @@ class AgentService(ABC):
         inputs: dict | None = None,
         document_name: str = "",
         document_title: str = "",
-        formats: Sequence[str] = (),
+        formats: Sequence[str] | None = None,
     ) -> dict:
         """Launch a job directly — the door the chat's approval does not use.
 
@@ -234,6 +234,11 @@ class AgentService(ABC):
         caller of the port and not a privileged one; a front-end that can
         launch a job but not name what it produces would send its users back
         through the conversation to get a filename.
+
+        `formats` has three states and the third is #84's: `None` leaves the
+        choice to the run, a list of names asks for exactly those, and **`[]`
+        asks for no document at all** — an answer, no file. It travels as
+        `null` / `[]` over HTTP, so both backings say the same thing.
 
         A name that is not a filename and a format nothing can render here are
         refused as `ValueError` on BOTH backings — the remote one maps the
@@ -257,10 +262,23 @@ class AgentService(ABC):
 
     @abstractmethod
     async def get_report(self, job_id: str) -> str | None:
-        """The main deliverable as text, or None when the job has none yet.
+        """The main deliverable as text, or None when the job has none.
 
-        Raises `BinaryDeliverable` when it has one and it is bytes — both
-        backings, same message.
+        `None` is three different facts and this method deliberately does not
+        try to be four values (#84). It is the answer to "give me the text of
+        the report", and there is no text in any of them:
+
+        - the run has not finished, or stopped before it could answer;
+        - it answered and the **write failed** — `error` on the job record;
+        - **no document was ever wanted** — `deliverable_expected` is False
+          on the record, and nothing went wrong.
+
+        The fact travels on the job, not as a fourth exception: every caller
+        of this method already holds the record (`jobsmith report` resolves
+        the job first, `/report` loads it for the media type, the REPL and
+        the TUI have it on screen), and a refusal is for a case where `None`
+        would be *false*. `BinaryDeliverable` is exactly that case and stays
+        the only one: the job HAS a report, on disk, and it is not text.
         """
         ...
 
@@ -402,7 +420,7 @@ class LocalAgentService(AgentService):
     # -- jobs --
 
     async def launch_job(self, query, *, session_id=None, inputs=None,
-                         document_name="", document_title="", formats=()) -> dict:
+                         document_name="", document_title="", formats=None) -> dict:
         job = await self.manager.create_job(
             query, inputs, session_id=session_id, document_name=document_name,
             document_title=document_title, formats=formats)
@@ -445,6 +463,10 @@ class LocalAgentService(AgentService):
 
     async def get_report(self, job_id: str) -> str | None:
         """The main deliverable as text — see the port for what None means.
+
+        A job that was never going to write one takes the first branch, like
+        every other absence: which absence it was is `deliverable_expected`
+        on the record, not a value here.
 
         Two ways to learn the file is not text, and both answer the same
         refusal: the format it declares, which is the cheap one, and the
