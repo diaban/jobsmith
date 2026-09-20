@@ -34,7 +34,7 @@ class FakeRunner:
         self.calls: list[tuple[str, str, dict]] = []
         self.resumed: list[str] = []
 
-    async def stream(self, job_id, query, inputs):
+    async def stream(self, job_id, query, inputs, formats=None):
         self.calls.append((job_id, query, inputs))
         for update in self.updates:
             yield update

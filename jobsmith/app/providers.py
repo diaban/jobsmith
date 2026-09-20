@@ -130,6 +130,13 @@ class KeywordLLM:
     # exercise the "could not answer" terminal (#59) end to end, exactly as
     # DIRECT_WORDS lets it exercise triage.
     MISSING_MATERIAL_WORDS = ("attached", "the file i sent", "the document i gave")
+    # A request that names the file it wants. The fake cannot read intent, so
+    # it recognises the one shape it can — the format's own name in the
+    # request — exactly as DIRECT_WORDS lets it exercise triage and
+    # MISSING_MATERIAL_WORDS the refusal terminal. The names are the
+    # deployment's own (`available_formats`), read back out of the rendered
+    # prompt, so this stays true of a build that ships another Reporter.
+    FORMAT_LINE = re.compile(r"^- ([a-z][a-z0-9_]*)$", re.MULTILINE)
     MODEL = "fake-keyword-llm"
 
     @staticmethod
@@ -149,6 +156,14 @@ class KeywordLLM:
         system = messages[0]["content"]
         user = messages[-1]["content"]
 
+        if "document step" in system:
+            named = [
+                name for name in self.FORMAT_LINE.findall(system)
+                if name in user.lower()
+            ]
+            if named:
+                return json.dumps({"document": "named", "formats": named})
+            return json.dumps({"document": "unspecified"})
         if "triage" in system.lower():
             direct = any(w in user.lower() for w in self.DIRECT_WORDS)
             return json.dumps({

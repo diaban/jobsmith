@@ -156,6 +156,15 @@ class AgentState(TypedDict, total=False):
     # --- Routing (triage decision) ---
     route: str | None           # "plan" | "direct" (see core/router.py)
 
+    # --- What document this run is to leave behind (see core/document.py) ---
+    # Seeded at entry with what the CALLER already asked for (`jobs/runner.py`
+    # passes the job's own `formats`), so the three states are the ones
+    # `Job.formats` has: a list of format names, `[]` for "no document at
+    # all", and absent for "nobody has said". `document_intent` writes it only
+    # in the last case — which is what keeps a caller that spoke authoritative
+    # — and `jobs/runner.py` reads the write back off that node's name.
+    document_formats: list[str] | None
+
     # --- Planner output ---
     plan: Plan | None
 

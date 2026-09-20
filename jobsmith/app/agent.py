@@ -27,7 +27,7 @@ from ..core.builder import AgentBuilder
 from ..core.deps import Deps
 from ..core.registry import CapabilityRegistry
 from ..jobs.manager import JobManager
-from ..jobs.report import compose_reporters, parse_report_formats
+from ..jobs.report import available_formats, compose_reporters, parse_report_formats
 from .persistence import open_persistence, pick_db
 from .providers import make_chat_model, make_llm, pick_provider
 
@@ -118,6 +118,12 @@ async def build_app(
         graph = AgentBuilder(
             Deps(llm=llm), registry,
             profile=definition.profile, checkpointer=checkpointer,
+            # What a request may ask its document to be, here (#90). The
+            # engine reads the request for a format when the caller named
+            # none, and it may only choose among what this deployment can
+            # actually render — `.[pdf]` needs pango where the daemon runs,
+            # so the list is composed here and nowhere in `core/`.
+            document_formats=available_formats(registry),
         ).build()
         # The registry is passed so capabilities present their own results;
         # the formats asked for are composed into one reporter, whose first

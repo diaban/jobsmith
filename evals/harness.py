@@ -32,6 +32,7 @@ from typing import Any
 from jobsmith.app.agent import build_app, pick_report_formats
 from jobsmith.app.providers import KeywordChatModel, make_llm, pick_provider
 from jobsmith.core.executor import Executor
+from jobsmith.jobs.report import available_formats
 
 from .cases import FIXTURE_NAME, FIXTURE_REF, FIXTURE_TEXT, EvalCase
 from .deliverable import ensure_readable
@@ -64,6 +65,11 @@ class Observation:
     #: run instead of scoring it on a file it was never going to write.
     deliverable_expected: bool = True
     report_format: str = "markdown"   # which Reporter wrote it (checks read through it)
+    #: What this deployment could have rendered (`available_formats`). A case
+    #: asking for a format nothing here can write is skipped rather than
+    #: failed — `.[pdf]` needs pango where the run happens, and that is a
+    #: fact about the machine, not about the prompt (#90).
+    formats_available: tuple[str, ...] = ()
     material: str = ""                # the merged context the generator was handed
     registry: tuple[str, ...] = ()
     duration_s: float = 0.0
@@ -135,10 +141,11 @@ def resolve_inputs(inputs: dict[str, Any], fixture: Path | None) -> dict[str, An
 
 async def run_case(
     app: Any, case: EvalCase, registry: tuple[str, ...], attempt: int = 1,
-    fixture: Path | None = None,
+    fixture: Path | None = None, formats: tuple[str, ...] = (),
 ) -> Observation:
     """One case, one job, through the whole graph."""
-    obs = Observation(case_id=case.id, query=case.query, attempt=attempt, registry=registry)
+    obs = Observation(case_id=case.id, query=case.query, attempt=attempt,
+                      registry=registry, formats_available=formats)
     started = time.perf_counter()
     try:
         job = await app.manager.create_job(
@@ -209,12 +216,17 @@ async def run_suite(
             report_format=report_format,
         )
         registry = registry_names(app)
+        # Composed once, like the registry: it is what the engine's own
+        # document step was given to choose from (#90), and a check measuring
+        # a format this deployment cannot render measures the machine.
+        renderable = tuple(available_formats(app.registry))
         try:
             semaphore = asyncio.Semaphore(max(1, concurrency))
 
             async def one(case: EvalCase, attempt: int) -> Observation:
                 async with semaphore:
-                    return await run_case(app, case, registry, attempt, fixture)
+                    return await run_case(app, case, registry, attempt, fixture,
+                                          renderable)
 
             observations = await asyncio.gather(*[
                 one(case, attempt)

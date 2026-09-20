@@ -272,7 +272,12 @@ you : compare the chairs for a home office, one page. Call it
 
 Say nothing and nothing is silently decided for you either: the model proposes
 a short name from the subject, the title falls back to the request, and the
-formats to whatever the deployment composed. **A name is not a title and
+formats to whatever the deployment composed. And you do not have to go through
+the conversation to be heard — `jobsmith run "compare X and Y, give me that as
+a PDF"` gets a PDF, because the **engine** reads the request for a format when
+whoever launched the job named none. It only ever fills that silence: a format
+you did ask for is never second-guessed, and one this deployment cannot render
+is never invented. **A name is not a title and
 neither is a format** — asking for one never quietly answers the others.
 
 The name is a *filename*, never a location: no directories, no traversal, no
@@ -439,8 +444,8 @@ still listed as an output.
 ### The graph
 
 ```
-validate_input → router ─(direct | empty registry)→ direct_answer ┐
-                   └(plan)→ planner ─(nothing applicable)→ ───────┤
+validate_input → document_intent → router ─(direct | empty registry)→ direct_answer ┐
+                                     └(plan)→ planner ─(nothing applicable)→ ───────┤
                               └→ executor_dispatch ⇄ {cap_<name> × registry}
                                 ↓ (all done)                     ↓
                           merge_results → generation → validate_output
@@ -453,6 +458,13 @@ errors: execution_error → escalate (some result ok) | user_error (none) → EN
   LLM or parse error — except with an empty registry, where there is nothing to
   plan with and `direct` is chosen structurally, without an LLM call. A new
   route is one entry in `Router.routes` plus a node.
+- **Document intent** — a second dedicated decision node, answering what file
+  the request asked for. It runs **only when the caller named no format**, that
+  gate being structural (no model call at all otherwise), chooses among the
+  formats this deployment can actually render, and writes nothing when the
+  request said nothing — so any error, any answer it cannot use, leaves the run
+  exactly as it was. What it decides reaches the job record through the runner
+  and the manager, never from inside the node.
 - **Planner** — renders its prompt from the registry, validates the LLM's JSON
   DAG (names, applicability, dangling dependencies, Kahn cycle check).
 - **Executor** — computes the ready capabilities of each wave and returns

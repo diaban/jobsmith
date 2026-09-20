@@ -49,6 +49,13 @@ class EvalCase:
     #: read back off the job: a run records what it decided, and "was that
     #: the right decision" is a question only the request can answer.
     expect_document: bool | None = None
+    #: The format the request asked for IN WORDS (#90) — "the engine reads
+    #: the sentence" is only measurable against the case, for the same reason
+    #: `expect_document` is: the job records what it decided. `None` makes no
+    #: claim, and a format this deployment cannot render is skipped rather
+    #: than failed (`.[pdf]` needs pango where the run happens), exactly as an
+    #: unregistered capability is in `must_include`.
+    expect_format: str | None = None
     tiers: tuple[str, ...] = BOTH
     inputs: dict = field(default_factory=dict)
     note: str = ""
@@ -177,6 +184,26 @@ GOLDEN_CASES: tuple[EvalCase, ...] = (
 
     # ---------------- the shape of the deliverable ----------------
     EvalCase(
+        id="plan_html_page_requested",
+        query=(
+            "compare two ways of scheduling recurring background work, "
+            "recommend one, and give me the result as an html page I can "
+            "open in a browser"
+        ),
+        expect_route="plan",
+        min_steps=1,
+        expect_document=True,
+        expect_format="html",
+        note=(
+            "the request names its format in words and nothing else reads it "
+            "(#90): the chat model fills that argument, so `jobsmith run`, "
+            "`/bg` and `POST /jobs` all delivered markdown to someone who "
+            "asked for something else. html rather than pdf on purpose — pdf "
+            "needs pango where the run happens, and a golden case must not "
+            "score a deployment"
+        ),
+    ),
+    EvalCase(
         id="plan_printable_one_pager",
         query=(
             "research how teams roll out feature flags safely, compare the "
@@ -186,6 +213,7 @@ GOLDEN_CASES: tuple[EvalCase, ...] = (
         expect_route="plan",
         min_steps=1,
         must_exclude=("slide_deck",),
+        expect_format="pdf",
         tiers=(LLM,),
         note=(
             "a document to read is not a presentation: this request was "
