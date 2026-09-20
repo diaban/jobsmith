@@ -7,13 +7,12 @@ line. This profile states what the material actually is and asks for a
 written deliverable rather than a chat turn.
 
 **And it says who reads it** (#58). Every step upstream of this prompt writes
-for the *run*: `research` produces notes, `analysis` produces findings, and
-`critique` is agent-facing by design — "challenge the material, suggest
-improvements" is a memo about the work, addressed to whoever will redo it.
-Handed to a generator that was told only to answer, that material comes back
-out as its own shape: a deliverable whose sections were *Contraintes de
-livrable*, *État actuel et risques*, *Prochaines étapes*, given to someone who
-asked about a subject and does not know a DAG exists.
+for the *run*: `research` produces notes and `analysis` produces findings,
+and `critique` used to produce a memo about the work, addressed to whoever
+would redo it. Handed to a generator that was told only to answer, that
+material comes back out as its own shape: a deliverable whose sections were
+*Contraintes de livrable*, *État actuel et risques*, *Prochaines étapes*,
+given to someone who asked about a subject and does not know a DAG exists.
 
 **And it says what the document must contain** (#73). Naming the audience and
 banning a register was not enough, and the run that showed it is worth
@@ -23,8 +22,14 @@ deliverable was `critique`'s methodology review rendered as a document — a
 data-collection plan and a blank template, closing with an offer to prepare
 the template. Not one line of it was about the subject. A model given
 prohibitions and no obligation fills the gap with the best-structured thing it
-can see, so the obligation is now stated first, and `critique` is no longer
-one of the things it can see (`CritiqueCapability.render_context`).
+can see, so the obligation is stated first.
+
+**And it says where a caveat goes** (#82). #73 answered the run above by
+withholding `critique` from this prompt, which left a step nothing consumed.
+The step now checks the findings against the material instead of reviewing
+the work, so it is ordinary subject material again — and the one thing that
+makes such material useful rather than a second section of hedging is *where*
+it lands, which is the bullet this prompt gained.
 """
 from __future__ import annotations
 
@@ -50,6 +55,14 @@ GLOBAL_GENERATOR_PROMPT = (
     "on the statement it bears on ('capacity given as X, unconfirmed'), never "
     "as a preamble that disqualifies everything below it. A qualified answer "
     "is an answer.\n"
+    # #82: the material now carries a block of caveats, and where they go is
+    # the whole of what makes them useful rather than another section for the
+    # reader to wade through. Phrased by what the block *is* rather than by
+    # which step wrote it — the generator reads material, not a registry.
+    "- A block of caveats — claims the material does not support, points "
+    "where it disagrees with itself — is evidence about the subject: put each "
+    "one on the sentence that makes the claim, and never collect them into a "
+    "section about the material or its limits.\n"
     "- Write about the subject only. No section on the state of the work, what "
     "is still missing, what would be needed to go further, or options for the "
     "reader to choose between; no placeholders or templates to fill in; no "

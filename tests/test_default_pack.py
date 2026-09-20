@@ -21,7 +21,7 @@ PACK_SCRIPT = {
     "key aspects": '{"aspects": ["history", "impact"]}',
     "research notes": "Notes: the history is long; the impact is broad.",
     "You are an analyst": "Findings: impact outweighs history.",
-    "critical reviewer": "Gap: no numbers back the impact claim.",
+    "checking the findings": "- The impact claim: the notes give no numbers for it.",
 }
 
 
@@ -71,20 +71,24 @@ async def test_pack_chain_end_to_end(checkpointer):
     assert ctx.index("# Research notes") < ctx.index("# Analysis")
 
 
-async def test_the_internal_review_does_not_reach_the_generator(checkpointer):
-    """#73 reverses #58's second decision, on the evidence of one run.
+async def test_the_caveats_reach_the_generator_as_subject_material(checkpointer):
+    """#82: the step has a consumer that acts on it again — because what it
+    produces changed.
 
     #58 kept `critique` in the generator's material and labelled the block
-    ("Internal review of the work — not of the subject"), the generator's
-    prompt saying to use it as evidence and never as voice. A later run
-    falsified that: handed hedged notes and one impeccably structured
-    methodology review, the model wrote the review — the deliverable's
-    sections matched `critique`'s nearly one for one, and the sourced
-    specifications upstream never crossed. A label says what a block *is*; it
-    does not stop a model copying the best-structured thing it can see.
+    ("Internal review of the work — not of the subject"); #73 withdrew it,
+    on the evidence of a run where the model wrote the review instead of the
+    answer — a label says what a block *is* and does not stop a weak model
+    copying the best-structured thing it can see. What that left was a step
+    making an LLM call per run whose output nothing read.
 
-    So the step still runs, still reports ok, still reaches the human through
-    `render_report` — and contributes nothing the generator can copy.
+    So it stopped reviewing the work: it checks the findings against the
+    material, which is ordinary material about the subject, with the ordinary
+    consumer. What is asserted here is the wiring — the block reaches the
+    generator under a heading that no longer claims to be about the work, and
+    the human's copy is unchanged. Whether the deliverable then copies it is
+    not a unit test's question; it is `report_answers_request` and
+    `report_reader_facing` in `evals/`, measured before and after.
     """
     llm = FakeLLM({
         "planner": plan_json(
@@ -102,20 +106,67 @@ async def test_the_internal_review_does_not_reach_the_generator(checkpointer):
         {"query": "study X in depth", "job_id": "p3"},
         config={"configurable": {"thread_id": "p3"}},
     )
-    review = PACK_SCRIPT["critical reviewer"]
-    assert out["results"]["critique"]["ok"] is True         # it ran, and it is kept
-    assert review not in out["merged_context"]              # and the generator never saw it
+    caveats = PACK_SCRIPT["checking the findings"]
+    assert out["results"]["critique"]["ok"] is True
+    assert caveats in out["merged_context"]
     assert "Internal review" not in out["merged_context"]
+    assert CritiqueCapability.HEADING in out["merged_context"]
+    assert "OF THE WORK" not in CritiqueCapability.HEADING.upper()
 
     generator_call = next(
         c for c in llm.calls if "ONLY the provided" in c["messages"][0]["content"]
     )
-    assert review not in generator_call["messages"][-1]["content"]
+    assert caveats in generator_call["messages"][-1]["content"]
+    # and the pack's own generator prompt says what to do with such a block:
+    # on the statement it bears on, never as a section of its own. (This graph
+    # is built without a profile, so the call above carries the CORE default —
+    # the rule belongs to the pack that produces the block, not to the
+    # framework, which has no notion of a `critique` step.)
+    assert "block of caveats" in GLOBAL_GENERATOR_PROMPT
+    assert "never collect them into a section" in GLOBAL_GENERATOR_PROMPT
 
-    # the human still gets it, under the label that says what it is
+    # the human's copy is unchanged, under the same label
     report = CritiqueCapability(llm).render_report(out["results"]["critique"])
     assert report is not None
-    assert CritiqueCapability.HEADING in report and review in report
+    assert CritiqueCapability.HEADING in report and caveats in report
+
+
+async def test_the_check_sees_the_findings_and_the_notes_behind_them():
+    """You cannot say a claim is unsupported while seeing only the claim.
+
+    `SingleStepCapability._material` takes the FIRST upstream that matches —
+    a priority chain over restatements of one thing (the analysis, else the
+    notes it came from), which is right for a step reasoning onward and wrong
+    for one checking one against the other. Same distinction `research`'s
+    `GROUNDING` draws against the same base class (#81).
+    """
+    llm = FakeLLM(PACK_SCRIPT)
+    await CritiqueCapability(llm).build().ainvoke({
+        "query": "study X", "inputs": {},
+        "results": {
+            "analysis": {"ok": True, "data": {"analysis": "impact outweighs history"}},
+            "research": {"ok": True, "data": {"notes": "the history is long [a.md]"}},
+        },
+    })
+    user = llm.calls[0]["messages"][-1]["content"]
+    assert "impact outweighs history" in user
+    assert "the history is long [a.md]" in user, "the claim without its source is uncheckable"
+    assert user.index("[analysis") < user.index("[research")
+
+
+async def test_the_check_degrades_to_whatever_upstream_survived():
+    """One block, no block: the base class's fallback still applies."""
+    llm = FakeLLM(PACK_SCRIPT)
+    capability = CritiqueCapability(llm)
+    await capability.build().ainvoke({
+        "query": "study X", "inputs": {},
+        "results": {"analysis": {"ok": False, "error": "llm down"},
+                    "research": {"ok": True, "data": {"notes": "the notes"}}},
+    })
+    assert "the notes" in llm.calls[0]["messages"][-1]["content"]
+
+    await capability.build().ainvoke({"query": "study X", "inputs": {}})
+    assert "no upstream material" in llm.calls[-1]["messages"][-1]["content"]
 
 
 async def test_every_material_step_is_told_to_work_on_the_subject_alone():
