@@ -427,7 +427,10 @@ async def test_a_job_whose_report_failed_is_announced_honestly(
     assert "None" not in notice.content                     # never a null path
     assert "No report file was saved" in notice.content
     assert "No space left on device" in notice.content      # why, in the notice
-    assert done.final_answer in notice.content              # the answer survived
+    # The answer survived — into the TURN, not into the notice (#85). There
+    # is no file to fall back on here, so it is delivered whatever its length.
+    assert done.final_answer not in notice.content
+    assert "ALREADY been shown" in notice.content
 
 
 def test_the_notice_names_files_written_before_the_failure():
@@ -437,12 +440,12 @@ def test_the_notice_names_files_written_before_the_failure():
               final_answer="The answer.",
               error="the html deliverable could not be written: OSError: nope",
               outputs=[JobOutput(path="/tmp/abcdef0123.md", role="alternate")])
-    notice = JobNotificationMiddleware._notice_for(job)
+    notice = JobNotificationMiddleware._notice_for(job, delivered=True)
 
     assert "None" not in notice
     assert "/tmp/abcdef0123.md" in notice
     assert "html deliverable could not be written" in notice
-    assert "The answer." in notice
+    assert "The answer." not in notice and "ALREADY been shown" in notice
 
 
 def test_a_failed_job_announces_the_files_its_steps_left_behind():
@@ -453,7 +456,7 @@ def test_a_failed_job_announces_the_files_its_steps_left_behind():
               error="the model refused",
               outputs=[JobOutput(path="/tmp/abcdef0123/chart.svg", format="svg",
                                  role="annex", produced_by="chart")])
-    notice = JobNotificationMiddleware._notice_for(job)
+    notice = JobNotificationMiddleware._notice_for(job, delivered=False)
 
     assert "FAILED: the model refused" in notice          # why, first
     assert "/tmp/abcdef0123/chart.svg" in notice
@@ -464,7 +467,7 @@ def test_a_failed_job_announces_the_files_its_steps_left_behind():
 def test_a_failed_job_with_no_files_is_announced_exactly_as_before():
     job = Job(job_id="abcdef0123", status=JobStatus.FAILED, query="q",
               error="the model refused")
-    notice = JobNotificationMiddleware._notice_for(job)
+    notice = JobNotificationMiddleware._notice_for(job, delivered=False)
     assert notice == "Job abcdef01 ('q') FAILED: the model refused"
 
 
@@ -476,7 +479,7 @@ def test_a_cancelled_job_is_announced_as_cancelled_not_failed():
               error="1 file(s) a step reported producing are missing: chart → gone.svg",
               outputs=[JobOutput(path="/tmp/abcdef0123/chart.svg", format="svg",
                                  role="annex", produced_by="chart")])
-    notice = JobNotificationMiddleware._notice_for(job)
+    notice = JobNotificationMiddleware._notice_for(job, delivered=False)
 
     assert "was CANCELLED before it finished" in notice
     assert "FAILED" not in notice
@@ -547,7 +550,7 @@ def test_the_notice_still_gives_the_path_when_there_is_one():
     job = Job(job_id="abcdef0123", status=JobStatus.DONE, query="q",
               final_answer="The answer.",
               outputs=[JobOutput(path="/tmp/abcdef0123.md")])
-    notice = JobNotificationMiddleware._notice_for(job)
+    notice = JobNotificationMiddleware._notice_for(job, delivered=False)
     assert "Report file: /tmp/abcdef0123.md" in notice
     assert "No report file" not in notice
 
