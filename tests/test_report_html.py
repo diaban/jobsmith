@@ -163,6 +163,107 @@ def test_an_unclosed_fence_does_not_swallow_the_rest_as_markup():
     assert "<pre><code>&lt;b&gt;x&lt;/b&gt;</code></pre>" in html
 
 
+# ------------------------------------------------------------- nested lists
+
+
+def lists_of(html: str) -> list[str]:
+    """The list structure alone: every `ul`/`ol`/`li` tag in document order,
+    an end tag written `/ul`. What nesting *is*, with the prose taken out."""
+    found: list[str] = []
+
+    class Collect(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            if tag in ("ul", "ol", "li"):
+                found.append(tag)
+
+        def handle_endtag(self, tag):
+            if tag in ("ul", "ol", "li"):
+                found.append("/" + tag)
+
+    Collect().feed(html)
+    return found
+
+
+def test_an_indented_item_is_nested_under_the_one_that_introduces_it():
+    """#76: `line.strip()` before the bullet match lost the indentation, so a
+    three-level specification came out as one flat list and the line that
+    introduced a group became its sibling."""
+    html = markdown_to_html(
+        "- For each chair, obtain:\n"
+        "  - exact name\n"
+        "    - seat height\n"
+        "- Verification plan:\n"
+    )
+    assert lists_of(html) == [
+        "ul",
+        "li", "ul",                       # "obtain:" holds what follows it
+        "li", "ul",
+        "li", "/li",                      # seat height, two levels down
+        "/ul", "/li",
+        "/ul", "/li",
+        "li", "/li",                      # the plan is a sibling of the first
+        "/ul",
+    ]
+    assert "<li>seat height</li>" in html
+
+
+def test_a_flat_list_is_unchanged():
+    """The fix is for the nested case; a list with no indentation must render
+    exactly as it did, byte for byte."""
+    assert markdown_to_html("- a\n- b\n") == "<ul>\n<li>a</li>\n<li>b</li>\n</ul>"
+    assert markdown_to_html("1. a\n2. b\n") == "<ol>\n<li>a</li>\n<li>b</li>\n</ol>"
+
+
+@pytest.mark.parametrize("indent", ["  ", "   ", "\t", " \t"])
+def test_the_indentation_rule_is_two_spaces_or_a_tab_per_level(indent):
+    """Written down, not inferred per document: one level every two spaces, a
+    tab advancing to the next boundary, anything between rounding down."""
+    assert lists_of(markdown_to_html(f"- a\n{indent}- b\n")) == [
+        "ul", "li", "ul", "li", "/li", "/ul", "/li", "/ul"]
+
+
+def test_one_space_is_not_a_level():
+    assert lists_of(markdown_to_html("- a\n - b\n")) == [
+        "ul", "li", "/li", "li", "/li", "/ul"]
+
+
+def test_a_jump_of_several_levels_does_not_unbalance_the_tags():
+    """The depth comes from the stack of open lists, never from the document:
+    an item indented three levels below a flat one opens exactly one."""
+    html = markdown_to_html("- a\n      - way in\n- back\n")
+    assert lists_of(html) == [
+        "ul", "li", "ul", "li", "/li", "/ul", "/li", "li", "/li", "/ul"]
+    assert html.count("<ul>") == html.count("</ul>")
+    assert html.count("<li>") == html.count("</li>")
+
+
+def test_a_list_that_starts_indented_opens_at_the_top_level():
+    assert lists_of(markdown_to_html("    - alone\n")) == ["ul", "li", "/li", "/ul"]
+
+
+def test_a_numbered_sublist_is_a_list_of_its_own_inside_the_item():
+    html = markdown_to_html("- a\n  - b\n  1. c\n")
+    assert lists_of(html) == [
+        "ul", "li",
+        "ul", "li", "/li", "/ul",         # the bullets
+        "ol", "li", "/li", "/ol",         # ...then the numbers, same level
+        "/li", "/ul",
+    ]
+
+
+def test_a_nested_item_is_escaped_like_every_other():
+    """Nesting adds tags of ours; it must add nothing of the model's."""
+    html = markdown_to_html("- a\n  - <script>x</script>\n")
+    assert "script" not in tags_of(html)
+    assert "&lt;script&gt;x&lt;/script&gt;" in html
+
+
+def test_a_nested_list_survives_into_the_printed_page():
+    """The deliverable, not the helper: HTML is what the PDF prints."""
+    page = HtmlReport().render(make_document(answer="- top\n  - under\n"))
+    assert "<li>top\n<ul>\n<li>under</li>\n</ul>\n</li>" in page
+
+
 # ----------------------------------------------------------------- the DAG
 
 
