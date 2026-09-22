@@ -305,8 +305,8 @@ jobsmith outputs <id>            # the report, and the deck as an annex
 It is a **capability, not a report format**, and the difference is the point.
 A report is prose and a Reporter only serializes it; a deck is a different
 document — sections, one idea per slide, bullets, speaker notes — so the deck
-is *designed* by the model as its own step, which is why its tokens show up in
-the plan table like every other step. The written report is still delivered:
+is *designed* by the model as its own step, which is why its tokens are booked
+to it like every other step's. The written report is still delivered:
 the deck is one more thing the job produced, never a substitute for the
 answer. Like the two above, the step is registered only when something can
 render it (`python-pptx`, pure Python, no system libraries).
@@ -332,7 +332,8 @@ when a daemon is running. Writing your own is covered under
 
 ## What a job produces
 
-The deliverable is a markdown file — **the answer first**, provenance after:
+The deliverable is a markdown file, and it is **an answer, not a record of the
+run**:
 
 ````markdown
 # compare hexagonal and layered architectures for an LLM agent
@@ -341,43 +342,34 @@ The deliverable is a markdown file — **the answer first**, provenance after:
 
 ---
 
-## About this job
-
-- **Request**: …
-- **Job**: `a803205bea59412bae2e376a8555ee62`
-- **Started** / **Finished**: …
-- **Usage**: 7 LLM calls — 21,430 in / 5,120 out tokens — ~$0.2352 est. — claude-opus-5
-
-### Steps
-
-| step | depends on | status | usage | finished at |
-|---|---|---|---|---|
-| research | — | ok | 12.4k tok · ~$0.1120 | … |
-| analysis | research | ok | 8.1k tok · ~$0.0790 | … |
-| critique | analysis | ok | 4.9k tok · ~$0.0442 | … |
-
-```mermaid
-flowchart LR
-  research --> analysis
-  analysis --> critique
-```
+_Produced by job a803205bea59412bae2e376a8555ee62 — jobsmith job a803205b shows
+the request, the plan, the steps and what it cost._
 ````
 
-**What it cost is part of the deliverable.** Every LLM call is booked to the
-step that made it, so the report (and `jobsmith job <id>`, and the `/events`
-stream, live while it runs) answers both *what did this cost* and *which step
-spent it*. Prices are a dated snapshot — override them with `$JOBSMITH_PRICES`
-(inline JSON or a path: `{"gpt-5.1": {"input": 1.25, "output": 10.0}}`); a model
-with no price is reported in tokens rather than in an invented dollar figure.
+That last line is the whole of what the file says about itself. The rest — the
+request quoted in full, the timestamps, the session, the token bill, the plan
+table with a per-step cost column, the DAG — is **recorded, not recited**:
+`jobsmith job <id>` and `GET /jobs/{id}` serve it whole, and duplicating it
+into the document was the product talking about itself inside the thing you
+opened to read an answer.
 
-Per-step material is deliberately **not** inlined — it lives in the store, and
-`jobsmith job <id>` or `GET /jobs/{id}` serves it. For a self-contained archive,
-`MarkdownReport(with_annexes=True)` folds it back in as collapsible sections.
+**What it cost is part of the record.** Every LLM call is booked to the step
+that made it, so `jobsmith job <id>` (and the `/events` stream, live while it
+runs) answers both *what did this cost* and *which step spent it*. Prices are a
+dated snapshot — override them with `$JOBSMITH_PRICES` (inline JSON or a path:
+`{"gpt-5.1": {"input": 1.25, "output": 10.0}}`); a model with no price is
+reported in tokens rather than in an invented dollar figure.
+
+Per-step material is deliberately **not** inlined either — it lives in the
+store, and the same two commands serve it. For a self-contained archive, both
+switch back on: `MarkdownReport(with_provenance=True, with_annexes=True)` folds
+the record and the step material into one file.
 
 **Or the same thing as a web page.** `JOBSMITH_REPORT_FORMAT=html` makes the
 deliverable a self-contained HTML file instead — same document, same order
-(answer first, provenance after), no dependency and no network: inline CSS,
-and the plan drawn as an inline SVG since a browser renders no mermaid.
+(the answer, then one line back to the run), no dependency and no network:
+inline CSS, and — with `with_provenance` — the plan drawn as an inline SVG,
+since a browser renders no mermaid.
 
 **Or as a PDF.** `JOBSMITH_REPORT_FORMAT=pdf` prints that very same page:
 `PdfReport` renders what the HTML Reporter renders and hands the string to
@@ -574,6 +566,7 @@ handle per-provider tool formats), the job engine uses a dependency-light
 | extra `.[tui]` | enables `jobsmith ui`; absent, the command says what to install |
 | `$JOBSMITH_THEME` | the UI's theme (default `ember-dark`); `--theme NAME` overrides it, `ctrl+p` switches it for the session |
 | `$JOBSMITH_SYNC_TIMEOUT` | seconds a task may hold the conversation before it is promoted to the background (default `20`). `0` never waits — every task goes to the background, which is what jobsmith did before |
+| `$JOBSMITH_INLINE_ANSWER_MAX` | characters an answer may have and still be written into the conversation word for word when a background job lands (default `2000`). Past it you get the path instead. `0` never writes one — except for a run that produced no file, where the conversation is the only channel there is |
 | `$JOBSMITH_APPROVE_JOBS` | `1` restores the y/N approval card before a task runs. Off by default: the agent says what it is doing, and cancelling is the undo |
 | extra `.[pptx]` | enables the `slide_deck` step — a `.pptx` annex next to the report; absent, the capability is not registered |
 | `--db memory\|<file.db>\|<postgres DSN>` | persistence (default: `$JOBSMITH_DB`, else memory) |
@@ -638,7 +631,7 @@ It scores **properties, never expected text**: the plan only names registered
 capabilities, its DAG is acyclic with satisfiable dependencies, an obviously
 simple message is triaged `direct` and a compound one `plan`, the run reaches
 the terminal it should, every planned step ran and reported success, and the
-deliverable carries a title, the answer and its provenance. Wording may vary
+deliverable carries a title, the answer and the job that produced it. Wording may vary
 freely; structure may not — and neither does the deliverable's format: the
 report checks read the file through a markup stripper, so a markdown run and an
 HTML one score identically. A format whose file is bytes (`pdf`) is refused
