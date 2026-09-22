@@ -106,8 +106,15 @@ class PdfReport(HtmlReport):
     extra_style = PAGED_STYLE
     dag_style = DAG_STYLE
 
-    def __init__(self, registry: object = None, *, with_annexes: bool = False):
-        super().__init__(registry, with_annexes=with_annexes)
+    def __init__(
+        self,
+        registry: object = None,
+        *,
+        with_annexes: bool = False,
+        with_provenance: bool = False,
+    ):
+        super().__init__(registry, with_annexes=with_annexes,
+                         with_provenance=with_provenance)
         self._weasyprint = _engine()
 
     def serialize(self, document: JobDocument, path: Path) -> None:

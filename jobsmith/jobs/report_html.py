@@ -32,6 +32,7 @@ from .report import (
     PlanRow,
     format_step_usage,
     format_usage,
+    job_reference,
 )
 
 # ------------------------------------------------------------------ markdown
@@ -275,6 +276,7 @@ pre { background: var(--card); border: 1px solid var(--line); border-radius: 8px
   padding: .875rem 1rem; overflow-x: auto; }
 pre code { background: none; border: 0; padding: 0; }
 .about { color: var(--muted); font-size: .9375rem; }
+.job-ref { color: var(--muted); font-size: .875rem; }
 .about dl { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem;
   margin: 0; }
 .about dt { font-weight: 600; color: var(--fg); }
@@ -338,18 +340,26 @@ class HtmlReport(FileReporter):
         parts += [
             f'<section class="answer">{markdown_to_html(doc.answer)}</section>',
             "<hr>",
-            '<section class="about">',
-            "<h2>About this job</h2>",
-            self._about(doc),
         ]
-        if doc.plan:
-            parts.append("<h3>Steps</h3>")
-            if doc.plan_rationale:
-                parts.append(f'<p class="rationale">{escape(doc.plan_rationale)}</p>')
-            parts.append(self._steps(doc))
-            parts.append(
-                f'<div class="scroll-x">{dag_svg(doc, style=self.dag_style)}</div>')
-        parts.append("</section>")
+        if not doc.provenance:
+            # One line back to the record, and nothing else about the run
+            # (#85). Escaped like everything else, even though it is our own
+            # text: the rule here is that only our tags are ever added.
+            parts.append(f'<p class="job-ref">{escape(job_reference(doc.job_id))}</p>')
+        else:
+            parts += [
+                '<section class="about">',
+                "<h2>About this job</h2>",
+                self._about(doc),
+            ]
+            if doc.plan:
+                parts.append("<h3>Steps</h3>")
+                if doc.plan_rationale:
+                    parts.append(f'<p class="rationale">{escape(doc.plan_rationale)}</p>')
+                parts.append(self._steps(doc))
+                parts.append(
+                    f'<div class="scroll-x">{dag_svg(doc, style=self.dag_style)}</div>')
+            parts.append("</section>")
         for heading, body in doc.annexes:
             parts += [
                 "<details>",
