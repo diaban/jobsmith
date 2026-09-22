@@ -30,6 +30,12 @@ from ..core.state import TERMINAL_UNANSWERED
 from ..jobs.manager import JobManager
 from ..jobs.models import Job, JobStatus
 from .runner import CUSTOM_ANSWER
+# `_writer` crosses a module line on purpose: it is the ONE way into the turn a
+# tool or a middleware has (`langgraph.config.get_stream_writer`, guarded for
+# the case where nothing is listening), and a second copy of it here would be a
+# second answer to "is anyone watching this run". It is private because nothing
+# outside this package has business writing into a turn; making it public is
+# the tidier ending, and belongs with whoever next opens `chat/tools.py`.
 from .tools import _writer, make_job_tools, progress_line, progress_signature
 
 DEFAULT_CHAT_SYSTEM_PROMPT = """You are an assistant that runs real tasks on a job engine.
