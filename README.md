@@ -231,8 +231,8 @@ passages, as a gap the notes have to declare rather than fill in.
 ### Pointing a request at a file
 
 `documents` searches; **`read_files` reads**. When a request names a document —
-a path you give, or a report a previous job wrote — the file itself travels
-with the job as an input, and the step opens it:
+a path you give — the file itself travels with the job as an input, and the
+step opens it:
 
 ```
 you : make a one-pager out of the report from this morning
@@ -242,9 +242,7 @@ you : make a one-pager out of the report from this morning
       stop it  : /cancel 4f21b0aa
 ```
 
-That loop — jobsmith writes a report, you ask for something to be made of it —
-is the reason the step exists. **What a job may open is decided, not
-inherited**: a named path is resolved (symlinks followed, `..` collapsed) and
+**What a job may open is decided, not inherited**: a named path is resolved (symlinks followed, `..` collapsed) and
 then has to land inside the directory jobs write their own files into, or the
 `--docs` directory when there is one. Anything else is refused with a message
 saying so, whether it was spelled `../../etc/passwd`, hidden behind a symlink,
@@ -252,6 +250,26 @@ or written as an absolute path to somewhere else. Nothing widens that set at
 runtime, and the files are named in the notice before the run opens them —
 you are the one handing them over, so you are the one who gets to see the
 list.
+
+### Building on an earlier job
+
+*"Make a one-pager out of that"* points at something else entirely: a **job**,
+not a file. jobsmith references it instead of re-reading the document it
+wrote — the run's own records are in the store, so the follow-up gets the
+answer **and** the material each step gathered, where the report carries only
+the prose:
+
+```
+you : make a one-pager out of that comparison
+      task     : condense the chair comparison into a one-page brief
+      stop it  : /cancel 4f21b0aa
+```
+
+A report is a deliverable, not a trace: it never carried the research notes or
+the retrieved pages, it may be a PDF nobody can read back, and since a run only
+writes a document when the request asked for one, it may not exist at all.
+Only jobs of the **same conversation** can be referenced, and a reference that
+matches nothing is refused before the run starts rather than quietly ignored.
 
 ### Naming what comes out
 
@@ -525,8 +543,8 @@ jobsmith/
   cli/          adapter — daemon, clients, REPL, argparse entrypoint
   tui/          adapter — Textual: chat pane, job list, job detail
   agents/       ★ what each agent IS — a capability pack + a profile
-    default/      read_files/documents → research → analysis → critique,
-                  + slide_deck (a .pptx annex)
+    default/      read_files/prior_jobs/documents → research → analysis
+                  → critique, + slide_deck (a .pptx annex)
     banking/      a domain agent: its own capabilities, ports and adapters
   app/          composition: providers, persistence, build_app(agent=...)
 evals/          the golden set + the property checks that score a prompt change
