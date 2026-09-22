@@ -17,9 +17,11 @@ Skipped checks are excluded from the denominator, so adding a case that
 exercises one path never dilutes the score of another.
 
 The report checks are deliberately layout-independent — they look for the
-title, the answer text, the job id and the request, not for the headings
-`MarkdownReport` happens to use today. A reformatting of the deliverable
-should not read as a regression; losing its provenance should. That holds
+title, the answer text and the job id, not for the headings `MarkdownReport`
+happens to use today. A reformatting of the deliverable should not read as a
+regression; losing the way back to the run that wrote it should (#85: what
+the deliverable owes its reader is an answer and a traceable origin, not the
+record — that is `GET /jobs/{id}`'s). That holds
 across *formats* too: they read the file through `deliverable.extract`,
 which hands back the title and the visible text with the markup stripped,
 so the same check scores a markdown and an HTML report identically. It used
@@ -507,28 +509,39 @@ def check_report_answer(case: EvalCase, obs: Observation) -> Check:
 
 
 def check_report_provenance(case: EvalCase, obs: Observation) -> Check:
-    """It says what was asked and which run produced it."""
+    """The deliverable names the run that produced it, and nothing more (#85).
+
+    It used to ask for the job id **and** the request quoted back, because the
+    document carried a whole *About this job* section — the request in full,
+    two timestamps, the session, the bill, a plan table, a DAG. That section
+    is gone from what a reader opens: the record is served whole by
+    `GET /jobs/{id}` and `jobsmith job <id>`, and duplicating it into the
+    deliverable was the product talking about itself inside the thing someone
+    opened to read an answer.
+
+    So this now scores the one line that stayed, and the property is the one
+    that could not be got anywhere else: a file must say **which run wrote
+    it**. Dropping the check with the section would have been wrong — a
+    document nobody can trace back is the same class of defect as a
+    deliverable nobody can find (#28) — and keeping the request half would
+    score a contract that no longer exists.
+
+    Its old twin, `report_covers_plan` ("every executed step is named in the
+    deliverable"), was removed rather than inverted: the honest inverse is
+    *no step is named*, and the step names of this pack are `research`,
+    `analysis`, `documents`, `critique` — ordinary words a document about a
+    subject uses legitimately. A substring test on their absence would score
+    the prose, not the machinery, so the property is simply no longer one the
+    deliverable has. What a plan did is the record's question, and the record
+    is what `GET /jobs/{id}` answers.
+    """
     name = "report_provenance"
     if (s := _report_applies(case, obs, name)) is not None:
         return s
-    doc = _deliverable(obs)
-    missing = [
-        label for label, needle in (("job id", obs.job_id), ("request", obs.query.strip()[:60]))
-        if needle and not doc.contains(needle)
-    ]
-    return _check(name, not missing, f"no {', no '.join(missing)} in the report")
-
-
-def check_report_covers_plan(case: EvalCase, obs: Observation) -> Check:
-    """Every executed step is accounted for in the deliverable."""
-    name = "report_covers_plan"
-    if (s := _report_applies(case, obs, name)) is not None:
-        return s
-    if not obs.plan_steps:
-        return _skip(name, "no plan in this run")
-    doc = _deliverable(obs)
-    missing = [s["capability"] for s in obs.plan_steps if not doc.contains(s["capability"])]
-    return _check(name, not missing, f"unmentioned step(s): {', '.join(missing)}")
+    if not obs.job_id:
+        return _skip(name, "the run has no job id to name")
+    return _check(name, _deliverable(obs).contains(obs.job_id),
+                  "the deliverable does not name the job that produced it")
 
 
 #: Phrases that only make sense if the document is addressed to whoever
@@ -763,7 +776,6 @@ CHECKS: tuple[Callable[[EvalCase, Observation], Check], ...] = (
     check_report_title,
     check_report_answer,
     check_report_provenance,
-    check_report_covers_plan,
     check_report_reader_facing,
     check_report_answers_request,
     check_refusal_declared,
@@ -791,7 +803,6 @@ CHECK_NAMES: tuple[str, ...] = (
     "report_title",
     "report_answer",
     "report_provenance",
-    "report_covers_plan",
     "report_reader_facing",
     "report_answers_request",
     "refusal_declared",

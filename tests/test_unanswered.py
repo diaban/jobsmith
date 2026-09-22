@@ -194,20 +194,27 @@ def test_the_conversation_is_told_the_job_could_not_answer():
               terminal_kind=TERMINAL_UNANSWERED,
               final_answer="The figures were never provided.",
               outputs=[JobOutput(path="/tmp/abcdef0123.md")])
-    notice = JobNotificationMiddleware._notice_for(job)
+    notice = JobNotificationMiddleware._notice_for(job, delivered=True)
 
     assert "COULD NOT ANSWER" in notice
     assert "is DONE." not in notice              # not announced as a success
     assert "FAILED" not in notice                # nor as a crash
     assert "/tmp/abcdef0123.md" in notice        # the file is still offered
-    assert "The figures were never provided." in notice
+    # A refusal is short by design (#73), so it is delivered into the turn
+    # like an answer (#85) and the model is told to keep its hands off it.
+    assert "ALREADY been shown" in notice
+    assert "The figures were never provided." not in notice
+
+    # ...and when it is not delivered, the model is handed the explanation
+    handed = JobNotificationMiddleware._notice_for(job, delivered=False)
+    assert "The figures were never provided." in handed
 
 
 def test_a_job_that_answered_is_announced_exactly_as_before():
     job = Job(job_id="abcdef0123", status=JobStatus.DONE, query="q",
               terminal_kind="answer", final_answer="The answer.",
               outputs=[JobOutput(path="/tmp/abcdef0123.md")])
-    notice = JobNotificationMiddleware._notice_for(job)
+    notice = JobNotificationMiddleware._notice_for(job, delivered=True)
 
     assert notice.startswith("Job abcdef01 ('q') is DONE.")
     assert "Report file: /tmp/abcdef0123.md" in notice

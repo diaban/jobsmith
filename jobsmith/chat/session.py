@@ -17,6 +17,8 @@ Composition (all prebuilt LangChain/LangGraph, no homemade tool plumbing):
 """
 from __future__ import annotations
 
+import os
+import sys
 import uuid
 from typing import Any
 
@@ -27,7 +29,8 @@ from langchain_core.messages import SystemMessage
 from ..core.state import TERMINAL_UNANSWERED
 from ..jobs.manager import JobManager
 from ..jobs.models import Job, JobStatus
-from .tools import make_job_tools, progress_line, progress_signature
+from .runner import CUSTOM_ANSWER
+from .tools import _writer, make_job_tools, progress_line, progress_signature
 
 DEFAULT_CHAT_SYSTEM_PROMPT = """You are an assistant that runs real tasks on a job engine.
 
@@ -43,8 +46,10 @@ DEFAULT_CHAT_SYSTEM_PROMPT = """You are an assistant that runs real tasks on a j
   rephrase the answer, and never comment on its content.
 - When launch_job says the task moved to the background, say so plainly. There
   is no result yet: do not invent one.
-- When a [job update] notice appears, give the user a short synthesis
-  (2-3 sentences) of the result and the path to the report file.
+- When a [job update] notice appears, follow what it says about each job: one
+  whose answer has already been shown to the user gets at most one short
+  sentence (never a repeat, a summary or a comment on it); one that hands you
+  its answer gets a short synthesis (2-3 sentences) and the report file path.
 - A [job progress] notice means a job is STILL RUNNING: there is no result yet.
   Use it to answer "how is it going?", or to add one short clause when it is
   genuinely useful ("(the research step is done, analysis is running)"). Never
@@ -57,6 +62,50 @@ PROGRESS_MARKER = "background jobs still running"
 
 IN_FLIGHT = (JobStatus.QUEUED, JobStatus.RUNNING)
 MAX_PROGRESS_JOBS = 5   # jobs detailed in one progress notice; the rest are counted
+
+# How long an answer may be and still be handed to the reader *in the
+# conversation* rather than as a path to a file (#85).
+#
+# Two thousand characters, ~300 words, because this is a **reading** budget
+# and nothing else: it is roughly a screenful and a half of a terminal, which
+# is what a person reads where they are standing before they would rather
+# open a document and keep it. Below it, scrolling back up the transcript is
+# how you re-read the answer; past it, the transcript stops being a place the
+# answer can live and the file is the better container — which is the whole
+# of what this issue asked to decide.
+#
+# It is deliberately not tuned to what a run cost or how long it took: a
+# four-minute run can answer in two sentences and a ten-second one can return
+# a table. The length of the *answer* is the only thing that bears on where
+# it should be read, and it is known exactly at the moment the choice is
+# taken — unlike #83's duration, which is why that one had to be observed by
+# a clock and this one does not.
+DEFAULT_INLINE_ANSWER_MAX = 2000
+
+
+def pick_inline_answer_max(explicit: int | None = None) -> int:
+    """Argument > `$JOBSMITH_INLINE_ANSWER_MAX` > 2 000 characters.
+
+    The precedence of `pick_sync_timeout` / `pick_db` / `pick_search_depth`,
+    minus the command-line flag, for the same reason: this is read inside a
+    daemon a client cannot pass flags to. `0` is meaningful and supported —
+    never write an answer into the conversation, i.e. exactly the behaviour
+    this replaced — and it still cannot silence a run that produced **no
+    file**, which is a rule about losing text rather than about length (see
+    `_deliver`). A value that is not a number is said on stderr rather than
+    quietly ignored.
+    """
+    if explicit is not None:
+        return max(int(explicit), 0)
+    raw = os.environ.get("JOBSMITH_INLINE_ANSWER_MAX")
+    if not raw:
+        return DEFAULT_INLINE_ANSWER_MAX
+    try:
+        return max(int(raw), 0)
+    except ValueError:
+        print(f"[chat: $JOBSMITH_INLINE_ANSWER_MAX={raw!r} is not a number — "
+              f"using {DEFAULT_INLINE_ANSWER_MAX}]", file=sys.stderr)
+        return DEFAULT_INLINE_ANSWER_MAX
 
 
 class JobNotificationMiddleware(AgentMiddleware):
@@ -79,17 +128,73 @@ class JobNotificationMiddleware(AgentMiddleware):
     consecutive turns leaves zero notices behind it.
     """
 
-    def __init__(self, manager: JobManager, session_id: str):
+    def __init__(
+        self,
+        manager: JobManager,
+        session_id: str,
+        *,
+        inline_answer_max: int | None = None,
+    ):
         super().__init__()
         self.manager = manager
         self.session_id = session_id
+        self.inline_answer_max = pick_inline_answer_max(inline_answer_max)
         # job_id → last progress signature the model was shown. In memory
         # because it is a conversational nicety, not a guarantee: after a
         # daemon restart the worst case is one repeated progress line.
         self._reported: dict[str, str] = {}
 
+    def _deliver(self, job: Job) -> bool:
+        """Write a finished job's answer into the turn, verbatim, when the
+        conversation is where it belongs (#85).
+
+        A task that finishes **inside** the turn has had a verbatim channel
+        since #83: `launch_job` writes `final_answer` onto the custom stream
+        and the front-ends render it as the turn's answer. A task that was
+        **promoted** to the background had none — its answer reached the model
+        as an instruction to synthesize, so the only place the text survived
+        word for word was the file. That is the asymmetry this closes, and it
+        closes it with the channel that already exists rather than a second
+        one: same payload, same reader (`chat/runner.py::_from_custom`), same
+        `Token` on the way out. Nothing between the generator and the reader
+        rewrites it, which is the property, not the mechanism.
+
+        Two decisions live here. **Length decides**, because a transcript is
+        a place you scroll and a document is a place you keep:
+        `inline_answer_max` is the reading budget, and past it the path is
+        the better answer. **Length only decides when there is something to
+        decide between** — a run that wrote no file has nowhere else to put
+        its text, so it is delivered whatever its length: the alternative is
+        an answer that exists in no channel at all, which is the defect, not
+        a policy about it.
+
+        `_writer` crosses a module line on purpose: it is the ONE way into a
+        turn that a tool or a middleware has (`get_stream_writer`, guarded for
+        the case where nothing is listening), and a second copy of it here
+        would be a second answer to "is anyone watching this run". Private
+        because nothing outside this package has business writing into a turn;
+        making it public is the tidier ending and belongs with whoever next
+        opens `chat/tools.py`.
+
+        The write happens *before* the model call it rides with, so the
+        reader sees the answer and then the model's one sentence about it. A
+        model call that then fails leaves the job unannounced and the answer
+        shown — the same trade the notice itself already makes, and the
+        harmless half of it.
+        """
+        answer = (job.final_answer or "").strip()
+        if job.status is not JobStatus.DONE or not answer:
+            return False
+        if job.report_path and len(answer) > self.inline_answer_max:
+            return False
+        # The trailing blank line keeps the model's own sentence from running
+        # into the last line of the answer: front-ends append tokens to one
+        # growing answer (`chat/tools.py` writes it the same way).
+        _writer()({"event": CUSTOM_ANSWER, "text": answer + "\n\n"})
+        return True
+
     @staticmethod
-    def _notice_for(job: Job) -> str:
+    def _notice_for(job: Job, *, delivered: bool) -> str:
         """What the model is told about one finished job.
 
         A DONE job can have no main deliverable for two unrelated reasons,
@@ -122,6 +227,14 @@ class JobNotificationMiddleware(AgentMiddleware):
         reading the report. It gets its own branch, before the DONE one, and
         the instruction says plainly what the file is — an explanation of what
         was missing, not a result.
+
+        `delivered` says whether `_deliver` has already written the text into
+        the turn (#85). It changes one thing in the two branches that have an
+        answer at all — whether the model is asked to relay it or told to keep
+        its hands off it — and the wording is `chat/tools.py::_delivered`'s,
+        deliberately: the reader cannot tell whether a task ran in the turn or
+        came back from the background, and being told the same thing twice in
+        two registers is how they would find out for no reason.
         """
         if job.status is not JobStatus.DONE:
             what = job.query[:60]
@@ -149,8 +262,12 @@ class JobNotificationMiddleware(AgentMiddleware):
             lines = [
                 f"Job {job.job_id[:8]} ({job.query[:60]!r}) finished but COULD NOT "
                 "ANSWER: the material it gathered does not answer the request. "
-                "Tell the user plainly that it produced no answer, then relay what "
-                "was missing — never present the text below as a result."
+                + ("Its explanation of what was missing has ALREADY been shown to "
+                   "the user, in full — do not repeat or summarize it. Say plainly, "
+                   "in one sentence, that there is no result."
+                   if delivered else
+                   "Tell the user plainly that it produced no answer, then relay "
+                   "what was missing — never present the text below as a result.")
             ]
             if job.report_path:
                 lines.append(
@@ -158,10 +275,17 @@ class JobNotificationMiddleware(AgentMiddleware):
             if len(job.outputs) > 1:
                 lines.append("Other files this job left: " + ", ".join(
                     o.path for o in job.outputs if o.path != job.report_path))
-            lines.append(f"What it reported (summarize, do not paste):\n{job.final_answer}")
+            if not delivered:
+                lines.append(
+                    f"What it reported (summarize, do not paste):\n{job.final_answer}")
             return "\n".join(lines)
 
         lines = [f"Job {job.job_id[:8]} ({job.query[:60]!r}) is DONE."]
+        if delivered:
+            lines.append(
+                "Its answer has ALREADY been shown to the user, in full and word "
+                "for word — do NOT repeat it, summarize it, rephrase it or comment "
+                "on its content. Reply with at most one short sentence.")
         if job.report_path:
             lines.append(f"Report file: {job.report_path}")
         elif not job.deliverable_expected:
@@ -172,26 +296,37 @@ class JobNotificationMiddleware(AgentMiddleware):
                          "mention a document, and do not apologise for it.")
         else:
             reason = job.error or "the deliverable could not be written"
-            lines.append(f"No report file was saved ({reason}) — say so, then "
-                         "deliver the answer below anyway.")
+            lines.append(
+                f"No report file was saved ({reason}) — say so."
+                if delivered else
+                f"No report file was saved ({reason}) — say so, then deliver the "
+                "answer below anyway.")
             # A write can fail after earlier formats landed: those files
             # exist and are worth naming, even with the main one missing.
             if job.outputs:
                 lines.append("Files that were written: "
                              + ", ".join(o.path for o in job.outputs))
-        lines.append(f"Full answer (synthesize it, do not paste it):\n{job.final_answer}")
+        if not delivered:
+            lines.append(
+                f"Full answer (synthesize it, do not paste it):\n{job.final_answer}")
         return "\n".join(lines)
 
     async def _finished_notice(self) -> tuple[SystemMessage | None, list[Job]]:
         finished = await self.manager.list_finished_unannounced(self.session_id)
         if not finished:
             return None, []
+        # Delivered first, then described: the answer is written into the turn
+        # before the model is told what to say about it, so a reader sees the
+        # result and then the sentence introducing it (#85).
+        notices = [self._notice_for(job, delivered=self._deliver(job))
+                   for job in finished]
         return SystemMessage(
             f"[job update] The following {NOTICE_MARKER}. Announce each to the "
-            "user now: for one that answered, a short synthesis plus the report "
-            "file path (or the reason there is no file); for one that stopped "
-            "without answering, what happened and any file it left behind.\n\n"
-            + "\n\n".join(self._notice_for(job) for job in finished)
+            "user now, following the instruction each one carries: some have "
+            "already delivered their answer to the user word for word and only "
+            "need a sentence, others need you to relay what happened and name "
+            "the file.\n\n"
+            + "\n\n".join(notices)
         ), finished
 
     async def _in_flight(self) -> tuple[list[Job], int]:
@@ -285,6 +420,7 @@ class ChatSession:
         checkpointer: Any = None,
         sync_timeout: float | None = None,
         approval_required: bool | None = None,
+        inline_answer_max: int | None = None,
     ):
         self.manager = manager
         self.model = model
@@ -297,6 +433,7 @@ class ChatSession:
         # to decide for itself should not have to set an environment variable.
         self.sync_timeout = sync_timeout
         self.approval_required = approval_required
+        self.inline_answer_max = inline_answer_max
 
     def build(self):
         return create_agent(
@@ -305,6 +442,8 @@ class ChatSession:
                                  sync_timeout=self.sync_timeout,
                                  approval_required=self.approval_required),
             system_prompt=self.system_prompt,
-            middleware=[JobNotificationMiddleware(self.manager, self.session_id)],
+            middleware=[JobNotificationMiddleware(
+                self.manager, self.session_id,
+                inline_answer_max=self.inline_answer_max)],
             checkpointer=self.checkpointer,
         )

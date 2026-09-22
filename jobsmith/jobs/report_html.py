@@ -32,6 +32,7 @@ from .report import (
     PlanRow,
     format_step_usage,
     format_usage,
+    job_reference,
 )
 
 # ------------------------------------------------------------------ markdown
@@ -46,6 +47,31 @@ _HEADING = re.compile(r"(#{1,6})\s+(.*)")
 _BULLET = re.compile(r"[-*+]\s+(.*)")
 _ORDERED = re.compile(r"\d+[.)]\s+(.*)")
 _RULE = re.compile(r"(-{3,}|\*{3,}|_{3,})")
+
+SPACES_PER_LEVEL = 2
+
+
+def _list_level(line: str) -> int:
+    """How deep a list item's own indentation says it is.
+
+    The rule is written down here rather than inferred per document, because
+    inferring it means a document whose first nested item is indented by
+    three spaces teaches the renderer a unit the rest of it does not use:
+    **one level every two spaces, and a tab advances to the next level
+    boundary** — so a leading tab is exactly one level, like two spaces, and
+    a tab after a lone space is still one level rather than one and a half.
+    Anything in between rounds down: three spaces is one level, because a
+    model that indents by three is nesting, not un-nesting.
+    """
+    columns = 0
+    for char in line:
+        if char == " ":
+            columns += 1
+        elif char == "\t":
+            columns += SPACES_PER_LEVEL - columns % SPACES_PER_LEVEL
+        else:
+            break
+    return columns // SPACES_PER_LEVEL
 
 
 def _inline(escaped: str) -> str:
@@ -73,11 +99,21 @@ def markdown_to_html(text: str) -> str:
 
     Headings are demoted one level: `#` in the answer is subordinate to the
     report's own `<h1>` title.
+
+    Lists nest (`_list_level` says by how much), because a model writing a
+    nested list is the ordinary case and flattening one silently changes what
+    the document says — the item introducing a group becomes its sibling. The
+    depth is read from the **stack of open lists**, never from the document:
+    an item indented three levels below a flat one opens one level, so no
+    indentation a model can write produces an unbalanced tag. Escaping is
+    untouched by any of it — content is escaped first, our own tags after.
     """
     lines = text.splitlines()
     out: list[str] = []
     paragraph: list[str] = []
-    list_tag: str | None = None
+    stack: list[str] = []          # list tags currently open, outermost first
+    open_item: list[bool] = []     # ...whether that level's <li> is still open
+    item_line: list[int] = []      # ...and where that <li> was written in `out`
 
     def close_paragraph() -> None:
         nonlocal paragraph
@@ -85,18 +121,42 @@ def markdown_to_html(text: str) -> str:
             out.append("<p>" + "<br>".join(_inline(escape(x)) for x in paragraph) + "</p>")
             paragraph = []
 
+    def close_deepest() -> None:
+        if open_item[-1]:
+            out.append("</li>")          # the item a nested list was opened in
+        out.append(f"</{stack.pop()}>")
+        open_item.pop()
+        item_line.pop()
+
     def close_list() -> None:
-        nonlocal list_tag
-        if list_tag:
-            out.append(f"</{list_tag}>")
-            list_tag = None
+        while stack:
+            close_deepest()
 
     def open_list(tag: str) -> None:
-        nonlocal list_tag
-        if list_tag != tag:
-            close_list()
-            out.append(f"<{tag}>")
-            list_tag = tag
+        if stack:
+            # A nested list belongs INSIDE the item above it: that item's
+            # `</li>` is taken back rather than a second list being started
+            # beside it, which is a `<ul>` no `<li>` contains.
+            out[item_line[-1]] = out[item_line[-1]].removesuffix("</li>")
+            open_item[-1] = True
+        out.append(f"<{tag}>")
+        stack.append(tag)
+        open_item.append(False)
+        item_line.append(-1)
+
+    def add_item(level: int, tag: str, content: str) -> None:
+        level = min(level, len(stack))   # a jump of several levels is one level
+        while len(stack) > level + 1:
+            close_deepest()
+        if len(stack) == level + 1 and stack[-1] != tag:
+            close_deepest()              # a bulleted and a numbered list are two
+        if len(stack) == level:
+            open_list(tag)
+        if open_item[-1]:
+            out.append("</li>")          # this level's previous item, reopened
+            open_item[-1] = False
+        item_line[-1] = len(out)
+        out.append(f"<li>{content}</li>")
 
     index = 0
     while index < len(lines):
@@ -137,8 +197,9 @@ def markdown_to_html(text: str) -> str:
         item = bullet or ordered
         if item is not None:
             close_paragraph()
-            open_list("ul" if bullet else "ol")
-            out.append(f"<li>{_inline(escape(item.group(1)))}</li>")
+            add_item(_list_level(line),                 # `line`, not `stripped`
+                     "ul" if bullet else "ol",
+                     _inline(escape(item.group(1))))
             continue
         paragraph.append(stripped)
 
@@ -275,6 +336,7 @@ pre { background: var(--card); border: 1px solid var(--line); border-radius: 8px
   padding: .875rem 1rem; overflow-x: auto; }
 pre code { background: none; border: 0; padding: 0; }
 .about { color: var(--muted); font-size: .9375rem; }
+.job-ref { color: var(--muted); font-size: .875rem; }
 .about dl { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem;
   margin: 0; }
 .about dt { font-weight: 600; color: var(--fg); }
@@ -338,18 +400,26 @@ class HtmlReport(FileReporter):
         parts += [
             f'<section class="answer">{markdown_to_html(doc.answer)}</section>',
             "<hr>",
-            '<section class="about">',
-            "<h2>About this job</h2>",
-            self._about(doc),
         ]
-        if doc.plan:
-            parts.append("<h3>Steps</h3>")
-            if doc.plan_rationale:
-                parts.append(f'<p class="rationale">{escape(doc.plan_rationale)}</p>')
-            parts.append(self._steps(doc))
-            parts.append(
-                f'<div class="scroll-x">{dag_svg(doc, style=self.dag_style)}</div>')
-        parts.append("</section>")
+        if not doc.provenance:
+            # One line back to the record, and nothing else about the run
+            # (#85). Escaped like everything else, even though it is our own
+            # text: the rule here is that only our tags are ever added.
+            parts.append(f'<p class="job-ref">{escape(job_reference(doc.job_id))}</p>')
+        else:
+            parts += [
+                '<section class="about">',
+                "<h2>About this job</h2>",
+                self._about(doc),
+            ]
+            if doc.plan:
+                parts.append("<h3>Steps</h3>")
+                if doc.plan_rationale:
+                    parts.append(f'<p class="rationale">{escape(doc.plan_rationale)}</p>')
+                parts.append(self._steps(doc))
+                parts.append(
+                    f'<div class="scroll-x">{dag_svg(doc, style=self.dag_style)}</div>')
+            parts.append("</section>")
         for heading, body in doc.annexes:
             parts += [
                 "<details>",
