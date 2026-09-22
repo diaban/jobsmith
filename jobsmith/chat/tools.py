@@ -308,8 +308,15 @@ async def _find(manager: JobManager, session_id: str, prefix: str) -> Job | None
 # ---------------- Running a task inside the turn -----------------------------
 
 
-def _writer() -> Callable[[dict[str, Any]], None]:
-    """The channel a tool has into the turn it is running inside.
+def stream_writer() -> Callable[[dict[str, Any]], None]:
+    """The channel a tool — or a middleware — has into the turn it is running in.
+
+    It is the ONE way into a turn: `launch_job` writes the job notice and the
+    answer through it, and `JobNotificationMiddleware` (`chat/session.py`)
+    writes a promoted run's answer through it (#85). A second copy anywhere
+    would be a second answer to "is anyone watching this run". Public because
+    it has two callers in two modules; nothing outside `chat/` has business
+    writing into a turn.
 
     LangGraph's custom stream, which `chat/runner.py` is the only reader of.
     Outside a run — a unit test calling the tool directly, or an `ainvoke`
@@ -591,7 +598,7 @@ def make_job_tools(
         job = await manager.create_job(
             query, job_inputs, session_id=session_id,
             document_name=name, document_title=title, formats=wanted)
-        write = _writer()
+        write = stream_writer()
         # Said BEFORE anything runs, and carrying the job id the approval card
         # never had: this is what the user reads to catch a query whose
         # referent has gone, a file they did not hand over, or a document they
