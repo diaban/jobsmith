@@ -284,8 +284,11 @@ async def test_report_written_on_done(store, checkpointer, tmp_path):
     report = (tmp_path / "artifacts" / f"{job.job_id}.md").read_text()
     assert report.startswith("# write the report")   # title, then the answer
     assert "final answer" in report                  # the deliverable itself
-    assert "| alpha |" in report                     # provenance: plan table
-    assert "flowchart LR" in report                  # mermaid DAG
+    # ...and then nothing about the run but the one line back to it (#85)
+    assert job.job_id in report and "jobsmith job" in report
+    assert "| alpha |" not in report                 # no plan table
+    assert "flowchart LR" not in report              # no DAG
+    assert "About this job" not in report
     assert "Step output" not in report               # step material is not inlined
     # per-step timestamps recorded as capabilities finished
     assert set(done.step_finished_at) == {"alpha", "beta"}
@@ -491,6 +494,7 @@ def test_mermaid_draws_isolated_steps_once():
             PlanRow("analysis", ["research"], "ok", ""),
             PlanRow("aside", [], "ok", ""),
         ],
+        provenance=True,
     )
     mermaid = MarkdownReport().render(doc).split("```mermaid")[1].split("```")[0]
     assert "research --> analysis" in mermaid
