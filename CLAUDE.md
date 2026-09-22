@@ -330,6 +330,12 @@ prints a table comparable with the previous run.
   the tier label — or with an explicit `--fail-under`).
   A case declares which tiers it is meaningful in: one a keyword fake would pass
   or fail *by accident* is llm-only, otherwise the fake is what gets measured.
+  **The fake tier is only deterministic if no key reaches the process**, and
+  `python -m evals` loads `.env` (which `make worktree` copies) with
+  `os.environ.setdefault` — so `env -u TAVILY_API_KEY` is refilled from the
+  file and `web_search` quietly joins every plan (measured: 147/160 instead of
+  153/153, the extra checks being web material the fake cannot trace). Blank
+  the keys instead: `TAVILY_API_KEY= ANTHROPIC_API_KEY= OPENAI_API_KEY=`.
 - **The harness runs the real product path** (`harness.py`): `build_app` →
   `create_job` → `run_job`, persistence forced to `memory`, reports into a
   scratch dir, a `KeywordChatModel` injected only so composition does not go
