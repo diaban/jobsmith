@@ -284,8 +284,11 @@ async def test_report_written_on_done(store, checkpointer, tmp_path):
     report = (tmp_path / "artifacts" / f"{job.job_id}.md").read_text()
     assert report.startswith("# write the report")   # title, then the answer
     assert "final answer" in report                  # the deliverable itself
-    assert "| alpha |" in report                     # provenance: plan table
-    assert "flowchart LR" in report                  # mermaid DAG
+    # ...and then nothing about the run but the one line back to it (#85)
+    assert job.job_id in report and "jobsmith job" in report
+    assert "| alpha |" not in report                 # no plan table
+    assert "flowchart LR" not in report              # no DAG
+    assert "About this job" not in report
     assert "Step output" not in report               # step material is not inlined
     # per-step timestamps recorded as capabilities finished
     assert set(done.step_finished_at) == {"alpha", "beta"}
@@ -491,6 +494,7 @@ def test_mermaid_draws_isolated_steps_once():
             PlanRow("analysis", ["research"], "ok", ""),
             PlanRow("aside", [], "ok", ""),
         ],
+        provenance=True,
     )
     mermaid = MarkdownReport().render(doc).split("```mermaid")[1].split("```")[0]
     assert "research --> analysis" in mermaid
@@ -575,3 +579,37 @@ async def test_the_runner_reports_each_step_once(store, checkpointer, tmp_path):
     announced = [u.capability async for u in GraphRunner(graph).stream("r1", "chain", {})
                  if isinstance(u, StepFinished)]
     assert announced == ["alpha", "beta", "gamma"]
+
+
+def test_the_deliverable_names_its_run_and_does_not_recite_it():
+    """#85: what a reader opens is an answer, plus the way back to the record.
+
+    The record itself — the request quoted in full, the timestamps, the
+    session, the bill, the plan table, the DAG — is served whole by
+    `GET /jobs/{id}` and `jobsmith job <id>`, and reciting it inside the
+    document was the product talking about itself in the thing someone opened
+    to read an answer. `with_provenance` is the archive switch, exactly as
+    `with_annexes` is.
+    """
+    from jobsmith.jobs.models import Job, JobStatus
+    from jobsmith.jobs.report import MarkdownReport, build_document
+
+    job = Job(job_id="j85abcdef", status=JobStatus.DONE,
+              query="compare the two options",
+              session_id="s1", created_at="2026-01-01T00:00:00Z",
+              final_answer="The first one.",
+              plan={"steps": [{"capability": "research", "depends_on": []}]},
+              results={"research": {"ok": True, "data": {}}})
+
+    deliverable = MarkdownReport().render(build_document(job))
+    assert "The first one." in deliverable
+    assert "j85abcdef" in deliverable and "jobsmith job j85abcd" in deliverable
+    for recited in ("About this job", "| step |", "flowchart LR",
+                    "**Request**", "**Session**", "**Usage**"):
+        assert recited not in deliverable, recited
+
+    archive = MarkdownReport(with_provenance=True).render(
+        build_document(job, with_provenance=True))
+    for recited in ("About this job", "| step |", "flowchart LR",
+                    "**Request**", "**Session**", "**Usage**"):
+        assert recited in archive, recited

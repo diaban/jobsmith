@@ -32,7 +32,16 @@ from jobsmith.jobs.report_html import HtmlReport, dag_svg, markdown_to_html
 
 
 def make_document(**over) -> JobDocument:
+    """The archive-shaped document: `provenance=True` unless a test says
+    otherwise.
+
+    Since #85 a deliverable shows one line about its run and nothing else, so
+    most of what this file asserts — the plan table, the DAG, the *About this
+    job* list — is the `with_provenance` rendering. The default is what
+    `test_the_page_a_reader_opens_carries_one_line_about_the_run` covers.
+    """
     doc = JobDocument(
+        provenance=True,
         title="compare A and B",
         request="compare A and B",
         job_id="j1",
@@ -385,7 +394,11 @@ async def test_the_composed_agent_can_hand_back_html(tmp_path):
         deliverables = [o for o in done.outputs if o.role != "annex"]
         assert [(o.format, o.role) for o in deliverables] == [("html", "main")]
         page = Path(done.report_path).read_text(encoding="utf-8")
-        assert page.startswith("<!doctype html>") and "<svg" in page
+        # the deliverable a reader opens: the answer, then one line back to
+        # the record (#85) — no About list, no steps table, no DAG
+        assert page.startswith("<!doctype html>")
+        assert '<p class="job-ref">' in page and job.job_id in page
+        assert "<svg" not in page and "About this job" not in page
     finally:
         await app.aclose()
 
@@ -398,13 +411,19 @@ def test_both_reporters_read_the_same_document(tmp_path):
               plan={"steps": [{"capability": "research", "depends_on": []}]},
               results={"research": {"ok": True, "data": {}}},
               step_finished_at={"research": "t1"})
-    doc = build_document(job)
+    doc = build_document(job, with_provenance=True)
 
     markdown = MarkdownReport().render(doc)
     html = HtmlReport().render(doc)
     assert "```mermaid" in markdown and "<svg" in html
     for expected in ("An answer.", "research", "j7"):
         assert expected in markdown and expected in html
+
+    # ...and the default rendering is the same document without the record
+    plain = build_document(job)
+    for rendered in (MarkdownReport().render(plain), HtmlReport().render(plain)):
+        assert "An answer." in rendered and "j7" in rendered
+        assert "research" not in rendered and "About this job" not in rendered
 
 
 # ------------------------------------------------- several formats at once
@@ -467,10 +486,10 @@ def test_two_formats_claiming_one_extension_refuse_to_compose(monkeypatch):
 
     real = report_module.make_reporter
 
-    def factory(name="markdown", registry=None, *, with_annexes=False):
+    def factory(name="markdown", registry=None, **policy):
         if (name or "").strip().lower() == "md-lite":
-            return MarkdownLite(registry, with_annexes=with_annexes)
-        return real(name, registry, with_annexes=with_annexes)
+            return MarkdownLite(registry, **policy)
+        return real(name, registry, **policy)
 
     monkeypatch.setattr(report_module, "make_reporter", factory)
 

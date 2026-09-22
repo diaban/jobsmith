@@ -314,8 +314,15 @@ def test_formatters_stay_readable():
 
 
 def test_report_shows_the_cost_in_about_this_job_and_per_step():
+    """The cost is part of the *record*, so it is in the archive rendering.
+
+    Since #85 the deliverable a reader opens carries one line naming the job
+    and nothing else about the run — `with_provenance` is what puts the bill,
+    the plan table and the timings back, for whoever wants the whole thing in
+    one file.
+    """
     job = make_job()
-    document = build_document(job)
+    document = build_document(job, with_provenance=True)
     assert document.usage.calls == 6
     assert document.plan[0].usage.calls == 2
 
@@ -331,9 +338,16 @@ def test_report_shows_the_cost_in_about_this_job_and_per_step():
 
 def test_report_of_an_untracked_job_says_so(tmp_path):
     job = make_job(usage={}, results={})
-    [output] = MarkdownReport().write(job, tmp_path)
+    [output] = MarkdownReport(with_provenance=True).write(job, tmp_path)
     path = output.path
     assert "- **Usage**: not recorded" in open(path).read()
+
+
+def test_the_deliverable_a_reader_opens_carries_no_bill(tmp_path):
+    """What a run cost is the record's business, not the document's (#85)."""
+    [output] = MarkdownReport().write(make_job(), tmp_path)
+    text = open(output.path).read()
+    assert "LLM call" not in text and "est." not in text and "tok ·" not in text
 
 
 def test_job_summary_round_trips_usage():

@@ -154,8 +154,9 @@ def _obs(**kwargs) -> Observation:
     obs = Observation(**base)
     if "report_text" not in kwargs:
         obs.report_text = (
-            f"# title\n\n{obs.final_answer}\n\n"
-            "- Request: q\n- Job: job1\n\n| research | analysis |\n"
+            f"# title\n\n{obs.final_answer}\n\n---\n\n"
+            "_Produced by job job1 — jobsmith job job1 shows the request, the "
+            "plan, the steps and what it cost._\n"
         )
     return obs
 
@@ -203,9 +204,8 @@ def test_a_clean_observation_passes_everything():
         ("report_written", {"report_text": None}),
         ("report_title", {"report_text": "no heading at all\n"}),
         ("report_answer", {"report_text": "# t\n\nsomething else entirely\n"}),
+        # #85: the deliverable that names no run cannot be traced back to one
         ("report_provenance", {"report_text": f"# t\n\n{ANSWER}\n"}),
-        ("report_covers_plan", {
-            "report_text": f"# t\n\n{ANSWER}\n- Job: job1\n- Request: q\n"}),
         ("run_completed", {"error": "boom"}),
         ("report_reader_facing", {
             "final_answer": "The comparison holds.\n\n## Next steps\n\n- confirm "
@@ -522,9 +522,6 @@ HTML_HEAD = "<!doctype html><html><body>"
         ("report_title", "<p>no heading at all</p>"),
         ("report_answer", "<h1>t</h1><p>something else entirely</p>"),
         ("report_provenance", f"<h1>t</h1><p>{ANSWER}</p>"),
-        ("report_covers_plan",
-         f"<h1>t</h1><p>{ANSWER}</p><dl><dt>Job</dt><dd>job1</dd>"
-         "<dt>Request</dt><dd>q</dd></dl>"),
     ],
 )
 def test_the_report_checks_still_fire_on_an_html_deliverable(check, body):
@@ -538,10 +535,10 @@ def test_an_html_deliverable_with_everything_in_it_passes():
     obs = _obs(
         report_format="html",
         report_text=(
-            f"{HTML_HEAD}<h1>title</h1><p>{ANSWER}</p>"
-            "<dl><dt>Request</dt><dd>q</dd><dt>Job</dt><dd><code>job1</code></dd></dl>"
-            "<table><tr><td><code>research</code></td><td><code>analysis</code></td></tr>"
-            "</table></body></html>"
+            f"{HTML_HEAD}<h1>title</h1><p>{ANSWER}</p><hr>"
+            '<p class="job-ref">Produced by job job1 — jobsmith job job1 shows '
+            "the request, the plan, the steps and what it cost.</p>"
+            "</body></html>"
         ),
     )
     assert "fail" not in {c.name: c.status for c in score(PLAN_CASE, obs)}.values()

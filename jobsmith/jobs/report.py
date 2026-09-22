@@ -26,6 +26,17 @@ produced, not a second copy of the report.
 Per-step material is asked of the capabilities themselves
 (`Capability.render_report`), never introspected here: the registry is
 optional, and without it the annexes are simply left out.
+
+**A deliverable is an answer, not a record of a run** (#85). It used to carry,
+under the answer, the request quoted in full, the job id, two timestamps, the
+session id, the token bill, a plan table with a per-step cost column and a
+drawing of the DAG — the product talking about itself inside the thing the
+reader opens, and the part nobody asked for. All of it is still *recorded*,
+and `GET /jobs/{id}` / `jobsmith job <id>` serve it in full; what the document
+keeps is `job_reference`, one line naming the job, which is all it takes to
+get from the file back to the record. `with_provenance` puts the section back
+for whoever wants a self-contained archive — the same switch `with_annexes`
+already is, and for the same reason: a policy, not a structure.
 """
 from __future__ import annotations
 
@@ -79,10 +90,37 @@ class JobDocument:
     # `UNANSWERED_NOTICE` when it did not. Carried as a fact about the run
     # rather than as rendered text, so each format words it in its own markup.
     answered: bool = True
+    # Does this document *show* the record of the run it came from — the
+    # request, the timings, the session, the bill, the plan (#85)? Off by
+    # default: a reader opened a deliverable, not a trace. The data above is
+    # populated either way, because it is what the job *is*; this says
+    # whether a Reporter renders it, which is a policy and belongs with
+    # `with_annexes`. `job_reference` is what every document carries instead.
+    provenance: bool = False
 
     @property
     def dag_edges(self) -> list[tuple[str, str]]:
         return [(dep, row.capability) for row in self.plan for dep in row.depends_on]
+
+
+def job_reference(job_id: str) -> str:
+    """The one line every deliverable carries about the run behind it (#85).
+
+    The provenance section it replaced answered a question nobody had asked
+    inside the document: a reader who wants the plan, the timings or the bill
+    wants the *record*, and the record is already served whole by
+    `GET /jobs/{id}` and `jobsmith job <id>`. What the file cannot get from
+    somewhere else is the way back — which run wrote it — so that is what
+    stays, and it stays on every document rather than behind a flag, because
+    a file nobody can trace is the same class of defect as a file nobody can
+    find (#28).
+
+    Plain text and no markup at all, like `UNANSWERED_NOTICE`: it describes
+    the run rather than the domain, each format wraps it in its own markup,
+    and a backtick meant for markdown is a literal backtick on an HTML page.
+    """
+    return (f"Produced by job {job_id} — jobsmith job {job_id[:8]} shows the "
+            f"request, the plan, the steps and what it cost.")
 
 
 #: What a deliverable is called when its request says nothing usable. Shared
@@ -238,8 +276,22 @@ def ensure_formats_available(
     return names
 
 
-def build_document(job: Job, registry: Any = None, *, with_annexes: bool = False) -> JobDocument:
-    """Turn a finished Job into the document a Reporter serializes."""
+def build_document(
+    job: Job,
+    registry: Any = None,
+    *,
+    with_annexes: bool = False,
+    with_provenance: bool = False,
+) -> JobDocument:
+    """Turn a finished Job into the document a Reporter serializes.
+
+    The job's facts are read whatever the flags say — they are what the job
+    *is*, and a document that holds them can be rendered either way.
+    `with_provenance` decides whether the reader is *shown* them (#85);
+    `with_annexes` is the older half of the same policy, and it gates the
+    annexes rather than a flag because building them costs a call into every
+    capability that ran.
+    """
     doc = JobDocument(
         # The name is not the title (#55): a job that asked for neither
         # derives both from the same request, and asking for one never
@@ -252,6 +304,7 @@ def build_document(job: Job, registry: Any = None, *, with_annexes: bool = False
         finished_at=datetime.now(UTC).isoformat(),
         answer=job.final_answer or "_(no answer)_",
         answered=job.terminal_kind != TERMINAL_UNANSWERED,
+        provenance=with_provenance,
         plan_rationale=(job.plan or {}).get("rationale", "") if job.plan else "",
         usage=Usage.from_dict(job.usage),
     )
@@ -388,9 +441,12 @@ class FileReporter:
     `binary` says which of the two a format is, for callers that must hand
     the file back rather than write it (`is_binary_format`).
 
-    `with_annexes` is a policy, not a structure: per-step material lives in
-    the store and is served by the API/CLI, so the document stays a
-    deliverable by default. Turn it on for a self-contained archive.
+    `with_annexes` and `with_provenance` are policies, not structures, and
+    they are the same policy twice: per-step material and the record of the
+    run both live in the store and are served by the API/CLI, so the document
+    stays a *deliverable* by default (#85). Turn either on for a
+    self-contained archive; they are independent because one is what the
+    steps produced and the other is what the run was.
     """
 
     format = "text"
@@ -398,14 +454,22 @@ class FileReporter:
     title = DEFAULT_TITLE
     binary = False          # is the file bytes rather than text?
 
-    def __init__(self, registry: Any = None, *, with_annexes: bool = False):
+    def __init__(
+        self,
+        registry: Any = None,
+        *,
+        with_annexes: bool = False,
+        with_provenance: bool = False,
+    ):
         self.registry = registry
         self.with_annexes = with_annexes
+        self.with_provenance = with_provenance
 
     def write(self, job: Job, directory: Path) -> list[JobOutput]:
         path = self.path_for(job, directory)
         path.parent.mkdir(parents=True, exist_ok=True)
-        document = build_document(job, self.registry, with_annexes=self.with_annexes)
+        document = build_document(job, self.registry, with_annexes=self.with_annexes,
+                                  with_provenance=self.with_provenance)
         self.serialize(document, path)
         # Always "main": a lone Reporter IS the deliverable. Deciding which
         # one wins when several are asked for belongs to whoever composed
@@ -459,7 +523,13 @@ class MarkdownReport(FileReporter):
             lines += [f"> **{UNANSWERED_NOTICE}**", ""]
         lines += [doc.answer, ""]
 
-        lines += ["---", "", "## About this job", "",
+        lines += ["---", ""]
+        if not doc.provenance:
+            # The answer, then one line saying where it came from (#85).
+            lines += [f"_{job_reference(doc.job_id)}_", ""]
+            return "\n".join(lines + self._annexes(doc)) + "\n"
+
+        lines += ["## About this job", "",
                   f"- **Request**: {doc.request}",
                   f"- **Job**: `{doc.job_id}`",
                   f"- **Started**: {doc.created_at}",
@@ -489,11 +559,15 @@ class MarkdownReport(FileReporter):
             lines += [f"  {row.capability}" for row in doc.plan
                       if row.capability not in connected]
             lines += ["```"]
+        return "\n".join(lines + self._annexes(doc)) + "\n"
 
+    @staticmethod
+    def _annexes(doc: JobDocument) -> list[str]:
+        lines: list[str] = []
         for heading, body in doc.annexes:
             lines += ["", "<details>", f"<summary>Step output — {heading}</summary>", "",
                       body, "", "</details>"]
-        return "\n".join(lines) + "\n"
+        return lines
 
 
 def _reporter_classes() -> dict[str, type[FileReporter]]:
@@ -536,6 +610,7 @@ def make_reporter(
     registry: Any = None,
     *,
     with_annexes: bool = False,
+    with_provenance: bool = False,
 ) -> Reporter:
     """Pick a Reporter by format name — the seam a composition root uses to
     choose what a job hands back. Unknown names fail loudly: silently writing
@@ -548,7 +623,7 @@ def make_reporter(
             f"unknown report format {report_format!r} "
             f"(known: {', '.join(sorted(known))})"
         )
-    return cls(registry, with_annexes=with_annexes)
+    return cls(registry, with_annexes=with_annexes, with_provenance=with_provenance)
 
 
 class MultiReporter:
@@ -614,6 +689,7 @@ def compose_reporters(
     registry: Any = None,
     *,
     with_annexes: bool = False,
+    with_provenance: bool = False,
 ) -> Reporter:
     """One Reporter for one or more format names — the seam a composition
     root uses to say what a job hands back.
@@ -653,7 +729,8 @@ def compose_reporters(
     reporters: list[Reporter] = []
     seen: dict[str, tuple[type, str]] = {}     # extension -> (class, format name)
     for name in names:
-        reporter = make_reporter(name, registry, with_annexes=with_annexes)
+        reporter = make_reporter(name, registry, with_annexes=with_annexes,
+                                 with_provenance=with_provenance)
         known = seen.get(reporter.extension)
         if known is not None:
             if known[0] is type(reporter):
