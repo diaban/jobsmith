@@ -20,9 +20,11 @@ from test_jobs import make_manager
 
 from jobsmith.chat import ChatRunner, ChatSession, JobStarted, Token, ToolFinished
 from jobsmith.chat.session import (
+    DEFAULT_INLINE_ANSWER_MAX,
     NOTICE_MARKER,
     PROGRESS_MARKER,
     JobNotificationMiddleware,
+    pick_inline_answer_max,
 )
 from jobsmith.chat.tools import (
     DEFAULT_SYNC_TIMEOUT,
@@ -53,12 +55,13 @@ def launch_call(query: str, rationale: str, **args) -> AIMessage:
 
 def make_session(
     store, checkpointer, tmp_path, responses, *, llm=None,
-    approval=False, sync_timeout=None,
+    approval=False, sync_timeout=None, inline_answer_max=None,
 ) -> tuple[ChatSession, ScriptedChatModel]:
     manager = make_manager(store, checkpointer, tmp_path, llm=llm)
     model = ScriptedChatModel(responses=responses)
     session = ChatSession(manager, model, checkpointer=MemorySaver(),
-                          approval_required=approval, sync_timeout=sync_timeout)
+                          approval_required=approval, sync_timeout=sync_timeout,
+                          inline_answer_max=inline_answer_max)
     return session, model
 
 
@@ -973,3 +976,111 @@ def test_progress_signature_ignores_elapsed_time_only():
         == before                                       # age alone is not news
     job.step_finished_at = {"research": now_iso()}
     assert progress_signature(job) != before            # a landed step is
+
+
+# ---------------- Where a promoted job's answer lives (#85) ------------------
+
+
+async def _promote_and_settle(session, runner):
+    """Drive one turn that promotes, then wait for the run to finish."""
+    [e async for e in runner.stream(session.session_id, "do the long one")]
+    (summary,) = await session.manager.list_jobs(session_id=session.session_id)
+    settled = await poll_until_settled(session.manager, summary.job_id)
+    assert settled.announced is False, "nothing was promoted: there is no news left"
+    return settled
+
+
+async def test_a_promoted_jobs_answer_comes_back_verbatim(store, checkpointer, tmp_path):
+    """The asymmetry #85 closes, and the reason the rest of #84 was blocked.
+
+    A task that finishes INSIDE the turn has had a verbatim channel since
+    #83. A task that was promoted had none: its answer reached the model as
+    an instruction to synthesize, so the only place the words survived was
+    the file. Both halves are asserted here, exactly as #83's own test does
+    for the synchronous path — the reader gets the words, the model never
+    sees them.
+    """
+    session, model = make_session(store, checkpointer, tmp_path, [
+        launch_call("a long one", "multi-step"),
+        AIMessage(content="It is running in the background."),
+        AIMessage(content="That one is done."),
+    ], sync_timeout=0)
+    runner = ChatRunner(session.build())
+    settled = await _promote_and_settle(session, runner)
+
+    events = [e async for e in runner.stream(session.session_id, "how did it go?")]
+
+    delivered = "".join(e.text for e in events if isinstance(e, Token))
+    assert settled.final_answer in delivered, \
+        "the promoted job's answer never reached the reader"
+    (notice,) = notices(model.calls[-1], NOTICE_MARKER)
+    assert settled.final_answer not in notice.content, \
+        "the answer went through the model, which is where it gets rewritten"
+    assert "ALREADY been shown" in notice.content
+    assert settled.report_path in notice.content        # ...and where the file is
+    assert (await session.manager.get_job(settled.job_id)).announced is True
+
+
+async def test_an_answer_too_long_to_read_here_is_left_in_its_file(
+    store, checkpointer, tmp_path
+):
+    """The threshold, and what it is for.
+
+    A transcript is a place you scroll and a document is a place you keep, so
+    past the reading budget the path IS the better answer — and the model is
+    then handed the text to synthesize, which is what it was doing before.
+    """
+    session, model = make_session(store, checkpointer, tmp_path, [
+        launch_call("a long one", "multi-step"),
+        AIMessage(content="It is running in the background."),
+        AIMessage(content="Here is the gist; the report has the rest."),
+    ], sync_timeout=0, inline_answer_max=10)
+    runner = ChatRunner(session.build())
+    settled = await _promote_and_settle(session, runner)
+    assert len(settled.final_answer) > 10, "the answer is under the threshold"
+
+    events = [e async for e in runner.stream(session.session_id, "how did it go?")]
+
+    delivered = "".join(e.text for e in events if isinstance(e, Token))
+    assert settled.final_answer not in delivered
+    (notice,) = notices(model.calls[-1], NOTICE_MARKER)
+    assert settled.final_answer in notice.content       # the model synthesizes it
+    assert "synthesize it, do not paste it" in notice.content
+    assert settled.report_path in notice.content
+
+
+def test_length_never_decides_when_there_is_no_file_to_decide_against():
+    """`0` means "never write an answer into the conversation" — and it still
+    cannot silence a run that wrote no file.
+
+    That is a rule about losing text, not a policy about length: the file and
+    the turn are the only two channels there are, so a run with neither would
+    have produced an answer that exists nowhere. `report_path` is None here
+    for the reason #28 and #84 each give for their own half — a write that
+    failed, or a request that asked for no document.
+    """
+    middleware = JobNotificationMiddleware(None, "s1", inline_answer_max=0)
+    answered = Job(job_id="abcdef0123", status=JobStatus.DONE, query="q",
+                   final_answer="The answer, which is longer than nothing at all.")
+    assert middleware._deliver(answered) is True
+
+    with_file = Job(job_id="abcdef0124", status=JobStatus.DONE, query="q",
+                    final_answer="The answer, which is longer than nothing at all.",
+                    outputs=[JobOutput(path="/tmp/abcdef0124.md")])
+    assert middleware._deliver(with_file) is False
+
+    # and nothing is ever delivered for a run that has no answer to deliver
+    assert middleware._deliver(Job(job_id="c", status=JobStatus.FAILED, query="q",
+                                   error="boom")) is False
+
+
+def test_pick_inline_answer_max_follows_the_house_precedence(monkeypatch):
+    monkeypatch.delenv("JOBSMITH_INLINE_ANSWER_MAX", raising=False)
+    assert pick_inline_answer_max() == DEFAULT_INLINE_ANSWER_MAX
+    assert pick_inline_answer_max(500) == 500
+    assert pick_inline_answer_max(-1) == 0                 # clamped, not negative
+    monkeypatch.setenv("JOBSMITH_INLINE_ANSWER_MAX", "80")
+    assert pick_inline_answer_max() == 80
+    assert pick_inline_answer_max(500) == 500              # the argument still wins
+    monkeypatch.setenv("JOBSMITH_INLINE_ANSWER_MAX", "soon")
+    assert pick_inline_answer_max() == DEFAULT_INLINE_ANSWER_MAX
