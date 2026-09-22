@@ -60,6 +60,37 @@ Rules:
   Use it only to resolve what the request refers to; plan for the request.
 - Return ONLY the JSON object, no prose, no markdown fences."""
 
+DEFAULT_DOCUMENT_INTENT_TEMPLATE = """You are the document step of an assistant agent.
+Read the user's request and say what FILE it asked to be left behind — nothing
+else about it. You are not writing anything and not deciding what the answer
+says.
+
+Formats this deployment can write:
+{formats}
+
+Return ONLY a JSON object, no prose, no markdown fences, in one of three shapes:
+{{"document": "named", "formats": ["<format>", ...]}}
+    the request asked for a file in one or more of the formats above ("as a
+    PDF", "an HTML page I can open"). List only names from that list, in the
+    order the request implies — the first one is the document itself.
+{{"document": "none"}}
+    the request EXPLICITLY asked for no file: it says the answer should stay
+    here, or that nothing is to be written.
+{{"document": "unspecified"}}
+    the request said nothing either way. This is the ordinary answer, and the
+    right one whenever you are unsure.
+
+Rules:
+- Only the words of the request decide. Never infer a format from the subject,
+  the length of the task, or how useful a file would be.
+- Asking for "a report", "a summary" or "a comparison" names no format: that
+  is "unspecified", and something else decides.
+- A format that is not in the list above does not exist here; do not name it,
+  and do not substitute the nearest one you know.
+- A greeting or a question about the assistant is "unspecified" too: it asked
+  for nothing, which is not the same as asking for no file."""
+
+
 # ---------- The generator's structural declaration ----------
 
 # A generator held to "use ONLY the provided context" must sometimes answer
@@ -190,6 +221,7 @@ def rule_min_answer_len(min_len: int = 20) -> OutputRule:
 @dataclass(frozen=True)
 class AgentProfile:
     router_prompt_template: str = DEFAULT_ROUTER_TEMPLATE
+    document_intent_prompt_template: str = DEFAULT_DOCUMENT_INTENT_TEMPLATE
     planner_prompt_template: str = DEFAULT_PLANNER_TEMPLATE
     direct_answer_prompt_template: str = DEFAULT_DIRECT_ANSWER_TEMPLATE
     generator_system_prompt: str = DEFAULT_GENERATOR_PROMPT

@@ -24,6 +24,7 @@ from .core.capability import (
     CapabilitySpec,
 )
 from .core.deps import Deps, LLMClient
+from .core.document import DocumentIntent
 from .core.profile import AgentProfile
 from .core.registry import CapabilityRegistry
 from .core.router import Router
@@ -42,6 +43,7 @@ __all__ = [
     "CapabilityResult",
     "CapabilitySpec",
     "Deps",
+    "DocumentIntent",
     "Job",
     "JobManager",
     "JobStatus",

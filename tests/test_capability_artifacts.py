@@ -501,7 +501,7 @@ async def test_a_run_that_blew_up_mid_stream_still_lists_what_landed(store, tmp_
     chart.write_text(SVG)
 
     class ExplodingRunner:
-        async def stream(self, job_id, query, inputs):
+        async def stream(self, job_id, query, inputs, formats=None):
             yield PlanReady({"rationale": "r",
                              "steps": [{"capability": "chart", "depends_on": []}]})
             # one file that landed, one that did not — a run killed mid-write

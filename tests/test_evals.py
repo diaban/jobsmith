@@ -250,6 +250,41 @@ def test_each_check_fires_on_its_own_violation(check, broken):
     assert _status(PLAN_CASE, _obs(**broken), check) == "fail"
 
 
+def test_document_format_scores_the_format_the_request_asked_for():
+    """#90, from the instrument's end: the case asks, the run answers.
+
+    Against the record it would be unfalsifiable — a job stores the format it
+    chose, so asking the job whether it chose right is asking the defect to
+    report itself. The case says "html" because the request says html.
+    """
+    case = EvalCase(id="c", query="compare X and Y, as an html page",
+                    expect_format="html")
+    available = ("html", "markdown")
+
+    wrong = _obs(report_path="/tmp/j.md", report_format="markdown",
+                 formats_available=available)
+    assert _status(case, wrong, "document_format") == "fail"
+
+    # the defect in its loudest form: the request named a file, none was written
+    assert _status(case, _obs(formats_available=available), "document_format") == "fail"
+
+    right = _obs(report_path="/tmp/j.html", report_format="html",
+                 formats_available=available)
+    assert _status(case, right, "document_format") == "pass"
+
+
+def test_document_format_skips_what_this_deployment_cannot_render():
+    """`.[pdf]` needs pango where the run happens — a fact about the machine.
+
+    A skip leaves the denominator, so this must be one and not a failure, for
+    the same reason `must_include` skips a capability that is not registered.
+    """
+    case = EvalCase(id="c", query="give me that as a pdf", expect_format="pdf")
+    obs = _obs(report_path="/tmp/j.md", report_format="markdown",
+               formats_available=("html", "markdown"))
+    assert _status(case, obs, "document_format") == "skip"
+
+
 def test_report_reader_facing_catches_the_run_that_opened_it():
     """#58, as it actually arrived: a deliverable addressed to its producer.
 

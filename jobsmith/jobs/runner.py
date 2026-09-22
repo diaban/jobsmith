@@ -44,6 +44,18 @@ class StepFinished:
 
 
 @dataclass(frozen=True)
+class FormatsChosen:
+    """The engine read a document format out of the request itself (#90).
+
+    Only ever emitted for a job whose caller named none: the graph is entered
+    with the job's own `formats`, and `document_intent` returns without
+    writing when it finds one there. Three states in, three states out — a
+    list of names, or `[]` for "no document at all".
+    """
+    formats: list[str]
+
+
+@dataclass(frozen=True)
 class NodeErrors:
     """Errors a node accumulated; recoverable ones do not stop the run."""
     errors: list[NodeError]
@@ -57,7 +69,7 @@ class Terminal:
     user_error_message: str | None
 
 
-JobUpdate = PlanReady | StepFinished | NodeErrors | Terminal
+JobUpdate = PlanReady | FormatsChosen | StepFinished | NodeErrors | Terminal
 
 
 class GraphRunner:
@@ -73,10 +85,22 @@ class GraphRunner:
         return {"configurable": {"thread_id": job_id}}
 
     async def stream(
-        self, job_id: str, query: str, inputs: dict[str, Any]
+        self,
+        job_id: str,
+        query: str,
+        inputs: dict[str, Any],
+        formats: list[str] | None = None,
     ) -> AsyncIterator[JobUpdate]:
+        """Start a run from the query.
+
+        `formats` is what the CALLER already asked the document to be, seeded
+        into the state so the graph's own document step knows whether anyone
+        has spoken (#90). `None` — the request said nothing — is what lets it
+        decide; anything else silences it before a single model call.
+        """
         async for update in self._translate(self.graph.astream(
-            {"query": query, "inputs": inputs, "job_id": job_id},
+            {"query": query, "inputs": inputs, "job_id": job_id,
+             "document_formats": formats},
             config=self._config(job_id),
             stream_mode="updates",
         )):
@@ -119,6 +143,14 @@ class GraphRunner:
                     yield NodeErrors(list(value["errors"]))
                 if node == "planner" and value.get("plan"):
                     yield PlanReady(value["plan"])
+                elif node == "document_intent" and "document_formats" in value:
+                    # The NODE NAME again, and the key's PRESENCE: the channel
+                    # was seeded at entry with what the caller asked for, so a
+                    # value in it is not news. `document_intent` writes it only
+                    # when it decided something itself, and `[]` — no document
+                    # at all — is exactly such a decision, which is why the
+                    # test is `in` and not truthiness.
+                    yield FormatsChosen(list(value["document_formats"] or []))
                 elif node.startswith("cap_"):
                     # The NODE NAME says which step this is; the update's
                     # `results` does not. A capability sub-graph is seeded with

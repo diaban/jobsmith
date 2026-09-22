@@ -21,6 +21,7 @@ from langgraph.constants import END
 from langgraph.graph import StateGraph
 
 from .deps import Deps
+from .document import DocumentIntent
 from .errors import Escalator, ExecutionError, UserErrorEmitter
 from .executor import Executor
 from .generation import (
@@ -53,16 +54,25 @@ class AgentBuilder:
         *,
         profile: AgentProfile | None = None,
         checkpointer: Any = None,
+        document_formats: tuple[str, ...] | list[str] = (),
     ):
         self.deps = deps
         self.registry = registry
         self.profile = profile or AgentProfile()
         self.checkpointer = checkpointer
+        # What this deployment can render (`available_formats`), for the one
+        # node that has to choose among them. Empty — the default — leaves
+        # `document_intent` silent: `core/` never learns what a Reporter is,
+        # so a builder nobody told cannot invent a format. See core/document.py.
+        self.document_formats = tuple(document_formats)
 
         # --- Step instances ---
         self.input_validator  = InputValidator(self.profile)
         self.router           = Router(deps, registry,
                                        prompt_template=self.profile.router_prompt_template)
+        self.document_intent  = DocumentIntent(
+            deps, self.document_formats,
+            prompt_template=self.profile.document_intent_prompt_template)
         self.planner          = Planner(deps, registry,
                                         prompt_template=self.profile.planner_prompt_template)
         self.executor         = Executor(registry)
@@ -88,7 +98,7 @@ class AgentBuilder:
 
     @staticmethod
     def _route_validate_input(state: AgentState) -> str:
-        return "router" if state.get("input_valid") else "user_error"
+        return "document_intent" if state.get("input_valid") else "user_error"
 
     @staticmethod
     def _route_after_planner(state: AgentState) -> str:
@@ -140,6 +150,7 @@ class AgentBuilder:
 
         # Static nodes
         g.add_node("validate_input",    self.input_validator.run)
+        g.add_node("document_intent",   self.document_intent.run)
         g.add_node("router",            self.router.run)
         g.add_node("planner",           self.planner.run)
         g.add_node("direct_answer",     self.direct_responder.run)
@@ -165,9 +176,17 @@ class AgentBuilder:
         # Edges
         g.set_entry_point("validate_input")
         g.add_conditional_edges("validate_input", self._route_validate_input, {
-            "router": "router",
+            "document_intent": "document_intent",
             "user_error": "user_error",
         })
+        # Before triage, not after it, and that placement is the cost (#90):
+        # one extra LLM call on a run whose caller named no format, paid on
+        # every route. It buys the symmetry #84 already requires of a format
+        # that WAS named — a reader who asked for a PDF gets one whether the
+        # router sent their sentence to the planner or answered it directly —
+        # and this node needs nothing but the query, so a later placement
+        # would only serve one of the two paths.
+        g.add_edge("document_intent", "router")
         g.add_conditional_edges("router", self.router.route, dict(self.route_targets))
         g.add_edge("direct_answer", "validate_output")
         g.add_conditional_edges("planner", self._route_after_planner, {
@@ -214,5 +233,7 @@ def build_agent(
     *,
     profile: AgentProfile | None = None,
     checkpointer: Any = None,
+    document_formats: tuple[str, ...] | list[str] = (),
 ):
-    return AgentBuilder(deps, registry, profile=profile, checkpointer=checkpointer).build()
+    return AgentBuilder(deps, registry, profile=profile, checkpointer=checkpointer,
+                        document_formats=document_formats).build()

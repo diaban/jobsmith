@@ -49,7 +49,15 @@ from .report import (
     ensure_formats_available,
 )
 from .repository import JobRepository, StoreJobRepository
-from .runner import GraphRunner, JobUpdate, NodeErrors, PlanReady, StepFinished, Terminal
+from .runner import (
+    FormatsChosen,
+    GraphRunner,
+    JobUpdate,
+    NodeErrors,
+    PlanReady,
+    StepFinished,
+    Terminal,
+)
 
 # Statuses a job can be resumed from — see `JobManager._begin_resume`.
 RESUMABLE = (JobStatus.CANCELLED, JobStatus.FAILED)
@@ -176,7 +184,8 @@ class JobManager:
         if job.status is not JobStatus.QUEUED:
             raise ValueError(f"job {job_id} is {job.status.value}, expected queued")
         await self._begin(job)
-        return await self._drive(job, self.runner.stream(job.job_id, job.query, job.inputs))
+        return await self._drive(job, self.runner.stream(
+            job.job_id, job.query, job.inputs, job.formats))
 
     async def resume_job(self, job_id: str) -> Job:
         """Re-enter a stopped job's checkpoint and run it to completion.
@@ -305,7 +314,9 @@ class JobManager:
         capability*; it had no outcome for *this needs no document*.
 
         **The request decides, and the run decides only when the request said
-        nothing.** Explicitly, in that order:
+        nothing.** Explicitly, in that order — and since #90 the request has
+        a second reader, so "said nothing" now means neither the caller nor
+        the engine's own document step found anything in it:
 
         - `formats == []` — the request asked for no document. Honoured
           whatever the run turned out to be; this is the channel #55 built and
@@ -336,6 +347,16 @@ class JobManager:
         graph (`AgentBuilder._route_after_planner`): every step dropped as
         inapplicable is a run with nothing to report on, and it is answered
         by the same node.
+
+        The two rules **compose, on disjoint questions**, and neither was
+        subsumed (#90). `document_intent` reads the request and answers only
+        what a request can say — these formats, or explicitly no file; a
+        greeting asks for nothing, which is not the same as asking for no
+        file, and the prompt says so. The plan shape answers the rest, which
+        is the whole of what "the request said nothing" covers. Letting the
+        node also claim the greeting would put two rules on one question,
+        for a case the shape already gets right and at the cost of a model
+        able to delete the deliverable of a real run.
         """
         if job.formats is not None:
             return bool(job.formats)
@@ -389,9 +410,10 @@ class JobManager:
     def _reporter_for(self, job: Job) -> Any:
         """The Reporter this job's deliverable goes through.
 
-        The composed one unless the job asked for formats of its own, which
-        `create_job` already accepted — so this cannot be where a format is
-        found wanting.
+        The composed one unless the job asked for formats of its own — from
+        the caller, which `create_job` already accepted, or from the engine's
+        own document step, which can only name what this deployment renders
+        (#90). Either way this cannot be where a format is found wanting.
         """
         return self.reporter_factory(job.formats) if job.formats else self.reporter
 
@@ -493,6 +515,19 @@ class JobManager:
         match update:
             case NodeErrors(node_errors):
                 errors.extend(node_errors)
+            case FormatsChosen(formats):
+                # The engine read the request for a document the caller said
+                # nothing about (#90). It reaches the record the way every
+                # other graph fact does — the node wrote to state, the runner
+                # translated it, and the fold happens here: a node that called
+                # the repository itself would be the first one that does.
+                job.formats = formats
+                if not formats:
+                    # Known now, so recorded now, exactly as `create_job`
+                    # records it for a caller who asked for no file. The flag
+                    # only ever goes True → False, and this is the True → False.
+                    job.deliverable_expected = False
+                await self._persist_summary(job)
             case PlanReady(plan):
                 job.plan = plan
                 await self.repo.save_plan(job.job_id, plan)

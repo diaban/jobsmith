@@ -439,6 +439,38 @@ def check_document_as_requested(case: EvalCase, obs: Observation) -> Check:
     )
 
 
+def check_document_format(case: EvalCase, obs: Observation) -> Check:
+    """The document is in the format the request asked for, in words (#90).
+
+    Scored against the **case**, like its neighbour above and for the same
+    reason: what the run recorded is the decision under test. `jobsmith run
+    "compare X and Y, give me that as a PDF"` wrote markdown — the sentence
+    was read in exactly one place, the chat model filling `launch_job`'s
+    arguments, so every other door was deaf to it.
+
+    It reads the `main` output's format, which is the file the other report
+    checks read too. A format this deployment cannot render is skipped, not
+    failed: `.[pdf]` needs pango where the run happens, and a golden case
+    must measure a prompt rather than a machine.
+    """
+    name = "document_format"
+    if case.expect_format is None:
+        return _skip(name, "case makes no claim about a format")
+    if obs.error:
+        return _skip(name, "run did not complete")
+    if obs.formats_available and case.expect_format not in obs.formats_available:
+        return _skip(name, f"{case.expect_format} cannot be rendered here")
+    if not obs.report_path:
+        # Not a skip: the request named a file and there is none. The
+        # existence half is `document_as_requested`'s; this half is still
+        # false, and a run that wrote nothing is the loudest way to be.
+        return _check(name, False, f"expected a {case.expect_format} document, wrote none")
+    return _check(
+        name, obs.report_format == case.expect_format,
+        f"expected {case.expect_format}, the main deliverable is {obs.report_format}",
+    )
+
+
 def check_report_written(case: EvalCase, obs: Observation) -> Check:
     """A successful job leaves a deliverable on disk."""
     name = "report_written"
@@ -727,6 +759,7 @@ CHECKS: tuple[Callable[[EvalCase, Observation], Check], ...] = (
     check_grounding_reaches_reasoning,
     check_report_written,
     check_document_as_requested,
+    check_document_format,
     check_report_title,
     check_report_answer,
     check_report_provenance,
@@ -754,6 +787,7 @@ CHECK_NAMES: tuple[str, ...] = (
     "grounding_reaches_reasoning",
     "report_written",
     "document_as_requested",
+    "document_format",
     "report_title",
     "report_answer",
     "report_provenance",
