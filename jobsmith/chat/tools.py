@@ -75,8 +75,9 @@ read by `read_files` (#60). *"What that job produced"* is a **job reference**:
 `from_jobs`, resolved here into full ids and read by `prior_jobs` straight
 from the store, so a follow-up gets the run's answer AND the material its
 steps gathered rather than the prose of the document one of them happened to
-write — thinner by design (a report is a deliverable, not a trace), possibly
-binary, possibly deleted, and since #84 possibly never written at all.
+write — thinner by design (a report is a deliverable, not a trace, and since
+#85 it is the answer and one line naming the job), possibly binary, possibly
+deleted, and since #84 possibly never written at all.
 
 The resolution happens **here and nowhere else**, through the same `_find`
 every other job tool scopes with: a reference becomes a full id of *this

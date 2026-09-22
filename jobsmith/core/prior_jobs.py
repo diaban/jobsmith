@@ -4,14 +4,17 @@
 until now one mechanism served both: *"this file on disk"* — a path the user
 names, read by `DocumentReader` (#60) — and *"what job X produced"*, which
 had to be spelled as the path of the file that job happened to write. That
-round trip costs more than elegance: the report is a deliverable and not a
+round trip costs more than elegance. The report is a deliverable and not a
 trace, so re-reading it hands the follow-up the thinnest representation of
-the run (the final prose, never the notes or the passages behind it) with
-this product's own scaffolding — *About this job*, the plan table, the
-timestamps — mixed in as if it were subject matter. It also assumes a file
-that may be on another machine, may have been deleted, may be a PDF nobody
-can read back, and since #84 may never have been written at all: a run leaves
-a document because the request asked for one.
+the run — the final prose, never the notes or the passages behind it — and
+since #85 it is thinner still: a title, the answer and one line naming the
+job (`jobs/report.py::job_reference`), everything else about the run being
+recorded rather than recited. The file now carries nothing `final_answer`
+does not, so reading it back is reading the answer through a filesystem and
+losing the material on the way. It also assumes a file that may be on
+another machine, may have been deleted, may be a PDF nobody can read back,
+and since #84 may never have been written at all: a run leaves a document
+because the request asked for one.
 
 So this is a port of its own, and its vocabulary is jobs, not files:
 `load(job_id)` answers with what the run produced — the answer it reached and

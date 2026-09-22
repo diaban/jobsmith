@@ -7,12 +7,13 @@ not write, the other is a run of this product, whose answer and whose
 per-step material are in the store, addressable by id.
 
 Serving the second with the first is what this replaces, and the round trip
-cost five things. The report is a **deliverable, not a trace**: per-step
+cost four things. The report is a **deliverable, not a trace**: per-step
 material is deliberately not inlined into it, so re-reading it hands the
-follow-up the thinnest representation of the run. It brings this product's
-own scaffolding back as subject matter — *About this job*, the plan table,
-the timestamps. It assumes a file that exists, is text and is on this
-machine. It needs a path policy for a case that has no path. And since #84 a
+follow-up the thinnest representation of the run — and since #85 that
+representation is thinner still, a title, the answer and one line naming the
+job, which is nothing `final_answer` does not already carry. What re-reading
+it adds is a filesystem; what it loses is every step's material. It assumes
+a file that exists, is text and is on this machine. It needs a path policy for a case that has no path. And since #84 a
 run leaves a document only because the request asked for one, so the file may
 never have been written.
 
