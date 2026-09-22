@@ -66,6 +66,25 @@ answering a slightly different question. Two complementary guards:
 
 The excerpt is deliberately small — it is paid for on every job launch, and a
 job needs the referent, not the thread.
+
+Two referents, and this is where the scope is enforced
+------------------------------------------------------
+A request points at two different kinds of thing and they are not
+interchangeable (#74). *"This file"* is a path the user gave — `source_files`,
+read by `read_files` (#60). *"What that job produced"* is a **job reference**:
+`from_jobs`, resolved here into full ids and read by `prior_jobs` straight
+from the store, so a follow-up gets the run's answer AND the material its
+steps gathered rather than the prose of the document one of them happened to
+write — thinner by design (a report is a deliverable, not a trace), possibly
+binary, possibly deleted, and since #84 possibly never written at all.
+
+The resolution happens **here and nowhere else**, through the same `_find`
+every other job tool scopes with: a reference becomes a full id of *this
+session's* jobs or it is refused before anything runs. That is the whole of
+the access rule, and it is here for the reason the excerpt above is — the job
+engine never sees the conversation, so it cannot know who is asking. A
+reference the model gets wrong comes back to it as text, in the turn, where
+it can still be fixed.
 """
 from __future__ import annotations
 
@@ -81,7 +100,12 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 from langgraph.types import interrupt
 
-from ..core.state import CONVERSATION_INPUT_KEY, SOURCE_FILES_INPUT_KEY, TERMINAL_UNANSWERED
+from ..core.state import (
+    CONVERSATION_INPUT_KEY,
+    FROM_JOBS_INPUT_KEY,
+    SOURCE_FILES_INPUT_KEY,
+    TERMINAL_UNANSWERED,
+)
 from ..jobs.manager import JobManager
 from ..jobs.models import Job, JobStatus
 from ..jobs.report import (
@@ -413,6 +437,7 @@ def make_job_tools(
         runtime: ToolRuntime,
         inputs: dict[str, Any] | None = None,
         source_files: list[str] | None = None,
+        from_jobs: list[str] | None = None,
         document_name: str | None = None,
         document_title: str | None = None,
         formats: list[str] | None = None,
@@ -438,12 +463,22 @@ def make_job_tools(
         ...); the recent conversation turns are attached automatically as
         background — never paste them into `query`.
 
-        `source_files` names files the job must READ — a path the user gave,
-        or the report a previous job of this conversation produced. Write each
-        path exactly as it was given to you; never invent one, never guess at
-        a directory, and never paste a file's contents into `query`. The user
-        is shown this list and is handing those files over, so a path they did
-        not mention has no business in it.
+        `source_files` names files the job must READ — paths the user gave
+        you. Write each one exactly as it was given; never invent one, never
+        guess at a directory, and never paste a file's contents into `query`.
+        The user is shown this list and is handing those files over, so a path
+        they did not mention has no business in it. Do NOT put the file an
+        earlier job of this conversation wrote here: use `from_jobs`.
+
+        `from_jobs` names earlier jobs of THIS conversation whose work this
+        task builds on — "out of that report", "same thing for the other
+        option", "check what you found against X". Pass their ids (the short
+        id is enough), and prefer it over `source_files` every single time the
+        material came from a job here: it hands the run what those jobs
+        actually produced — the answer AND the material each step gathered —
+        instead of re-reading the document one of them wrote, which is thinner,
+        may not exist at all, and may not be readable. A job of another
+        conversation is not yours to reference.
 
         `formats` decides WHETHER there is a file and which. Pass the formats
         the user asked for (`["markdown"]`, `["markdown", "pdf"]`, ...) when
@@ -482,6 +517,28 @@ def make_job_tools(
         sources = [ref for ref in (str(f).strip() for f in source_files or []) if ref]
         if sources:
             job_inputs[SOURCE_FILES_INPUT_KEY] = sources
+
+        # A referenced job travels the same way, and it is resolved HERE —
+        # the one place that knows which session is asking (#74). `_find` is
+        # what every other job tool already scopes with, so a prefix becomes a
+        # full id of THIS session's jobs or becomes nothing: the engine then
+        # carries an id it can trust, and the port never has to guess who is
+        # asking. A reference that resolves to nothing is refused before the
+        # run, like an unusable format — the model can fix it on the spot,
+        # where a job that silently dropped it would answer a different
+        # question from the one the user asked.
+        referenced: list[str] = []
+        for prefix in (str(j).strip() for j in from_jobs or []):
+            if not prefix:
+                continue
+            found = await _find(manager, session_id, prefix)
+            if found is None:
+                return (f"NOT launched: no unique job of this conversation matches "
+                        f"{prefix!r}. Nothing ran. Check the id (list the session's "
+                        "jobs if you need to) and propose a launch again.")
+            referenced.append(found.job_id)
+        if referenced:
+            job_inputs[FROM_JOBS_INPUT_KEY] = referenced
 
         # Refused BEFORE the card, not after the run: a format nothing can
         # render here and a name that is not a filename are both things the

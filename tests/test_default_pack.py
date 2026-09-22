@@ -356,10 +356,13 @@ async def test_a_search_that_found_nothing_invents_no_refusal():
     A file the user named and could not be opened is missing from the answer
     they expect. A query that matched nothing returned nothing — the step
     fails, and "the sources are silent about X" is not a document anyone
-    asked for. So `REFUSALS` names `read_files` and nothing else, rather than
-    giving the search an equivalent it does not have.
+    asked for. So `REFUSALS` names only the steps that were POINTED AT
+    something — `read_files` (a file) and, since #74, `prior_jobs` (a run) —
+    rather than giving the search an equivalent it does not have.
     """
-    assert ResearchCapability.REFUSALS == (("read_files", "unreadable"),)
+    named = {step for step, _ in ResearchCapability.REFUSALS}
+    assert named == {"read_files", "prior_jobs"}
+    assert ("read_files", "unreadable") in ResearchCapability.REFUSALS
     llm = FakeLLM(PACK_SCRIPT)
     await ResearchCapability(llm).build().ainvoke({
         "query": "study X", "inputs": {},

@@ -71,8 +71,17 @@ class ResearchCapability(Capability):
     #: because another matched first would lose material nobody can recover
     #: later. Fixed order, so the prompt is deterministic (the `results` dict
     #: arrives in wave order — see the determinism caveat in `core/state.py`).
+    #:
+    #: `prior_jobs` (#74) is here for the reason #81 exists at all: the
+    #: material of an earlier run reaching only the final generator is the
+    #: same defect as retrieved passages reaching only it, and a follow-up
+    #: whose notes are written from memory about a job it was handed is the
+    #: exact failure this pack keeps producing. It sits beside `read_files`
+    #: because they are the two things the request POINTED AT — a file, a run
+    #: — as against the two that were searched for it.
     GROUNDING: ClassVar[tuple[tuple[str, str], ...]] = (
         ("read_files", "documents"),
+        ("prior_jobs", "documents"),
         ("documents", "documents"),
         ("web_search", "documents"),
     )
@@ -93,7 +102,15 @@ class ResearchCapability(Capability):
     #: pointed at by the user and is missing from the answer they expect.
     #: `documents` and `web_search` are deliberately absent rather than given
     #: an invented equivalent.
-    REFUSALS: ClassVar[tuple[tuple[str, str], ...]] = (("read_files", "unreadable"),)
+    #:
+    #: `prior_jobs` has one for the same reason `read_files` does and not by
+    #: analogy: a job the request named and that could not be read is a gap
+    #: the reader expects to be filled, and notes written up from memory in
+    #: its place are indistinguishable from notes written from the run.
+    REFUSALS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("read_files", "unreadable"),
+        ("prior_jobs", "unavailable"),
+    )
 
     #: What the retrieved material may spend of the prompt, in characters.
     #:

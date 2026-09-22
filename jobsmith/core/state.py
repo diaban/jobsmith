@@ -115,6 +115,18 @@ CONVERSATION_INPUT_KEY = "conversation"
 # a path is allowed to be is `core/paths.py`.
 SOURCE_FILES_INPUT_KEY = "source_files"
 
+# The jobs a request builds ON — ids of earlier runs whose material this one
+# starts from (#74). The OTHER referent, and deliberately not the one above:
+# `source_files` is *this file on disk*, a document the user named and this
+# product did not write; this one is *what job X produced*, which is in the
+# store and needs no path, no root and no file to exist. The chat layer fills
+# it (`chat/tools.py`), having resolved each reference against the session's
+# own jobs, and whichever capability declares
+# `requires_inputs=("from_jobs",)` consumes it through the `PriorJobSource`
+# port (`core/prior_jobs.py`). Ids, never material: the framework carries the
+# key and reads nothing.
+FROM_JOBS_INPUT_KEY = "from_jobs"
+
 
 # ---------- Terminal vocabulary ----------
 

@@ -27,7 +27,9 @@ from ..core.builder import AgentBuilder
 from ..core.deps import Deps
 from ..core.registry import CapabilityRegistry
 from ..jobs.manager import JobManager
+from ..jobs.prior import RepositoryPriorJobs
 from ..jobs.report import available_formats, compose_reporters, parse_report_formats
+from ..jobs.repository import StoreJobRepository
 from .persistence import open_persistence, pick_db
 from .providers import make_chat_model, make_llm, pick_provider
 
@@ -94,6 +96,13 @@ async def build_app(
     stack = AsyncExitStack()
     try:
         checkpointer, store = await open_persistence(pick_db(db), stack)
+        # One repository over that store, shared by the manager that writes
+        # job records and by the port a capability reads an earlier run's
+        # material through (#74). Built here rather than left to `JobManager`
+        # because it is needed BEFORE the manager exists — the registry is
+        # composed first — and two repositories over one store would be two
+        # answers to the question "what did that job produce".
+        repository = StoreJobRepository(store)
         # The agent opens what it needs on OUR stack: it knows what its
         # backends are, we own their lifetime and the loop they live in.
         # An injected `resources` belongs to the caller — we do not close it.
@@ -112,7 +121,14 @@ async def build_app(
         registry = CapabilityRegistry(
             definition.capabilities(
                 AgentContext(llm, resources, artifacts,
-                             readable_roots=(str(reports_dir),))
+                             readable_roots=(str(reports_dir),),
+                             # ...and reads what an EARLIER RUN produced by its
+                             # id (#74). The other referent, and the one that
+                             # needs no file: a follow-up asking for "a
+                             # one-pager out of that job" gets the run's own
+                             # material rather than the prose of a document
+                             # that may not even have been written (#84).
+                             prior_jobs=RepositoryPriorJobs(repository))
             )
         )
         graph = AgentBuilder(
@@ -135,7 +151,7 @@ async def build_app(
             return compose_reporters(formats, registry)
 
         manager = JobManager(
-            graph, store,
+            graph, store, repository=repository,
             reporter=reporter_for(pick_report_formats(report_format)),
             reporter_factory=reporter_for,
             reports_dir=reports_dir,
