@@ -5,14 +5,15 @@
 keeps a job from being the model talking to itself; the rest reason over
 whatever it found — `research` writes its notes from the retrieved passages
 and the steps after it read those notes (#81), where until then the material
-reached the final generator and nothing else. The two grounding steps answer
-different questions —
-`read_files` opens the document the request NAMED, `documents` searches the
-configured material for a topic — which is why the planner is offered both
-rather than one step with a mode.
+reached the final generator and nothing else. The three grounding steps
+answer three different questions — `read_files` opens the document the
+request NAMED, `prior_jobs` loads what an earlier RUN produced (#74), and
+`documents` searches the configured material for a topic — which is why the
+planner is offered all three rather than one step with a mode.
 
-Four steps appear **only when something backs them** — `read_files` with a
-readable root (see `readable_roots`), `documents` with `--docs PATH` /
+Five steps appear **only when something backs them** — `read_files` with a
+readable root (see `readable_roots`), `prior_jobs` with a `PriorJobSource`
+the composition root supplied, `documents` with `--docs PATH` /
 `$JOBSMITH_DOCS`, `web_search` with `$TAVILY_API_KEY`, `slide_deck` with a
 `DeckRenderer` (the extra `.[pptx]`). A capability the agent cannot serve
 should not be in the registry at all: the planner would otherwise plan a step
@@ -32,6 +33,7 @@ from ..base import AgentContext, AgentDefinition
 from .analysis import AnalysisCapability
 from .critique import CritiqueCapability
 from .documents import DocumentsCapability, WebSearchCapability
+from .prior_jobs import PriorJobsCapability
 from .profile import DEFAULT_APP_PROFILE
 from .read_files import ReadFilesCapability
 from .research import ResearchCapability
@@ -175,11 +177,24 @@ def default_capabilities(ctx: AgentContext) -> list[Capability]:
     llm = ctx.llm
     resources: DefaultResources = ctx.resources or DefaultResources()
     capabilities: list[Capability] = []
-    # First, because a document the request named is the most specific
-    # material there is — and, like every other conditional step, present only
-    # when something backs it: no readable root, no capability. `requires_inputs`
-    # is the second gate, dropping it from any plan for a request that named
-    # no file at all.
+    # First, because what an EARLIER RUN of this product established is the
+    # most specific material there is: not a document somebody wrote about the
+    # subject, but this agent's own record of work already done on it (#74).
+    # Registered only when the composition root supplied the port — a
+    # hand-assembled context has no job history — and gated a second time by
+    # `requires_inputs`, which drops it from any plan for a request that
+    # referenced no job.
+    #
+    # The two gated steps are deliberately at the FRONT of the list, and that
+    # is not cosmetic: `KeywordLLM` chains the registry in listed order, plan
+    # validation drops an inapplicable step and **prunes its name from the
+    # surviving `depends_on`**, so a gated step in the middle severs the chain
+    # it sat in — the grounding step and the reasoning step stop being
+    # connected, which is precisely the edge #81 exists to make real.
+    if ctx.prior_jobs is not None:
+        capabilities.append(PriorJobsCapability(ctx.prior_jobs))
+    # Then the document the request named, on the same two gates: no readable
+    # root, no capability; no file named, no step in the plan.
     if roots := readable_roots(ctx, resources):
         capabilities.append(ReadFilesCapability(LocalFileReader(roots)))
     if resources.documents is not None:
@@ -218,6 +233,7 @@ __all__ = [
     "DocumentReader",
     "DocumentSource",
     "DocumentsCapability",
+    "PriorJobsCapability",
     "Slide",
     "SlideDeckCapability",
     "TavilySource",

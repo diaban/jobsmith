@@ -37,6 +37,7 @@ from typing import Any
 from ..core.artifacts import ArtifactStore
 from ..core.capability import Capability
 from ..core.deps import LLMClient
+from ..core.prior_jobs import PriorJobSource
 from ..core.profile import AgentProfile
 
 
@@ -68,12 +69,22 @@ class AgentContext:
     is searchable, so refusing to open a file *in* it by name would be
     incoherent), never more. Empty means no root: a capability that needs one
     then stays out of the registry, the rule `documents` and `vision` follow.
+
+    `prior_jobs` is the third of that kind, and the newest (#74): the port a
+    capability reads an EARLIER RUN's material through — its answer and its
+    per-step results — when the request builds on one. It is the composition
+    root's for the same reason the two above are, and for one more: where job
+    records live is the deployment's persistence choice (`jobs/repository.py`),
+    which is not something an agent may open for itself. `build_app` always
+    supplies one; `None` means no job history is reachable, and a capability
+    that needs one then stays out of the registry.
     """
 
     llm: LLMClient
     resources: Any = None
     artifacts: ArtifactStore | None = None
     readable_roots: tuple[str, ...] = ()
+    prior_jobs: PriorJobSource | None = None
 
 
 @dataclass(frozen=True)

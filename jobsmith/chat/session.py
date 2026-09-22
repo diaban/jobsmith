@@ -30,7 +30,7 @@ from ..core.state import TERMINAL_UNANSWERED
 from ..jobs.manager import JobManager
 from ..jobs.models import Job, JobStatus
 from .runner import CUSTOM_ANSWER
-from .tools import _writer, make_job_tools, progress_line, progress_signature
+from .tools import make_job_tools, progress_line, progress_signature, stream_writer
 
 DEFAULT_CHAT_SYSTEM_PROMPT = """You are an assistant that runs real tasks on a job engine.
 
@@ -168,13 +168,10 @@ class JobNotificationMiddleware(AgentMiddleware):
         an answer that exists in no channel at all, which is the defect, not
         a policy about it.
 
-        `_writer` crosses a module line on purpose: it is the ONE way into a
-        turn that a tool or a middleware has (`get_stream_writer`, guarded for
-        the case where nothing is listening), and a second copy of it here
-        would be a second answer to "is anyone watching this run". Private
-        because nothing outside this package has business writing into a turn;
-        making it public is the tidier ending and belongs with whoever next
-        opens `chat/tools.py`.
+        `stream_writer` crosses a module line on purpose: it is the ONE way
+        into a turn that a tool or a middleware has (`get_stream_writer`,
+        guarded for the case where nothing is listening), and a second copy of
+        it here would be a second answer to "is anyone watching this run".
 
         The write happens *before* the model call it rides with, so the
         reader sees the answer and then the model's one sentence about it. A
@@ -190,7 +187,7 @@ class JobNotificationMiddleware(AgentMiddleware):
         # The trailing blank line keeps the model's own sentence from running
         # into the last line of the answer: front-ends append tokens to one
         # growing answer (`chat/tools.py` writes it the same way).
-        _writer()({"event": CUSTOM_ANSWER, "text": answer + "\n\n"})
+        stream_writer()({"event": CUSTOM_ANSWER, "text": answer + "\n\n"})
         return True
 
     @staticmethod
