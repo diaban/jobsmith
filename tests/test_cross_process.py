@@ -219,6 +219,73 @@ async def test_a_cancel_of_a_dead_owner_s_job_is_settled_by_the_canceller(tmp_pa
         assert "already stopped" in stopped.error
 
 
+async def test_an_owner_settling_between_the_canceller_s_two_reads_keeps_its_ending(tmp_path):
+    """The interleaving that left a lease behind (#63), forced, not waited for.
+
+    The canceller reads two things — the summary and the control record — and
+    the owner settles BETWEEN them: CANCELLED written, then its lease released,
+    in that order (the ordering `_await_remote_stop` rests on). Read summary
+    first and the canceller sees RUNNING, then no lease, and takes over a job
+    that had just ended: a fence left behind and a second ending over the
+    owner's. Read the control record first and it sees a live lease, then the
+    summary on the next round is already final and is returned untouched.
+    """
+    db = str(tmp_path / "agent.db")
+    async with process(db, tmp_path) as canceller:
+        job = await canceller.create_job("settled at the worst moment")
+        owner = ProcessIdentity.current()          # alive: our pid, another token
+        await canceller.repo.save_lease(job.job_id, owner.lease(30))
+        job.status = JobStatus.RUNNING
+        await canceller.repo.save_summary(job)
+
+        repo = canceller.repo
+        load, request_cancel = repo.load, repo.request_cancel
+        armed = False
+
+        async def request_then_arm(job_id, at):
+            nonlocal armed
+            await request_cancel(job_id, at)
+            armed = True                            # the next summary read...
+
+        async def load_then_owner_settles(job_id):
+            nonlocal armed
+            record = await load(job_id)
+            if armed:                               # ...is followed at once by
+                armed = False                       # the owner's settlement
+                settled = await load(job_id)
+                settled.status = JobStatus.CANCELLED
+                await repo.save_summary(settled)    # final summary FIRST,
+                await repo.release_lease(job_id)    # lease released AFTER
+            return record
+
+        repo.request_cancel = request_then_arm      # type: ignore[method-assign]
+        repo.load = load_then_owner_settles         # type: ignore[method-assign]
+
+        answered = await canceller.cancel_job(job.job_id)
+
+        assert answered.status is JobStatus.CANCELLED
+        assert answered.error is None, "the owner's ending was rewritten"
+        final = await load(job.job_id)
+        assert final.status is JobStatus.CANCELLED and final.error is None
+        assert (await repo.load_control(job.job_id)).lease is None, "a fence was left"
+
+
+async def test_a_takeover_never_writes_over_an_ending_already_written(tmp_path):
+    """`_settle` is the last line of that rule: whatever a takeover decided on
+    the way, an owner that wrote its ending first keeps it."""
+    db = str(tmp_path / "agent.db")
+    async with process(db, tmp_path) as other:
+        job = await other.create_job("ended by its owner")
+        stale = await other.get_job(job.job_id)     # what the takeover saw
+        stale.status = JobStatus.RUNNING
+        job.status = JobStatus.DONE                 # what the owner then wrote
+        await other.repo.save_summary(job)
+
+        kept = await other._settle(stale, JobStatus.FAILED, "interrupted: judged dead")
+        assert kept.status is JobStatus.DONE and kept.error is None
+        assert (await other.get_job(job.job_id)).status is JobStatus.DONE
+
+
 async def test_a_queued_job_cancelled_elsewhere_never_runs(tmp_path):
     """The race a tombstone alone loses: a process picks the job up at the
     instant another cancels it. The request is heard before anything runs."""

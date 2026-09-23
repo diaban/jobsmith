@@ -4,7 +4,7 @@
 #   make chat LLM=openai        force a provider (anthropic|openai|fake)
 #   make chat AGENT=banking     run another agent (see jobsmith/agents/)
 #   make serve PORT=9000        daemon port (default 8000)
-#   make chat DB=agent.db       persist to SQLite (or a postgres:// DSN)
+#   make chat DB=memory         keep nothing (default: SQLite in the user data dir)
 #   make test T=router          only tests matching a keyword (pytest -k)
 #   make worktree B=feat/1-x     isolated checkout + venv for one issue
 

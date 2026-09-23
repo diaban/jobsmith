@@ -126,7 +126,7 @@ async def test_two_capabilities_share_one_connection_with_an_adapter_each(tmp_pa
     async with registered(shared_backend_agent(log)):
         llm = FakeLLM({"planner": plan_json("text_lookup", "visual_lookup")},
                       default="A sufficiently long answer for this run.")
-        app = await build_app(agent="shared_backend", llm=llm, chat_model=object(),
+        app = await build_app(agent="shared_backend", llm=llm, chat_model=object(), db="memory",
                               reports_dir=str(tmp_path))
         try:
             job = await app.manager.create_job("acme")
@@ -157,7 +157,7 @@ async def test_resources_are_released_when_startup_fails(tmp_path):
     )
     async with registered(broken):
         with pytest.raises(RuntimeError, match="bad capability pack"):
-            await build_app(agent="broken", llm=object(), chat_model=object())
+            await build_app(agent="broken", llm=object(), chat_model=object(), db="memory")
     assert log == ["open", "close"]
 
 
@@ -167,7 +167,7 @@ async def test_an_agent_that_declares_no_resources_gets_none(tmp_path):
         capabilities=lambda ctx: [], profile=AgentProfile(),
     )
     async with registered(bare):
-        app = await build_app(agent="bare", llm=object(), chat_model=object())
+        app = await build_app(agent="bare", llm=object(), chat_model=object(), db="memory")
         try:
             assert app.resources is None
         finally:
@@ -179,7 +179,7 @@ async def test_the_default_agent_has_no_document_source_unless_configured(monkey
     otherwise the planner plans a step that can only fail."""
     monkeypatch.delenv("JOBSMITH_DOCS", raising=False)
     monkeypatch.setattr("sys.argv", ["pytest"])
-    app = await build_app(agent="default", llm=object(), chat_model=object())
+    app = await build_app(agent="default", llm=object(), chat_model=object(), db="memory")
     try:
         assert app.resources.documents is None
         assert not [n for n in app.manager.graph.nodes if n == "cap_documents"]

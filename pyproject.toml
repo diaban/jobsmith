@@ -6,6 +6,10 @@ requires-python = ">=3.11"
 dependencies = [
     "langgraph>=1.0",
     "langchain>=1.3",   # create_agent + middleware for the chat layer
+    # The DEFAULT persistence (#63): an unconfigured jobsmith keeps its jobs
+    # in a SQLite file under the user's data dir. Core, not an extra, so the
+    # same command keeps its jobs on every install. Pure Python (aiosqlite).
+    "langgraph-checkpoint-sqlite>=3.1",
 ]
 
 [project.optional-dependencies]
@@ -51,11 +55,11 @@ pptx = [
 tui = [
     "textual>=1.0",
 ]
-# Persistence backends (checkpointer + store). Without either, state is
-# in-memory only and nothing survives the process.
-sqlite = [
-    "langgraph-checkpoint-sqlite>=3.1",
-]
+# Persistence backends (checkpointer + store). SQLite is the default and a
+# core dependency since #63; `sqlite` stays as an EMPTY extra only so that
+# existing `.[sqlite]` install commands keep working instead of failing on an
+# unknown extra.
+sqlite = []
 postgres = [
     "langgraph-checkpoint-postgres>=3.1",
     "psycopg[binary,pool]>=3.2",
@@ -68,7 +72,6 @@ dev = [
     "pyright>=1.1.400",
     "fastapi>=0.115",
     "httpx>=0.27",
-    "langgraph-checkpoint-sqlite>=3.1",
     # Snapshot testing for the TUI. Textual is listed with it so a dev install
     # can run the TUI's tests without also asking for the extra a *user*
     # installs. The plugin is pinned EXACTLY, and that is not caution: the

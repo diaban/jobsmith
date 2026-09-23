@@ -311,7 +311,7 @@ async def test_the_composition_root_hands_a_capability_a_store(tmp_path):
     try:
         llm = FakeLLM({"planner": plan_json("chart")},
                       default="A sufficiently long final answer for this run.")
-        app = await build_app(agent="drawer", llm=llm, chat_model=object(),
+        app = await build_app(agent="drawer", llm=llm, chat_model=object(), db="memory",
                               reports_dir=str(tmp_path))
         try:
             done = await app.manager.run_job(

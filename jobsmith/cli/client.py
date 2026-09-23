@@ -11,8 +11,11 @@ cases exist in exactly one place.
 
 The difference that matters is lifetime: with a daemon a job outlives the
 command that launched it and any other command can list or cancel it;
-embedded, everything dies with the process — which is why embedded mode says
-so out loud.
+embedded, a job still RUNNING dies with the process — which is why embedded
+mode says so out loud. What already finished is not lost either way: that is
+the persistence's business, and the default keeps it (#63, see
+`app/persistence.py`), so the embedded banner speaks only of running jobs and
+the persistence banner right after it says where records are kept.
 """
 from __future__ import annotations
 
@@ -380,5 +383,5 @@ async def open_client(
         if client is not None:
             print(f"[daemon: {url} — jobs keep running after you exit]", file=sys.stderr)
             return client
-        print(f"[no daemon at {url} — running embedded: jobs stop when you exit]", file=sys.stderr)
+        print(f"[no daemon at {url} — running embedded: a running job stops when you exit]", file=sys.stderr)
     return await EmbeddedClient.create(**build_kwargs)

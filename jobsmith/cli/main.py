@@ -14,7 +14,11 @@
 Every command except `serve` is a CLIENT: it talks to a daemon when one is
 running (so jobs outlive the command that launched them, and any other
 command can list or cancel them), and otherwise runs the agent embedded in
-the process — convenient for a quick try, but jobs then stop when it exits.
+the process — convenient for a quick try, but a job still running then stops
+when it exits. What finished is kept either way: an unconfigured jobsmith
+keeps its jobs in a SQLite file under the user's data dir (`--db=memory` for
+the old keep-nothing behaviour), so `jobs`, `job` and `resume` find them from
+any later process.
 `--local` forces embedded mode, `--url` points at another daemon.
 
 `--agent NAME` picks which agent to run (see jobsmith/agents/); it applies
@@ -28,6 +32,7 @@ import asyncio
 import sys
 
 from ..agents import agent_names
+from ..app.persistence import default_db_path
 from ..service import BinaryDeliverable, ServiceUnavailable
 from .client import DEFAULT_URL, AgentClient, open_client
 from .repl import no_document_note, run_repl, show_job
@@ -42,7 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--llm", choices=("anthropic", "openai", "fake"),
                         help="LLM provider (default: auto-detected from API keys)")
     parser.add_argument("--db", metavar="SPEC",
-                        help="memory | <file.db> | <postgres DSN>  (default: $JOBSMITH_DB)")
+                        help="memory | <file.db> | <postgres DSN>  "
+                             f"(default: $JOBSMITH_DB, else {default_db_path()})")
     parser.add_argument("--agent", metavar="NAME", choices=agent_names(),
                         help=f"which agent to run: {', '.join(agent_names())} (default: default)")
     parser.add_argument("--docs", metavar="DIR",
@@ -124,7 +130,8 @@ async def cmd_run(client: AgentClient, args) -> int:
     # it before it starts. Only a daemon can outlive the command.
     wait = args.wait or not client.persistent
     if wait and not args.wait:
-        print("no daemon: running the job here — it needs this process to stay alive",
+        print("no daemon: running the job here — it needs this process to stay alive"
+              " (its record is kept once it ends; `jobsmith serve` runs jobs without you)",
               file=sys.stderr)
     launched = await client.launch_job(args.task)
     job_id = launched["job_id"]

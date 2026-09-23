@@ -56,7 +56,7 @@ A session looks like this:
 $ jobsmith chat
 [jobs llm: Claude via AnthropicLLMClient — claude-opus-5]
 [chat llm: ChatAnthropic — claude-opus-5]
-[persistence: sqlite — agent.db]
+[persistence: sqlite — jobs kept in /home/you/.local/share/jobsmith/jobs.db  (default; --db=memory keeps nothing)]
 [session 1635d9410abb494a8d2c7c6c31bf558b]
 
 agent> compare hexagonal and layered architectures for an LLM agent, as a report
@@ -87,6 +87,32 @@ so reading it is what catches a "that" whose referent has gone), the **files it
 may open**, and **what it will write**. What changed is that they are stated
 rather than asked — and `stop it` is the line that replaces the gate:
 cancelling is now the undo.
+
+### Where your jobs live
+
+**An unconfigured jobsmith keeps its jobs.** Jobs, their per-step results and
+your conversations go to a SQLite file in your user data directory, and the
+documents they write go next to it — so `jobsmith jobs`, `job <id>`, `resume`
+and `chat --session <id>` find them from any later process, whichever directory
+you run it from:
+
+| platform | data directory |
+|---|---|
+| Linux & co | `$XDG_DATA_HOME/jobsmith`, else `~/.local/share/jobsmith` |
+| macOS | `~/Library/Application Support/jobsmith` (or `$XDG_DATA_HOME/jobsmith` if you set it) |
+| Windows | `%LOCALAPPDATA%\jobsmith` (or `$XDG_DATA_HOME\jobsmith` if you set it) |
+
+Inside it: `jobs.db` (the default `--db`) and `reports/` (the default reports
+directory). The first run creates both.
+
+This used to be the other way round — the default was in-memory, and a job
+disappeared with the process that ran it, leaving its report orphaned in an
+`artifacts/` folder under whatever directory you had run it from. To get that
+behaviour back, ask for it: `--db=memory` (or `JOBSMITH_DB=memory`); to keep
+the reports where you were, `JOBSMITH_REPORTS_DIR=artifacts` (a relative value
+is resolved once, at startup, so every path a job records is absolute).
+SQLite is a core dependency now, not the `.[sqlite]` extra — that extra still
+exists, empty, so old install commands keep working.
 
 ---
 
@@ -169,8 +195,10 @@ pipeable: `jobsmith jobs | cut -d' ' -f1`.
 **A job must outlive the command that launched it.** `jobsmith serve` is a
 long-lived process owning the job engine; every other command is a *client*
 that talks to it over HTTP. If no daemon is running, commands fall back to
-running the agent **embedded** in their own process — convenient, but jobs then
-die with the command (`run` compensates by waiting, and says so on stderr).
+running the agent **embedded** in their own process — convenient, but a job
+still running then stops with the command (`run` compensates by waiting, and
+says so on stderr). Its record is kept either way: the next process marks it
+interrupted, and `jobsmith resume <id>` carries on from its checkpoint.
 
 ```bash
 jobsmith serve &                 # jobs now survive everything else
@@ -237,8 +265,8 @@ step opens it:
 ```
 you : make a one-pager out of the report from this morning
       (the notice says which files the run will read, before it reads them)
-      task     : condense artifacts/8aea26ec.md into a one-page brief
-      reads    : artifacts/8aea26ec.md
+      task     : condense /home/you/.local/share/jobsmith/reports/8aea26ec.md into a one-pager
+      reads    : /home/you/.local/share/jobsmith/reports/8aea26ec.md
       stop it  : /cancel 4f21b0aa
 ```
 
@@ -625,21 +653,23 @@ handle per-provider tool formats), the job engine uses a dependency-light
 | `$JOBSMITH_INLINE_ANSWER_MAX` | characters an answer may have and still be written into the conversation word for word when a background job lands (default `2000`). Past it you get the path instead. `0` never writes one — except for a run that produced no file, where the conversation is the only channel there is |
 | `$JOBSMITH_APPROVE_JOBS` | `1` restores the y/N approval card before a task runs. Off by default: the agent says what it is doing, and cancelling is the undo |
 | extra `.[pptx]` | enables the `slide_deck` step — a `.pptx` annex next to the report; absent, the capability is not registered |
-| `--db memory\|<file.db>\|<postgres DSN>` | persistence (default: `$JOBSMITH_DB`, else memory) |
+| `--db memory\|<file.db>\|<postgres DSN>` | persistence (default: `$JOBSMITH_DB`, else `jobs.db` in the data directory — see [Where your jobs live](#where-your-jobs-live)). `memory` keeps nothing past the process |
+| `$JOBSMITH_REPORTS_DIR` | where deliverables and annexes are written (default: `reports/` in the data directory). Resolved to an absolute path at startup; it is also the directory `read_files` may read a report back from |
+| `$XDG_DATA_HOME` | relocates the data directory (`$XDG_DATA_HOME/jobsmith`), on every platform |
 | `$JOBSMITH_PRICES` | per-model prices for the cost estimate, as inline JSON or a path to a JSON file (USD per million tokens) |
 | `$JOBSMITH_REPORT_FORMAT` | `markdown` (default), `html` or `pdf` (extra `.[pdf]` + pango/cairo) — the format of a document **asked for without naming one** ("…as a report", `formats: ["default"]`). It never causes a file to be written: a request that says nothing about a document gets none (#96). A comma-separated list (`markdown,pdf`) writes one file per format, the first being the main one; a format nothing can render here is refused at startup |
 | `--url` / `--local` | point at another daemon / never use one |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | key auto-detection; Anthropic wins if both are set |
 | `ANTHROPIC_MODEL`, `OPENAI_MODEL`, `OPENAI_BASE_URL` | model override; the base URL points at Ollama, vLLM or a gateway |
 
-Persistence is opt-in and backs both jobs and conversations:
+Persistence is on by default and backs both jobs and conversations. Pick
+another file, Postgres, or nothing at all:
 
 ```bash
-uv pip install -e ".[sqlite]"    && jobsmith --db agent.db chat
+jobsmith --db ./project.db chat                                       # another SQLite file
 uv pip install -e ".[postgres]"  && jobsmith --db postgresql://user:pass@localhost/agent chat
+jobsmith --db memory chat                                             # keep nothing
 ```
-
-Without a backend everything is in-memory: only the written reports survive.
 
 ---
 
@@ -735,7 +765,7 @@ it on fakes; `make chat AGENT=banking` opens it in the normal REPL.
 
 Working end to end: chat that runs tasks in the turn and promotes the slow
 ones, DAG planning and parallel execution, persistence
-(memory/SQLite/Postgres), the daemon/client split, the HTTP API with SSE,
+(SQLite by default, Postgres, or memory on request), the daemon/client split, the HTTP API with SSE,
 markdown deliverables.
 
 Honest v1 boundaries:

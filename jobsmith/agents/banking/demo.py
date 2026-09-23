@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tempfile
 from typing import Any
 
 from ...app.agent import build_app
@@ -58,11 +59,17 @@ class DemoS3:
 
 
 async def main() -> None:
+    # A scripted run on fakes is not work anyone will come back to: it keeps
+    # nothing, rather than adding a fake job to the user's real job list —
+    # which is where an unconfigured app keeps them since #63.
+    scratch = tempfile.mkdtemp(prefix="jobsmith-demo-")
     app = await build_app(
         agent="banking",
         llm=DemoLLM(),
         chat_model=object(),                     # no chatting in this demo
         resources=BankingResources(search=DemoSearch(), objects=DemoS3()),
+        db="memory",
+        reports_dir=scratch,
     )
     jobs = app.manager
     try:
