@@ -1,0 +1,49 @@
+# 0000 — Foundations: decisions older than the issue that would carry them
+
+- **Issue:** none — these predate the issue that would have carried them; each passage names its own origin commit in `git log -S`
+- **Status:** accepted
+- **Source:** migrated verbatim from `CLAUDE.md` at `8326b98` (#102). The text is the original; only the headings (which section of `CLAUDE.md` it lived in) and the links were added.
+
+## From “Commands”
+
+The REPL is a CONVERSATION by default (chat agent; complex asks → a notice saying what will run, what it will read and what it will write → the task runs in the turn and its answer is printed verbatim → or, past `$JOBSMITH_SYNC_TIMEOUT`, a promotion to the background and a synthesis + report path on a later turn); `/bg <text>` is the explicit escalation — run it in the background and do not wait. It auto-selects the provider for BOTH stacks (`--llm=anthropic|openai|fake` overrides): the job engine uses `jobsmith/clients.py` adapters, the chat agent uses LangChain models (`langchain-anthropic`/`langchain-openai`, extras `chat-anthropic`/`chat-openai`; fake mode needs neither). Job-engine LLM selection: `AnthropicLLMClient` (`claude-opus-5`) when `ANTHROPIC_API_KEY` is set, else `OpenAILLMClient` (`gpt-5.1`; honors `OPENAI_BASE_URL` for Ollama/vLLM/gateways) when `OPENAI_API_KEY` is set, else the deterministic `KeywordLLM` fake. Both real adapters live in `jobsmith/clients.py`, implement chat+vision, take an injectable `client` for tests, and raise `RuntimeError` on refusals so they flow through the framework's NodeError path. Both adapters also book each response's tokens into the usage ledger (`core/usage.py`) instead of discarding the SDK's `usage`, pricing it by the model the *response* reports (so a server-side fallback is billed as what actually served); `$JOBSMITH_PRICES` overrides the price table. Provider quirks handled there: the Anthropic adapter drops `temperature` (removed on Claude Opus 5 — sending it 400s), hoists `system` messages to the top-level param, and enables server-side refusal fallbacks; the OpenAI adapter drops `temperature` and uses `max_completion_tokens` for reasoning models (gpt-5*/o*).
+
+## From “Working on this repo”
+
+This exists because green checks on a stale base do not mean the merge is green. Git only sees *textual* conflicts; two PRs can merge cleanly and still break each other — one renames what the other calls, one reshapes an output the other asserts on. Three PRs in the first parallel batch merged on stale CI and survived only because the combination was verified by hand each time.
+
+**`uv.lock` is committed** and must be regenerated (`uv lock`) in the same commit as any dependency change. This project has already been bitten by version drift (`create_react_agent` deprecation, the removed `llm_input_messages` channel, checkpoint-sqlite's `isolation_level`), which is exactly what the lockfile prevents across sessions.
+
+`make coverage` reports per-module coverage (89% overall; `jobs/` and most of `core/` at 100%). The thin areas are still the interactive layers — `cli/main.py` 51%, `cli/repl.py` 72%, `chat/tools.py` 78% — so a change landing there needs its tests written *with* it, not after. `cli/repl.py` is only that high because #50's rendering arrived with its tests; the argparse entrypoint has none of that.
+
+## From “CLI + daemon (`cli/`) — where jobs actually run”
+
+**All diagnostics go to stderr** (provider/persistence/daemon banners) — stdout stays pipeable (`jobsmith jobs | cut -d' ' -f1`). The REPL's streamed turn splits the same way: the answer's tokens go to stdout as they arrive, tool activity (`… sizing up a background job`) to stderr, because "what it is doing right now" is over the moment it is read. Both are flushed per write — a line still being written has no newline to trigger one, and an unflushed answer is the silence this replaced.
+
+## From “Agents (`agents/`) — what an agent *is*”
+
+**Resources — who opens, who closes.** The agent knows *what* to open (which backend, which collection); the composition root owns the *lifetime* and the event loop. So `open_resources` is handed `build_app`'s own `AsyncExitStack` and returns whatever it built: teardown happens in reverse order on `AgentApp.aclose()`, **including when startup itself failed** (`tests/test_resources.py` pins that). `build_app(resources=...)` injects them instead (the demo and tests use it; the caller then owns them).
+
+**Several capabilities on one backend**: share the *connection*, give each capability **its own adapter** for the port it declared — never one fat client exposing both sets of methods. Capabilities run in parallel waves, so the shared thing must be a **pool**, not a raw connection. `tests/test_resources.py` demonstrates the exact shape (two capabilities, two adapters, one pool).
+
+`agents/default/`: `read_files` / `documents` → `research` (decompose into aspects, lenient JSON, then structured notes **from whatever the retrieval steps found**, see #81) → `analysis` → `critique` (the findings checked against the material they came from, see #82), plus `slide_deck` when the request wants a presentation. `analysis` and `critique` subclass `SingleStepCapability` (`_step.py`): one LLM node reading the best upstream `results` entry, degrading to the bare request when the upstream failed/was skipped — `critique` overrides that first-match rule, because a step checking a claim against its source needs both.
+
+- **`documents` is the grounding step** — without it a job is the model talking to itself. It depends on the `DocumentSource` **port** (`sources.py`), never on what backs it: `search(query, limit) -> list[Document]`, shaped by the need so a web or vector backend is another adapter, not a rewrite. `LocalFiles` is the first adapter (term-overlap ranking over a directory — *keyword*, not semantic; no key, no network, so tests and CI can use it).
+
+- All five conditional steps are registered **only when something backs them** (a `PriorJobSource`, i.e. always under `build_app` and never for a hand-assembled `AgentContext`; a readable root, same rule; `--docs PATH` / `$JOBSMITH_DOCS`; `$TAVILY_API_KEY` + extra `.[web]`; a `DeckRenderer`, i.e. extra `.[pptx]`), read by `open_default_resources`. A capability nothing can serve must stay out of the registry, or the planner will plan a step that can only fail. With none of them, the agent still runs LLM-only — and that is exactly the empty-registry case the router now decides structurally (#38), which is what makes "stay out of the registry" safe to follow all the way down.
+
+`agents/banking/`: the domain example — capabilities, its **own ports** (`deps.py`: `SearchEngine`/`VisionClient`/`S3Client` Protocols), **its own adapters** (`fakes.py`, assembled in `open_banking_resources`), and a French profile. The ports live next to the capabilities that consume them, never in a central `ports/` package: that is what keeps them scaling with their consumers, and a port is shaped by the *need*, not by the vendor's API. `demo.py` runs the whole product with richer fakes injected through `build_app(resources=...)`. `vision` is registered **only when the composed LLM actually satisfies `VisionClient`** — the framework's `LLMClient` promises `chat` and nothing more, and the same rule the default agent applies to `documents` applies here: a capability nothing can serve stays out of the registry rather than becoming a planned step that raises `AttributeError` halfway through a job.
+
+## From “The composition root (`app/`)”
+
+**Why `build_app` is async**: real backends must be opened in the event loop that will use them. `python -m jobsmith api` therefore serves with `await uvicorn.Server(config).serve()` inside that same loop — `uvicorn.run()` would start its own loop and strand the pool. **SQLite gotcha** (cost an hour): the *store* needs `isolation_level=None` (it drives its own `BEGIN`/`COMMIT`; under implicit transactions its first write leaves one open and the next `BEGIN` raises "cannot start a transaction within a transaction"), the *saver* keeps the default; never run a stray `PRAGMA` on those live connections (it opens a transaction and deadlocks the other connection) — WAL is set once on a throwaway connection, and the busy timeout via `connect(timeout=...)`.
+
+## From “Graph flow”
+
+**Router** (`core/router.py`) is a dedicated triage node — the planner never decides *whether* to plan. LLM picks a route from `Router.routes` (`"plan"` → planner, `"direct"` → `DirectResponder`, which renders the registry into its prompt so "what can you do?" is answerable, then joins at `validate_output`). **Fail-open**: any LLM/parse error or unknown route falls back to `"plan"`. New route = entry in `Router.routes` + node + `AgentBuilder.route_targets` entry before `.build()`.
+
+## From “Jobs layer (`jobs/`)”
+
+**Only `runner.py` knows LangGraph's stream shape** (`{node: update}`, `cap_<name>` nodes, terminal node names). It yields `PlanReady` / `StepFinished` / `NodeErrors` / `Terminal`; the manager folds those into the Job. Two ways in — `stream()` (from the query) and `resume()` (from the thread's checkpoint) — share one translation, so the manager folds a resumed run exactly like a first one. Graph nodes stay job-agnostic — `PostProcessor`/`Escalator` do NOT write to the store; new persistence goes in the manager or the repository, never in a node.
+
+**Vocabulary (was ambiguous, now fixed)**: an **artifact/output** is what the job produces FOR THE HUMAN (`Job.outputs: list[JobOutput]` — path, format, title, role `main`|`alternate`|`annex`); a capability's intermediate payload is a **result** (state channel `results`, store namespace `("jobs",id,"results")`). `Job.report_path` is a property = the main output's path. An `annex` is a **file a step produced**, and that role is now reachable: see the capability-artifacts bullet.

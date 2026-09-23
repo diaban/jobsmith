@@ -16,3 +16,7 @@
 ## From “Chat layer (`chat/`)”
 
 **A file the request names is shown like the query is** (#60, and #83 for where it is shown): `launch_job` takes `source_files`, the docstring tells the model to pass the path exactly as it was given and never to paste a file's contents into `query`, and the list rides out to every front-end on the `job_started` notice — and on the interrupt payload as `sources`, through `Proposal`, wherever the gate was kept (the REPL prints a `reads` line, the TUI card a `reads` row, in both shapes). A path the user never saw would be a second silent decision — the thing #55 is about — and this is the user *handing something over*, not the model restating what they asked. Empty means the key is left out of `inputs` entirely, so the planner drops the step rather than planning one that can only report that nothing was given.
+
+## From “Adding a capability”
+
+If it needs to **read** a file the request named (`agents/default/read_files.py` is the shipped example): declare `requires_inputs=(SOURCE_FILES_INPUT_KEY,)` so the planner drops it when nothing was named, take a port in the constructor and never `Path.read_text` — and let that port refuse; what a path may be is `core/paths.py`, and the roots are the deployment's (`AgentContext.readable_roots`).

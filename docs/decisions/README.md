@@ -48,6 +48,7 @@ current and writes the records a merged PR forgot, marked as reconstructed.
 
 | # | Record | Decision | Status |
 |---|---|---|---|
+| 0000 | [Foundations: decisions older than the issue that would carry them](0000-foundations.md) | the chat-first REPL and provider selection, strict status checks, resources' lifetimes, the banking example's ports, the rule that a capability nothing can serve stays out of the registry | accepted |
 | 0002 | [What a job cost is part of its record](0002-usage-ledger.md) | token/cost usage rides an ambient ledger attributed by `checkpoint_ns`, and is kept per job and per step | accepted |
 | 0003 | [Prompt changes are scored, not eyeballed](0003-evals-harness.md) | a golden set scored on structural properties, in a deterministic tier that gates CI and an LLM tier that never does | accepted; partially superseded by 0085; partially superseded by 0096 |
 | 0004 | [A launched job carries the conversation's referent](0004-conversation-referent.md) | a self-contained `query` plus a bounded excerpt of the thread as an input, since the engine never sees the thread | accepted |
