@@ -11,6 +11,15 @@ BaseStore, and it is the **only** place that knows the namespace schema:
 | ("jobs", job_id, "meta")      | "plan"     | validated plan + rationale             |
 | ("jobs", job_id, "meta")      | "errors"   | accumulated NodeError list             |
 | ("jobs", job_id, "results")   | cap name   | that capability's CapabilityResult     |
+| ("jobs", job_id, "control")   | "lease"    | the owner's claim on a running job     |
+| ("jobs", job_id, "control")   | "cancel"   | a stop requested from any process      |
+
+The two `control` keys exist only on a store other processes can see
+(`shared`, #10), and each has ONE writer class, which is why they are not
+fields of the summary: the owner rewrites the summary on every step, so a
+cancel written *there* by another process is overwritten by the next step —
+the tombstone the running process never saw. A key nobody else writes is a
+message that survives until it is read. See `ownership.py`.
 
 Fine-grained execution state lives in the *checkpointer* under
 thread_id == job_id, not here.
@@ -22,12 +31,24 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from langgraph.store.memory import InMemoryStore
+
 from ..core.state import CapabilityResult, NodeError, Plan
 from .models import Job, JobOutput, JobStatus
+from .ownership import JobControl, Lease
+
+CONTROL = "control"
 
 
 class JobRepository(Protocol):
-    """Persistence of job records, in the domain's own vocabulary."""
+    """Persistence of job records, in the domain's own vocabulary.
+
+    `shared` says whether another process can see these records. When it is
+    False the manager never touches the control half of this port (leases,
+    cancel requests): a single process has nothing to coordinate.
+    """
+
+    shared: bool
 
     async def save_summary(self, job: Job) -> None: ...
     async def load(self, job_id: str) -> Job | None: ...
@@ -35,13 +56,27 @@ class JobRepository(Protocol):
     async def save_plan(self, job_id: str, plan: Plan) -> None: ...
     async def save_errors(self, job_id: str, errors: list[NodeError]) -> None: ...
     async def save_result(self, job_id: str, capability: str, result: CapabilityResult) -> None: ...
+    # -- control: only used when `shared` (see ownership.py) --
+    async def save_lease(self, job_id: str, lease: Lease) -> None: ...
+    async def release_lease(self, job_id: str) -> None: ...
+    async def request_cancel(self, job_id: str, at: str) -> None: ...
+    async def clear_cancel(self, job_id: str) -> None: ...
+    async def load_control(self, job_id: str) -> JobControl: ...
 
 
 class StoreJobRepository:
-    """`JobRepository` over a LangGraph BaseStore (memory, SQLite, Postgres)."""
+    """`JobRepository` over a LangGraph BaseStore (memory, SQLite, Postgres).
 
-    def __init__(self, store: Any):
+    `shared` defaults to "anything but the in-memory store": a SQLite file or
+    a Postgres database is visible to every process that opens it, which is
+    the whole reason to open one. Only this class knows what store it holds,
+    so only it can say — the manager reads the answer, never the type.
+    """
+
+    def __init__(self, store: Any, *, shared: bool | None = None):
         self.store = store
+        self.shared: bool = (not isinstance(store, InMemoryStore)
+                             if shared is None else shared)
 
     # -------- writes --------
 
@@ -57,6 +92,32 @@ class StoreJobRepository:
     async def save_result(self, job_id: str, capability: str, result: CapabilityResult) -> None:
         """A capability's own output — intermediate material, not a deliverable."""
         await self.store.aput(("jobs", job_id, "results"), capability, result)
+
+    # -------- control (#10) --------
+
+    async def save_lease(self, job_id: str, lease: Lease) -> None:
+        await self.store.aput(("jobs", job_id, CONTROL), "lease", lease.to_dict())
+
+    async def release_lease(self, job_id: str) -> None:
+        await self.store.adelete(("jobs", job_id, CONTROL), "lease")
+
+    async def request_cancel(self, job_id: str, at: str) -> None:
+        await self.store.aput(("jobs", job_id, CONTROL), "cancel", {"requested_at": at})
+
+    async def clear_cancel(self, job_id: str) -> None:
+        await self.store.adelete(("jobs", job_id, CONTROL), "cancel")
+
+    async def load_control(self, job_id: str) -> JobControl:
+        """Lease and cancel request in ONE read — this is the heartbeat's
+        round trip, paid every couple of seconds per running job."""
+        items = {i.key: i.value for i in
+                 await self.store.asearch(("jobs", job_id, CONTROL), limit=10)}
+        lease = items.get("lease")
+        cancel = items.get("cancel") or {}
+        return JobControl(
+            lease=Lease.from_dict(lease) if lease else None,
+            cancel_requested_at=cancel.get("requested_at"),
+        )
 
     # -------- reads --------
 
