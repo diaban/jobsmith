@@ -39,11 +39,14 @@ served from that same loop rather than through `uvicorn.run`).
 """
 from __future__ import annotations
 
+import asyncio
 import os
+import sqlite3
 import sys
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 MEMORY = "memory"
 APP_DIR = "jobsmith"
@@ -149,10 +152,17 @@ async def _open_sqlite(spec_path: str, stack: AsyncExitStack) -> tuple[Any, Any]
     # job write while the chat reads. Set it on a throwaway connection: a
     # pragma left un-consumed on a live connection holds a lock and the next
     # connection's DDL then blocks on "database is locked".
-    async with aiosqlite.connect(path) as setup_conn:
-        async with setup_conn.execute("PRAGMA journal_mode=WAL") as cur:
-            await cur.fetchone()
-        await setup_conn.commit()
+    # Switching a FRESH file to WAL needs the file to itself for an instant,
+    # and SQLite answers "database is locked" without waiting when another
+    # process is doing the same — measured, rarely, with several processes
+    # opening a new file at once. Already-WAL files never ask.
+    async def set_wal() -> None:
+        async with aiosqlite.connect(path) as setup_conn:
+            async with setup_conn.execute("PRAGMA journal_mode=WAL") as cur:
+                await cur.fetchone()
+            await setup_conn.commit()
+
+    await _while_another_process_sets_up(set_wal)
 
     # One connection each, with the transaction mode each backend expects (as
     # in their own from_conn_string): the store drives BEGIN/COMMIT itself, so
@@ -166,15 +176,111 @@ async def _open_sqlite(spec_path: str, stack: AsyncExitStack) -> tuple[Any, Any]
         stack.push_async_callback(conn.close)
         return conn
 
+    # The saver needs nothing more, MEASURED (tests/test_sqlite_concurrency.py):
+    # its connection keeps sqlite3's implicit transactions, which open on the
+    # first INSERT — a transaction that starts by writing asks for the write
+    # lock before it has read anything, so the busy timeout applies.
     checkpointer = AsyncSqliteSaver(await connect())  # sets its schema up lazily
-    store = AsyncSqliteStore(await connect(isolation_level=None))
-    await store.setup()
+    # The store does not start by writing — see `_ImmediateBegin`.
+    store = AsyncSqliteStore(cast(Any, _ImmediateBegin(await connect(isolation_level=None))))
+    await _while_another_process_sets_up(store.setup)
     # Say where the jobs are kept, and — for the default nobody chose — how
     # to get the old behaviour back, since this is the line a person who
     # never configured anything reads.
     note = "  (default; --db=memory keeps nothing)" if file == default_db_path().resolve() else ""
     print(f"[persistence: sqlite — jobs kept in {path}{note}]", file=sys.stderr)
     return checkpointer, store
+
+
+class _ImmediateBegin:
+    """The store's connection, with its `BEGIN` taking the write lock up front.
+
+    Every `AsyncSqliteStore` batch runs inside `BEGIN … COMMIT` it issues
+    itself (the connection is in autocommit so that it can), and that `BEGIN`
+    is DEFERRED: the batch reads, takes a snapshot, then writes. If another
+    connection committed in between, SQLite refuses to upgrade that stale
+    read to a write and says "database is locked" AT ONCE — in WAL mode that
+    is SQLITE_BUSY_SNAPSHOT, which never consults the busy timeout, because
+    waiting cannot make an old snapshot current. With two processes on one
+    file that is not an edge case (#10 measured it first); since #63 made a
+    per-user file the default, every `jobsmith chat` and `jobsmith run` on a
+    machine is such a process.
+
+    `BEGIN IMMEDIATE` asks for the write lock before the first read, so a
+    contended batch WAITS (the busy timeout, `connect(timeout=...)`) instead
+    of failing, and the snapshot it then reads is current by construction.
+
+    Why a wrapper over the connection and not a patch of the store: the
+    store takes its connection as a constructor argument, which is the one
+    seam it offers, and "which BEGIN" is a property of the connection it is
+    handed. Nothing of LangGraph is subclassed, overridden or replaced — a
+    private `_cursor` override would silently diverge from the next release,
+    while this depends only on the store saying `BEGIN`, which the
+    two-process test in tests/test_sqlite_concurrency.py pins: if the store
+    ever starts a transaction some other way, that test fails, not a user.
+
+    Its cost, stated: the store's READ batches go through the same `BEGIN`,
+    so they queue behind another process's write (milliseconds; every store
+    write here is a small upsert) where WAL would have let them through.
+    """
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    def execute(self, sql: str, parameters: Any = None) -> Any:
+        # Not async on purpose: aiosqlite's `execute` returns an object that
+        # is both awaitable and an async context manager, and the store uses
+        # it both ways — so it is handed back untouched, not awaited here.
+        if sql.strip().upper() == "BEGIN":
+            sql = "BEGIN IMMEDIATE"
+        return self._conn.execute(sql, parameters)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+
+SETUP_RETRIES = 8
+SETUP_PAUSE = 0.02
+
+
+async def _while_another_process_sets_up(step: Callable[[], Awaitable[None]]) -> None:
+    """Run one setup step, tolerating another process running it at the same time.
+
+    Measured, and only reachable on a FRESH file — which is exactly what the
+    default is on a machine's first two concurrent commands. Two steps race:
+
+    - the WAL switch (see `_open_sqlite`), refused at once while another
+      process holds the file;
+    - the store's migrations: it reads its migration version, then applies
+      what is missing one autocommitted statement at a time, with nothing
+      held between the read and the writes, so two processes collide
+      ("UNIQUE constraint failed: store_migrations.v", "duplicate column
+      name"). Each such failure is the OTHER process having just done the
+      same step — every statement is a single DDL or a single insert, so
+      nothing is half-applied — and the next attempt re-reads the version
+      and resumes after it.
+
+    Serialising setup instead would need a lock `executescript` does not
+    break (it commits any open transaction first), which SQLite does not
+    offer on the store's own connection. Anything else, and a file still
+    contended after ~5 s, is raised as it was.
+    """
+    pause = SETUP_PAUSE
+    for attempt in range(SETUP_RETRIES + 1):
+        try:
+            await step()
+            return
+        except sqlite3.DatabaseError as e:
+            if attempt == SETUP_RETRIES or not _is_concurrent_setup(e):
+                raise
+        await asyncio.sleep(pause)
+        pause *= 2
+
+
+def _is_concurrent_setup(error: Exception) -> bool:
+    text = str(error)
+    return any(sign in text for sign in (
+        "UNIQUE constraint failed", "duplicate column", "already exists", "locked"))
 
 
 async def _open_postgres(dsn: str, stack: AsyncExitStack, *, max_size: int = 10) -> tuple[Any, Any]:
