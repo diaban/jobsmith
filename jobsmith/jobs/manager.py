@@ -385,12 +385,19 @@ class JobManager:
         section; `_collect_artifacts` is the half that still applies to both,
         and it is called on its own there.
         """
-        reporter = self._reporter_for(job)
+        reporter: Any = None
         try:
+            # Composed INSIDE the `try`: a Reporter that cannot be built is a
+            # deliverable that could not be written, exactly like one whose
+            # write raised. Outside it, the exception skipped the final
+            # persist and left the job RUNNING forever — found by falsifying
+            # #96, where composing nothing raises by design.
+            reporter = self._reporter_for(job)
             outputs = list(reporter.write(job, self.reports_dir))
         except Exception as e:
             failure = e if isinstance(e, ReportWriteError) else ReportWriteError(
-                getattr(reporter, "format", "unknown"), e)
+                getattr(reporter, "format", None) or ",".join(job.formats or [])
+                or "unknown", e)
             outputs = failure.outputs       # keep what did make it to disk
             job.error = str(failure)
         # Annexes are collected regardless of how the report went: they are on

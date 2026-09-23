@@ -24,6 +24,7 @@ from test_jobs import make_manager
 
 from jobsmith.chat import ChatRunner, JobStarted
 from jobsmith.core.paths import PathRefused
+from jobsmith.jobs.models import JobStatus
 from jobsmith.jobs.report import (
     NAME_MAX,
     available_formats,
@@ -163,6 +164,28 @@ async def test_a_job_that_asked_for_nothing_composes_nothing(
     mgr.reporter_factory = lambda formats: pytest.fail("should not be consulted")
     done = await mgr.run_job((await mgr.create_job("compare the chairs")).job_id)
     assert done.report_path is None and done.deliverable_expected is False
+
+
+async def test_a_reporter_that_cannot_be_composed_is_a_failed_write_not_a_hung_job(
+    store, checkpointer, tmp_path
+):
+    """Composing the Reporter happened outside `_write_outputs`' own `try`, so
+    a factory that raised skipped the final persist and left the job RUNNING
+    for ever — every waiter on it hung. Found by falsifying #96 (composing an
+    empty list raises by design); held to the rule a failed write already
+    follows: DONE, the answer kept, the cause in `job.error`."""
+    mgr = make_manager(store, checkpointer, tmp_path)
+
+    def broken(formats):
+        raise RuntimeError("renderer unavailable")
+
+    mgr.reporter_factory = broken
+    done = await mgr.run_job(
+        (await mgr.create_job("compare the chairs", formats=["markdown"])).job_id)
+
+    assert done.status is JobStatus.DONE and done.final_answer
+    assert "renderer unavailable" in (done.error or "")
+    assert (await mgr.get_job(done.job_id)).status is JobStatus.DONE
 
 
 async def test_default_is_the_deployment_s_format_resolved_before_the_record(
