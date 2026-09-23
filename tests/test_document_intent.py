@@ -91,6 +91,54 @@ async def test_a_document_without_a_format_is_silence_where_no_default_was_given
         assert await node.run({"query": "write me a report on X"}) == {}
 
 
+def _reads(reply: dict) -> DocumentIntent:
+    return DocumentIntent(Deps(llm=FakeLLM({"document step": json.dumps(reply)})),
+                          ("markdown", "html"), default_formats=("markdown",))
+
+
+QUERY_HTML = {"query": "compare two schedulers and give me the result as an html page"}
+
+
+async def test_formats_the_reply_carries_win_over_a_requested_label():
+    """Measured on gpt-5-nano (#97 review): 1 call in 12 answered
+    `requested` WITH `["html"]`, and the label alone resolved to the default
+    — markdown, for a request that said html. The names are the more
+    specific thing the model said."""
+    node = _reads({"document": "requested", "formats": ["html"]})
+    assert await node.run(QUERY_HTML) == {"document_formats": ["html"]}
+
+
+async def test_a_format_name_used_as_the_label_names_that_format():
+    """3 calls in 12 on the #90 prompt answered `{"document": "html",
+    "formats": ["html"]}` — read as silence, so no file at all."""
+    node = _reads({"document": "html", "formats": ["html"]})
+    assert await node.run(QUERY_HTML) == {"document_formats": ["html"]}
+
+
+async def test_a_format_name_as_the_label_names_it_even_with_no_formats():
+    node = _reads({"document": "HTML"})
+    assert await node.run(QUERY_HTML) == {"document_formats": ["html"]}
+
+
+async def test_no_document_is_not_overruled_by_a_stray_list():
+    """The label says no file: an explicit "no document" is the one answer a
+    list next to it must never turn into a file."""
+    node = _reads({"document": "none", "formats": ["html"]})
+    assert await node.run({"query": "just answer here, no file"}) == {
+        "document_formats": []}
+
+
+async def test_an_unsure_label_does_not_become_a_file_because_a_list_came_with_it():
+    node = _reads({"document": "unspecified", "formats": ["html"]})
+    assert await node.run({"query": "compare two schedulers"}) == {}
+
+
+async def test_requested_with_nothing_renderable_still_gets_the_default():
+    node = _reads({"document": "requested", "formats": ["docx"]})
+    assert await node.run({"query": "write me a report"}) == {
+        "document_formats": ["markdown"]}
+
+
 async def test_a_request_for_no_file_at_all_is_a_decision_and_says_so():
     """`[]` is not "nothing to say": it is the third state `Job.formats` has."""
     node = make_node(NO_FILE)

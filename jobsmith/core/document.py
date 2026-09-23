@@ -120,6 +120,40 @@ class DocumentIntent:
                 chosen.append(canonical)
         return chosen
 
+    def _read(self, answer: str, formats: object) -> list[str]:
+        """What a reply that is not "no document" asked for, or `[]` for silence.
+
+        **Formats this deployment can render win over the label.** The label
+        is the model's summary of its own answer, and the names are the
+        answer; when they disagree, the names are the more specific thing it
+        said. Measured on gpt-5-nano with the eval's own sentence ("…give me
+        the result as an html page", 12 calls per prompt, #97 review): the
+        #90 prompt answered `{"document": "html", "formats": ["html"]}` 3
+        times in 12 — a format name as the label, read as silence — and the
+        #96 prompt `{"document": "requested", "formats": ["html"]}` once in
+        12, which resolved to the default and wrote markdown. One rule reads
+        both right, and it is the node's own contract rather than a new
+        policy: it never refuses, so it takes what it can honour.
+
+        - `named`, `requested`, or a label that is itself a renderable format
+          name, with renderable `formats` → those formats;
+        - a label that is a renderable format name with no usable `formats`
+          → that format (the label named it);
+        - `requested` with nothing renderable → the deployment's default;
+        - anything else (`unspecified`, unknown) → silence, even if a list
+          came with it: a model unsure whether a file was asked for does not
+          get to invent one.
+        """
+        label_format = self._renderable([answer])
+        if answer in (NAMED, REQUESTED) or label_format:
+            if chosen := self._renderable(formats):
+                return chosen
+            if label_format:
+                return label_format
+        if answer == REQUESTED:
+            return self._renderable(list(self.default_formats))
+        return []
+
     # -------- Node --------
 
     async def run(self, state: AgentState) -> dict:
@@ -141,12 +175,11 @@ class DocumentIntent:
             reply = json.loads(raw)
             answer = str(reply.get("document", "")).strip().lower()
             if answer == NO_DOCUMENT:
+                # The label says no file, and a stray list next to it does
+                # not overrule an explicit "no document".
                 return {"document_formats": []}
-            if answer == NAMED and (chosen := self._renderable(reply.get("formats"))):
-                return {"document_formats": chosen}
-            if answer == REQUESTED and (
-                chosen := self._renderable(list(self.default_formats))
-            ):
+            # The most specific thing the model said wins — see `_read`.
+            if chosen := self._read(answer, reply.get("formats")):
                 return {"document_formats": chosen}
         except Exception:  # fail-open by design, see the module docstring
             pass
