@@ -42,7 +42,6 @@ from ..core.usage import Usage, UsageLedger, current_ledger, usage_ledger
 from .events import InProcessEvents, JobEvents, job_event
 from .models import Job, JobOutput, JobStatus, now_iso
 from .report import (
-    MarkdownReport,
     ReportWriteError,
     compose_reporters,
     document_stem,
@@ -91,6 +90,7 @@ class JobManager:
         *,
         reporter: Any = None,
         reporter_factory: Callable[[Sequence[str]], Any] | None = None,
+        default_formats: Sequence[str] = ("markdown",),
         reports_dir: str | Path = "artifacts",
         repository: JobRepository | None = None,
         runner: GraphRunner | None = None,
@@ -105,18 +105,27 @@ class JobManager:
         self.runner: GraphRunner = runner or GraphRunner(graph)
         self.events: JobEvents = events or InProcessEvents()
         # Producing the deliverable is a rendering concern, not the manager's:
-        # swap the Reporter for another format without touching this class.
-        self.reporter = reporter if reporter is not None else MarkdownReport()
-        # ...and when a JOB asked for its own formats (#55), the same concern
-        # answers again for that job. A factory rather than a second reporter:
-        # what the composition root knows — the registry, whether annexes are
-        # inlined — has to reach a reporter built later, and a manager that
-        # rebuilt one itself would be a manager that decides how a deliverable
-        # is rendered. Defaults to the plain composer, so a manager wired
-        # without one still honours a requested format, just without whatever
-        # its composition root would have added.
+        # each job's formats are composed into a Reporter by this factory
+        # (#55). A factory rather than a Reporter: what the composition root
+        # knows — the registry, whether annexes are inlined — has to reach a
+        # reporter built for each job, and a manager that rebuilt one itself
+        # would be a manager that decides how a deliverable is rendered.
+        # Defaults to the plain composer, so a manager wired without one still
+        # honours a requested format, just without what its root would add.
         self.reporter_factory: Callable[[Sequence[str]], Any] = (
             reporter_factory or (lambda formats: compose_reporters(formats)))
+        # A fixed Reporter, when one is set, writes EVERY document this
+        # manager writes, whatever formats the job named — the swap seam
+        # tests and single-format embedders use. It is no longer "the
+        # deployment's default": that meant "the file a silent request gets",
+        # and since #96 a silent request gets none (see `_deliverable_wanted`).
+        self.reporter: Any = reporter
+        # What "a document" means when a request wants one and names no
+        # format (#96): the names `DEFAULT_FORMATS_ALIAS` resolves to in
+        # `create_job`. The composition root passes `$JOBSMITH_REPORT_FORMAT`
+        # here and hands the same list to the graph's document step, so the
+        # two ways of asking — the argument and the sentence — agree.
+        self.default_formats: list[str] = list(default_formats)
         self.reports_dir = Path(reports_dir)  # where deliverables are written
         self._tasks: dict[str, asyncio.Task] = {}  # in-process cancellation handles
 
@@ -155,14 +164,21 @@ class JobManager:
         its tokens.
 
         `formats` also carries the decision #55 stopped one field short of
-        (#84): `None` says the request named no format and leaves the choice
-        to whoever writes the file, while **`[]` says there is to be no file**.
-        The second is recorded as `deliverable_expected=False` here and now,
-        because it is known here and now — and a QUEUED job that reads as
-        expecting a document it will never get is exactly the confusion this
-        field exists to remove.
+        (#84): `None` says the caller named nothing and leaves the reading of
+        the sentence to the graph's document step, while **`[]` says there is
+        to be no file**. The second is recorded as `deliverable_expected=False`
+        here and now, because it is known here and now — and a QUEUED job that
+        reads as expecting a document it will never get is exactly the
+        confusion this field exists to remove. `None` is not yet a decision —
+        "write me a report" may still be read out of the query — so it stays
+        True until that step has read it (`_apply`, `FormatsChosen`).
+
+        `DEFAULT_FORMATS_ALIAS` ("default") is resolved here into this
+        deployment's `default_formats` (#96): it is how a caller asks for a
+        document without naming its format, and the record carries the names
+        it became, never the alias.
         """
-        wanted = ensure_formats_available(formats)
+        wanted = ensure_formats_available(formats, default=self.default_formats)
         job = Job(
             job_id=uuid.uuid4().hex,
             status=JobStatus.QUEUED,
@@ -294,7 +310,9 @@ class JobManager:
                 # document of it. Only the second is a decision, and only it
                 # is recorded — the flag goes True → False and never back, so
                 # a job that asked for no file does not silently re-promise
-                # one by failing.
+                # one by failing. Usually already recorded by now (`create_job`
+                # for `[]`, the document step for silence); this is the
+                # backstop for a graph with no document step at all.
                 if job.status is JobStatus.DONE:
                     job.deliverable_expected = False
                 # The files its steps left behind are still this job's,
@@ -305,62 +323,35 @@ class JobManager:
 
     @staticmethod
     def _deliverable_wanted(job: Job) -> bool:
-        """Is this run meant to leave a document behind (#84)?
+        """Is this run meant to leave a document behind (#84, #96)?
 
-        The write used to ask one question — did the run reach a DELIVERED
-        terminal — so a greeting sent down the `direct` route produced a file
-        with a title, the request quoted back, an empty plan table and a
-        mermaid diagram of nothing. The graph has a route for *this needs no
-        capability*; it had no outcome for *this needs no document*.
+        **Only if the request asked for one.** `formats` non-empty — named by
+        the caller, or read out of the sentence by the graph's document step
+        (#90), or asked for without a format and resolved to the deployment's
+        default — is a file, whatever the run turned out to be: a reader who
+        asked for a PDF gets one even if the router answered on the spot,
+        since handing them nothing over how a triage step read their sentence
+        would be a second silent decision. `[]` and `None` are no file.
 
-        **The request decides, and the run decides only when the request said
-        nothing.** Explicitly, in that order — and since #90 the request has
-        a second reader, so "said nothing" now means neither the caller nor
-        the engine's own document step found anything in it:
+        `None` used to be answered by the plan's shape — a run that planned
+        and executed capabilities wrote the deployment's formats, one that
+        answered direct did not (#84). That was deliberate while a run
+        **promoted** to the background (#83) had no other place its answer
+        survived word for word: the completion notice handed it to the chat
+        model, which synthesised it. #85 gave the promoted run the same
+        verbatim channel a synchronous one uses, and guaranteed that a run
+        with no file is delivered whatever its length — which removed the
+        only reason silence meant a file. So the rule #84 stated for the
+        requests that spoke now holds for the silent ones too: **the request
+        decides, not the plan, not the duration and not the door**. A plan's
+        shape says how much work the answer took, which is not what anybody
+        asked about a file.
 
-        - `formats == []` — the request asked for no document. Honoured
-          whatever the run turned out to be; this is the channel #55 built and
-          left one field short.
-        - `formats` non-empty — the request asked for these. Honoured
-          whatever the run turned out to be, including a `direct` one: a
-          reader who asked for a PDF gets a PDF, and handing them nothing
-          because of how the router triaged their sentence would be a second
-          silent decision.
-        - the request said nothing (`None`) — then **a run that built
-          something files it, and a run that did not, does not**. "Built
-          something" is having planned and executed capabilities: the
-          generator wrote the answer from their material, for a reader of a
-          document, and the provenance section has a plan to record. A run
-          that answered with no plan at all went through `DirectResponder`,
-          whose prompt says "answer directly, concisely and helpfully" and
-          was never given a deliverable's audience or register — that text is
-          a chat turn, and a chat turn with a provenance section stapled to
-          it is not a deliverable, it is the defect.
-
-        Deliberately NOT the duration, and not the execution mode: "fais-moi
-        un comparatif en PDF" wants a file if it takes eight seconds, and
-        "c'est quoi la différence entre X et Y" wants an answer if it takes
-        three minutes. Nor a length threshold on the answer, which would be
-        the kind of implicit rule this repo refuses.
-
-        The empty plan joins the direct route here exactly as it does in the
-        graph (`AgentBuilder._route_after_planner`): every step dropped as
-        inapplicable is a run with nothing to report on, and it is answered
-        by the same node.
-
-        The two rules **compose, on disjoint questions**, and neither was
-        subsumed (#90). `document_intent` reads the request and answers only
-        what a request can say — these formats, or explicitly no file; a
-        greeting asks for nothing, which is not the same as asking for no
-        file, and the prompt says so. The plan shape answers the rest, which
-        is the whole of what "the request said nothing" covers. Letting the
-        node also claim the greeting would put two rules on one question,
-        for a case the shape already gets right and at the cost of a model
-        able to delete the deliverable of a real run.
+        The answer is no harder to reach for it: it is on the record
+        (`final_answer`, `GET /jobs/{id}`, `jobsmith job <id>`), `jobsmith run
+        --wait` prints it, and the conversation carries it in full (#83, #85).
         """
-        if job.formats is not None:
-            return bool(job.formats)
-        return bool((job.plan or {}).get("steps"))
+        return bool(job.formats)
 
     def _write_outputs(self, job: Job) -> None:
         """Produce the deliverables of a job that answered — and survive failing to.
@@ -410,12 +401,19 @@ class JobManager:
     def _reporter_for(self, job: Job) -> Any:
         """The Reporter this job's deliverable goes through.
 
-        The composed one unless the job asked for formats of its own — from
-        the caller, which `create_job` already accepted, or from the engine's
-        own document step, which can only name what this deployment renders
-        (#90). Either way this cannot be where a format is found wanting.
+        Composed from the job's own formats — from the caller, which
+        `create_job` already accepted, or from the engine's own document step,
+        which can only name what this deployment renders (#90). Either way
+        this cannot be where a format is found wanting. A fixed `reporter`,
+        when one was set, overrides the composition.
         """
-        return self.reporter_factory(job.formats) if job.formats else self.reporter
+        if self.reporter is not None:
+            return self.reporter
+        # Only ever reached with a non-empty `formats` (`_deliverable_wanted`).
+        # There is no fallback for an empty one on purpose: "no formats" is
+        # "no document" (#84, #96), and `compose_reporters([])` raises rather
+        # than guess markdown.
+        return self.reporter_factory(job.formats or [])
 
     def _collect_artifacts(
         self,
@@ -515,6 +513,18 @@ class JobManager:
         match update:
             case NodeErrors(node_errors):
                 errors.extend(node_errors)
+            case FormatsChosen(None):
+                # The document step finished and wrote nothing. For a caller
+                # who had already spoken that is the node standing aside —
+                # nothing to record. For a request nobody named a format for,
+                # it is the decision #96 made: silence is no file, and this is
+                # the moment it is known — so recorded now, as `create_job`
+                # records `[]`, rather than left for the terminal to discover.
+                # `formats` stays `None`: "said nothing" and "said no file"
+                # remain two facts on the record (#84), with one outcome.
+                if job.formats is None and job.deliverable_expected:
+                    job.deliverable_expected = False
+                    await self._persist_summary(job)
             case FormatsChosen(formats):
                 # The engine read the request for a document the caller said
                 # nothing about (#90). It reaches the record the way every

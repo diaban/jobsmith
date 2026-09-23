@@ -122,8 +122,8 @@ def _job_body(query: str, rationale: str, sources: Sequence[str],
     and this is what catches a referent that has gone), the files it may open
     (#60), and what the document will be called, titled and written as (#55)
     — including that there will be **no** document, when that is what was
-    asked (#84): an empty `formats` is a decision, and a decision shown by
-    drawing nothing is indistinguishable from one nobody took.
+    asked (#84) or when nothing was (#96): both are decisions, and a decision
+    shown by drawing nothing is indistinguishable from one nobody took.
     """
     reads = (f"[{render.DIM}]reads {escape(', '.join(sources))}[/]\n"
              if sources else "")
@@ -131,7 +131,10 @@ def _job_body(query: str, rationale: str, sources: Sequence[str],
     writes = (f"[{render.DIM}]writes {escape(', '.join(written))}[/]\n"
               if written else
               f"[{render.DIM}]writes no file — the answer stays here[/]\n"
-              if formats is not None else "")
+              if formats is not None else
+              # silence is no file too since #96 — unless the request asks
+              # for one in words, which the engine reads after this is shown
+              f"[{render.DIM}]writes no file, unless the request asks for one[/]\n")
     titled = (f"[{render.DIM}]titled {escape(document_title)}[/]\n"
               if document_title else "")
     return (f"[b]{escape(query)}[/b]\n"

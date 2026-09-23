@@ -45,14 +45,18 @@ class StepFinished:
 
 @dataclass(frozen=True)
 class FormatsChosen:
-    """The engine read a document format out of the request itself (#90).
+    """The engine's document step has finished reading the request (#90).
 
-    Only ever emitted for a job whose caller named none: the graph is entered
-    with the job's own `formats`, and `document_intent` returns without
-    writing when it finds one there. Three states in, three states out — a
-    list of names, or `[]` for "no document at all".
+    Three states, the same three `Job.formats` has: a list of names, `[]` for
+    "no document at all", and **`None` for "it wrote nothing"**. The last one
+    is emitted since #96, because it became a decision: a request nobody
+    named a format for and whose sentence asked for no file gets no file,
+    and this is the moment that is known. Whether `None` is that silence or
+    a caller who had already spoken (the node returns without writing when
+    the channel was seeded) is the manager's to tell — it holds the record
+    the graph was seeded from, and this module only knows the stream.
     """
-    formats: list[str]
+    formats: list[str] | None
 
 
 @dataclass(frozen=True)
@@ -137,6 +141,14 @@ class GraphRunner:
         """LangGraph `updates` events → the domain updates above."""
         async for update in stream:
             for node, value in update.items():
+                if node == "document_intent" and not (
+                    isinstance(value, dict) and "document_formats" in value
+                ):
+                    # Finished and wrote nothing — LangGraph publishes a node
+                    # that returned `{}` as `None`. Announced all the same:
+                    # since #96 silence settles the document question too.
+                    yield FormatsChosen(None)
+                    continue
                 if not isinstance(value, dict):
                     continue
                 if value.get("errors"):
