@@ -29,6 +29,8 @@ port — nothing above it needs to change.
 """
 from __future__ import annotations
 
+import asyncio
+import sqlite3
 from typing import Any, Protocol
 
 from langgraph.store.memory import InMemoryStore
@@ -38,6 +40,15 @@ from .models import Job, JobOutput, JobStatus
 from .ownership import JobControl, Lease
 
 CONTROL = "control"
+
+# How many times a store call that met a busy SQLite file is tried again, and
+# the first pause (doubled each time: 20 ms … ~5 s in total).
+BUSY_RETRIES = 8
+BUSY_PAUSE = 0.02
+
+
+def _is_busy(error: BaseException) -> bool:
+    return isinstance(error, sqlite3.OperationalError) and "locked" in str(error)
 
 
 class JobRepository(Protocol):
@@ -78,40 +89,63 @@ class StoreJobRepository:
         self.shared: bool = (not isinstance(store, InMemoryStore)
                              if shared is None else shared)
 
+    async def _io(self, method: str, *args: Any, **kwargs: Any) -> Any:
+        """One store call, tried again while a SQLite file reports itself busy.
+
+        Measured with two processes on one file (#10): LangGraph's SQLite
+        store opens each batch with a *deferred* `BEGIN`, reads, then writes
+        — and a read transaction that must upgrade to a write after another
+        connection committed fails at once with "database is locked", the
+        busy timeout never consulted (SQLite's WAL snapshot rule). The failed
+        statement is the batch's first write, so nothing of it was written
+        and every op here is an upsert, a delete or a read: trying again is
+        safe, and the conflict is gone as soon as the other writer is. Any
+        other error, and a file still busy after ~5 s, is raised as it was.
+        """
+        pause = BUSY_PAUSE
+        for attempt in range(BUSY_RETRIES + 1):
+            try:
+                return await getattr(self.store, method)(*args, **kwargs)
+            except Exception as e:
+                if attempt == BUSY_RETRIES or not _is_busy(e):
+                    raise
+            await asyncio.sleep(pause)
+            pause *= 2
+
     # -------- writes --------
 
     async def save_summary(self, job: Job) -> None:
-        await self.store.aput(("jobs", "index"), job.job_id, job.summary())
+        await self._io("aput", ("jobs", "index"), job.job_id, job.summary())
 
     async def save_plan(self, job_id: str, plan: Plan) -> None:
-        await self.store.aput(("jobs", job_id, "meta"), "plan", plan)
+        await self._io("aput", ("jobs", job_id, "meta"), "plan", plan)
 
     async def save_errors(self, job_id: str, errors: list[NodeError]) -> None:
-        await self.store.aput(("jobs", job_id, "meta"), "errors", list(errors))
+        await self._io("aput", ("jobs", job_id, "meta"), "errors", list(errors))
 
     async def save_result(self, job_id: str, capability: str, result: CapabilityResult) -> None:
         """A capability's own output — intermediate material, not a deliverable."""
-        await self.store.aput(("jobs", job_id, "results"), capability, result)
+        await self._io("aput", ("jobs", job_id, "results"), capability, result)
 
     # -------- control (#10) --------
 
     async def save_lease(self, job_id: str, lease: Lease) -> None:
-        await self.store.aput(("jobs", job_id, CONTROL), "lease", lease.to_dict())
+        await self._io("aput", ("jobs", job_id, CONTROL), "lease", lease.to_dict())
 
     async def release_lease(self, job_id: str) -> None:
-        await self.store.adelete(("jobs", job_id, CONTROL), "lease")
+        await self._io("adelete", ("jobs", job_id, CONTROL), "lease")
 
     async def request_cancel(self, job_id: str, at: str) -> None:
-        await self.store.aput(("jobs", job_id, CONTROL), "cancel", {"requested_at": at})
+        await self._io("aput", ("jobs", job_id, CONTROL), "cancel", {"requested_at": at})
 
     async def clear_cancel(self, job_id: str) -> None:
-        await self.store.adelete(("jobs", job_id, CONTROL), "cancel")
+        await self._io("adelete", ("jobs", job_id, CONTROL), "cancel")
 
     async def load_control(self, job_id: str) -> JobControl:
         """Lease and cancel request in ONE read — this is the heartbeat's
         round trip, paid every couple of seconds per running job."""
         items = {i.key: i.value for i in
-                 await self.store.asearch(("jobs", job_id, CONTROL), limit=10)}
+                 await self._io("asearch", ("jobs", job_id, CONTROL), limit=10)}
         lease = items.get("lease")
         cancel = items.get("cancel") or {}
         return JobControl(
@@ -122,20 +156,20 @@ class StoreJobRepository:
     # -------- reads --------
 
     async def load(self, job_id: str) -> Job | None:
-        item = await self.store.aget(("jobs", "index"), job_id)
+        item = await self._io("aget", ("jobs", "index"), job_id)
         if item is None:
             return None
         job = self._from_summary(job_id, item.value)
-        plan_item = await self.store.aget(("jobs", job_id, "meta"), "plan")
+        plan_item = await self._io("aget", ("jobs", job_id, "meta"), "plan")
         if plan_item is not None:
             job.plan = plan_item.value
-        for result in await self.store.asearch(("jobs", job_id, "results"), limit=100):
+        for result in await self._io("asearch", ("jobs", job_id, "results"), limit=100):
             job.results[result.key] = result.value
         return job
 
     async def load_all(self, *, limit: int = 50) -> list[Job]:
         """Summaries only — plan and results are loaded by `load`."""
-        items = await self.store.asearch(("jobs", "index"), limit=limit)
+        items = await self._io("asearch", ("jobs", "index"), limit=limit)
         return [self._from_summary(item.key, item.value) for item in items]
 
     @staticmethod

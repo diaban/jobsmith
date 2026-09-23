@@ -45,7 +45,14 @@ from ..core.state import TERMINAL_UNANSWERED, NodeError
 from ..core.usage import Usage, UsageLedger, current_ledger, usage_ledger
 from .events import InProcessEvents, JobEvents, job_event
 from .models import Job, JobOutput, JobStatus, now_iso
-from .ownership import Heartbeat, LeasePolicy, ProcessIdentity, owner_is_gone
+from .ownership import (
+    Heartbeat,
+    JobControl,
+    LeasePolicy,
+    ProcessIdentity,
+    death_is_certain,
+    owner_is_gone,
+)
 from .report import (
     ReportWriteError,
     compose_reporters,
@@ -730,24 +737,53 @@ class JobManager:
             if job is None or job.status is not JobStatus.RUNNING:
                 return job
             control = await self.repo.load_control(job_id)
-            if owner_is_gone(control.lease, here=self.identity):
-                return await self._settle_orphan(
+            if (owner_is_gone(control.lease, here=self.identity)
+                    and await self._take_over([(job, control)])):
+                return await self._settle(
                     job, JobStatus.CANCELLED,
                     "cancelled after the process running it had already stopped")
             if loop.time() >= deadline:
                 return job
             await asyncio.sleep(self.lease.poll)
 
-    async def _settle_orphan(self, job: Job, status: JobStatus, error: str) -> Job:
-        """Settle a job whose owner is provably gone, from this process.
+    async def _take_over(self, orphans: list[tuple[Job, JobControl]]) -> list[Job]:
+        """Fence the owners of these jobs, and keep the ones none answered for.
 
-        The lease is overwritten FIRST with one of ours that has already
-        expired: it claims nothing (another process may settle it too, to the
-        same effect), but it names somebody else, which is how an owner that
-        was only stalled — alive past its TTL — learns at its next heartbeat
-        that the job is no longer its to write (`Heartbeat.lost`).
+        Each lease is overwritten FIRST with one of ours that has already
+        expired: it claims nothing (another process may settle the job too,
+        to the same effect), but it names somebody else, which is how an
+        owner that was only stalled learns at its next heartbeat that the
+        job is no longer its to write (`Heartbeat.lost`).
+
+        A store with no compare-and-set leaves one race: an owner that read
+        its own lease just before the overwrite renews it just after, and
+        never sees the fence. So when the proof of death is only an expired
+        lease — which a stalled owner can come back from — this waits one
+        heartbeat and reads again: a lease renewed since is an owner alive,
+        and its job is left to it. A missing pid on this machine is certain
+        and needs no wait, which keeps the common case (a crash, then a
+        restart) immediate. What is left is an owner whose read-then-write
+        of one heartbeat straddles that whole wait; the TTL makes reaching
+        it at all require a stall of thirty seconds.
         """
-        await self.repo.save_lease(job.job_id, self.identity.lease(0))
+        uncertain: set[str] = set()
+        for job, control in orphans:
+            await self.repo.save_lease(job.job_id, self.identity.lease(0))
+            if not death_is_certain(control.lease, here=self.identity):
+                uncertain.add(job.job_id)
+        if uncertain:
+            await asyncio.sleep(self.lease.heartbeat)
+        taken: list[Job] = []
+        for job, _ in orphans:
+            if job.job_id in uncertain:
+                lease = (await self.repo.load_control(job.job_id)).lease
+                if lease is None or lease.owner != self.identity.token:
+                    continue                    # renewed under our fence: alive
+            taken.append(job)
+        return taken
+
+    async def _settle(self, job: Job, status: JobStatus, error: str) -> Job:
+        """Write the ending of a job this process took over (`_take_over`)."""
         job.status = status
         job.error = error
         await self._persist_summary(job)
@@ -796,24 +832,25 @@ class JobManager:
         """
         running = [j for j in await self.list_jobs(status=JobStatus.RUNNING, limit=1000)
                    if j.job_id not in self._tasks]
-        stale: list[Job] = []
-        alive = 0
-        for job in running:
+        if self.repo.shared:
             # On a shared store "not in this process" is not "dead": another
             # terminal may be running it right now (#10). Only an owner that
             # is provably gone — lease expired, or its pid gone from this
-            # machine — leaves a job to settle. A process-local store has no
-            # other process, so there every RUNNING record is a leftover.
-            if self.repo.shared:
+            # machine — leaves a job to settle, and only once it is fenced.
+            # A process-local store has no other process, so there every
+            # RUNNING record is a leftover.
+            orphans = []
+            for job in running:
                 control = await self.repo.load_control(job.job_id)
-                if not owner_is_gone(control.lease, here=self.identity):
-                    alive += 1
-                    continue
-                await self.repo.save_lease(job.job_id, self.identity.lease(0))
-            job.status = JobStatus.FAILED
-            job.error = "interrupted: the process running this job stopped"
-            await self._persist_summary(job)
-            stale.append(job)
+                if owner_is_gone(control.lease, here=self.identity):
+                    orphans.append((job, control))
+            leftovers = await self._take_over(orphans)
+        else:
+            leftovers = running
+        stale = [await self._settle(job, JobStatus.FAILED,
+                                    "interrupted: the process running this job stopped")
+                 for job in leftovers]
+        alive = len(running) - len(stale)
         if stale:
             print(f"[jobs: {len(stale)} interrupted job(s) marked failed on startup]",
                   file=sys.stderr)

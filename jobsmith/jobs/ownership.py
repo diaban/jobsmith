@@ -180,11 +180,24 @@ def owner_is_gone(lease: Lease | None, *, here: ProcessIdentity,
                   now: datetime | None = None) -> bool:
     """Is the owner of this lease provably no longer running the job?
 
-    No lease at all is gone: a RUNNING record written before leases existed,
-    or by a process that died between the two writes (it cannot — the lease is
-    written first — but a record that says nothing about its owner has none).
+    No lease at all is gone: a RUNNING record written before leases existed
+    says nothing about an owner, so it has none (a live owner cannot leave
+    one — it writes its lease before RUNNING).
     """
     if lease is None or lease.expired(now):
+        return True
+    return death_is_certain(lease, here=here)
+
+
+def death_is_certain(lease: Lease | None, *, here: ProcessIdentity) -> bool:
+    """Gone beyond doubt — not merely silent past its TTL.
+
+    An expired lease proves the owner stopped *renewing*, not that it stopped
+    running: an event loop stalled past the TTL wakes up and renews. A pid
+    missing from this machine cannot. The difference decides whether a
+    takeover must wait to see if the owner answers (`JobManager._take_over`).
+    """
+    if lease is None:
         return True
     same_machine = lease.host == here.host and lease.pidns == here.pidns
     return same_machine and not pid_alive(lease.pid)
@@ -261,4 +274,4 @@ class Heartbeat:
 
 
 __all__ = ["Heartbeat", "JobControl", "Lease", "LeasePolicy", "ProcessIdentity",
-           "owner_is_gone", "pid_alive"]
+           "death_is_certain", "owner_is_gone", "pid_alive"]
