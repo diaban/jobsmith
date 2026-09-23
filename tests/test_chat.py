@@ -10,6 +10,7 @@ front-ends is the expensive half.
 from __future__ import annotations
 
 import asyncio
+import inspect
 
 import pytest
 from conftest import FakeLLM, ScriptedChatModel, plan_json
@@ -38,8 +39,45 @@ from jobsmith.chat.tools import (
     recent_conversation,
     running_steps,
 )
+from jobsmith.clients import DEFAULT_MODEL as ANTHROPIC_MODEL
 from jobsmith.core.state import CONVERSATION_INPUT_KEY
 from jobsmith.jobs.models import Job, JobOutput, JobStatus, now_iso
+
+
+def assert_notices_hoisted(system):
+    """The property these two tests exist to pin, stated so it cannot be
+    caught by accident. `_format_messages` returns `system` as a **list of
+    content blocks** when every SystemMessage was hoisted into the
+    top-level `system` parameter, and as a **plain string** (just the
+    leading prompt) when a later one was instead sent along as a
+    conversation turn. Hoisted is what we want on every version and every
+    model: an instruction the model reads before the conversation, not a
+    message sitting inside it. Asserting this first — instead of only
+    `block["text"] for block in system`, which happens to raise a TypeError
+    on a plain string — means a change that made that line tolerant of a
+    string (e.g. iterating characters and joining them back into itself)
+    could no longer hide a regression here."""
+    assert isinstance(system, list), (
+        "notices were not hoisted into the top-level system parameter — "
+        f"_format_messages returned system={system!r} (a plain string), "
+        "which means at least one notice rode along as a conversation turn "
+        "instead of an instruction"
+    )
+
+
+def format_for_anthropic(anthropic_chat_models, messages):
+    """Call the private `_format_messages` across the versions this suite has
+    to run on: langchain-anthropic 1.7.3 made `model` a required keyword-only
+    argument (it decides whether the model supports mid-conversation system
+    messages), 1.7.1 takes none. Inspecting the signature, never catching
+    `TypeError`, keeps the one refusal these tests exist to catch from being
+    swallowed by a compatibility shim. `ANTHROPIC_MODEL` is the chat stack's
+    own default (`jobsmith/app/providers.py`), so this exercises the model
+    Claude sessions actually run under, not a stand-in."""
+    formatter = anthropic_chat_models._format_messages
+    if "model" in inspect.signature(formatter).parameters:
+        return formatter(messages, model=ANTHROPIC_MODEL)
+    return formatter(messages)
 
 
 def launch_call(query: str, rationale: str, **args) -> AIMessage:
@@ -852,14 +890,19 @@ async def test_notices_stay_adjacent_to_the_leading_system_prompt(
 
 async def test_notices_survive_the_real_provider_formatters(store, checkpointer, tmp_path):
     """The bug this class of test exists for: every other test scripts the
-    model, so no notice's *formatting* was ever exercised. Both notices used to
-    be emitted non-adjacent, which `langchain_anthropic` refuses outright —
-    silently breaking the chat layer's headline feature on Claude."""
+    model, so no notice's *formatting* was ever exercised. A non-adjacent
+    notice used to make `langchain_anthropic` refuse the whole turn outright;
+    on 1.7.3, for a model with mid-conversation system support, a notice
+    placed at the very end of the message list is instead accepted as a
+    conversation turn rather than an instruction — which is wrong in a
+    quieter way, so the property below is asserted directly rather than
+    inferred from what fails to raise."""
     anthropic = pytest.importorskip("langchain_anthropic.chat_models")
     openai = pytest.importorskip("langchain_openai.chat_models.base")
     call = await both_notices_turn(store, checkpointer, tmp_path)
 
-    system, formatted = anthropic._format_messages(call)   # raises on the old placement
+    system, formatted = format_for_anthropic(anthropic, call)
+    assert_notices_hoisted(system)
     hoisted = " ".join(block["text"] for block in system)
     assert NOTICE_MARKER in hoisted and PROGRESS_MARKER in hoisted
     assert [m["role"] for m in formatted] == ["user"]      # only the real turn remains
@@ -883,8 +926,9 @@ def test_a_tool_calling_thread_also_formats(store, checkpointer, tmp_path):
     notice = SystemMessage(f"[job progress] {PROGRESS_MARKER}: 1/2 steps done")
 
     injected = JobNotificationMiddleware._inject(thread, [notice])
-    system, formatted = anthropic._format_messages(injected)
+    system, formatted = format_for_anthropic(anthropic, injected)
 
+    assert_notices_hoisted(system)
     assert PROGRESS_MARKER in " ".join(block["text"] for block in system)
     assert [m["role"] for m in formatted] == ["user", "assistant", "user"]
 
