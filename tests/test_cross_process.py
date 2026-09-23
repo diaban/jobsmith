@@ -258,7 +258,12 @@ async def test_a_takeover_backs_off_when_the_owner_answers(tmp_path):
     """An expired lease proves silence, not death. If the owner renews under
     the fence, it is alive, and its job is left to it."""
     db = str(tmp_path / "agent.db")
-    async with process(db, tmp_path) as owner, process(db, tmp_path) as other:
+    # The owner's own heartbeat is kept out of the way: the renewal below is
+    # scripted, and a real tick reading the fence first would (rightly) stop
+    # the run — a different property, `..._lost_its_lease_...`.
+    quiet = LeasePolicy(heartbeat=30.0, ttl=60.0)
+    async with process(db, tmp_path, policy=quiet) as owner, \
+            process(db, tmp_path) as other:
         job, task = await start_slow_job(owner)
         judged = await other.get_job(job.job_id)
         control = await other.repo.load_control(job.job_id)
