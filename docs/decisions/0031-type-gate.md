@@ -1,0 +1,11 @@
+# 0031 — pyright is a gate, and reads of partial state justify themselves
+
+- **Issue:** #31 · **PR:** #32, #33
+- **Status:** accepted
+- **Source:** migrated verbatim from `CLAUDE.md` at `8326b98` (#102). The text is the original; only the headings (which section of `CLAUDE.md` it lived in) and the links were added.
+
+## From “Working on this repo”
+
+**The type gate (`make types`, pyright)** is the only check here that can see a bug no test can. A signature that lies is not observable at runtime — the one that prompted #31 (`compose_reporters` promising `Reporter`, returning `Reporter | MultiReporter`) was spotted by accident in VS Code and would never have failed CI. pyright rather than mypy *because* of that: they report the same findings, but Pylance **is** pyright, so `[tool.pyright]` in `pyproject.toml` is one configuration for the editor and the gate instead of a permanent split.
+
+- **`reportTypedDictNotRequiredAccess` is on** (#31 phase 2) — it is a *read-discipline* gate on the state schemas. `AgentState`, `CapabilityBaseState` and `CapabilityOutputState` are `total=False` because a LangGraph node returns a **partial update**; that is right for writes and wrong for reads, so the rule asks every `state["k"]` to justify itself. Its 31 hits were by key — `query` 17, `aspects` 3, `generated_query` 3, `queries` 2, `found`/`notes`/`output`/`draft_answer`/`ok`/`data` 1 each — and only **two** touched `CapabilityResult`; an earlier note here claiming they concentrated there was simply wrong. Two guarantees, one expressible in a type: `query` is guaranteed **at entry** (`runner.stream()` invokes the graph with it, and the executor's `Send(node, state)` hands each sub-graph the whole parent state) and is now `Required[str]` in `AgentState` and `CapabilityBaseState` — free, because **no node is annotated `-> AgentState`**, they all return plain `dict`. Everything else is guaranteed only **by graph order** (`draft_answer` exists when `validate_output` runs, not before), where `Required` would be a lie: those read with `.get()` plus a default that states what missing means, next to a comment naming the node or router that guarantees it. **Never blanket-`# pyright: ignore` this rule** — a site where neither is honest is a finding about the graph, not noise.
