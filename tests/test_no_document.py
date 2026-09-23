@@ -9,14 +9,13 @@ mermaid diagram of nothing. The graph had a route for *this needs no
 capability*; it had no outcome for *this needs no document*, because the write
 asked one question — did the run reach DELIVERED.
 
-Two gates now, in this order, and neither is a guess about duration or mode:
-
-- **the request** — `Job.formats` gained a third state, and `[]` means no
-  file. #55 built that channel and stopped one field short of it;
-- **the run**, and only where the request said nothing — a run that answered
-  with no plan produced a `DirectResponder` reply, which is a chat turn by
-  construction, and a chat turn with a provenance section stapled to it is
-  not a deliverable.
+One gate, and it is not a guess about duration or mode: **the request**.
+`Job.formats` gained a third state, and `[]` means no file — #55 built that
+channel and stopped one field short of it. #84 left the *silent* request to
+the run's shape (a run that planned filed its answer); #96 closed that too,
+once #85 gave every answer a verbatim way back — so a request that said
+nothing gets no file whatever the run did. `tests/test_silent_request.py`
+pins that half; this file pins the ones that spoke and the absences.
 
 The third thing pinned here is that the absence is *legible*: `report_path is
 None` already meant "the run did not answer" and "the write failed", and a
@@ -91,11 +90,15 @@ async def test_an_empty_plan_leaves_no_document_either(store, checkpointer, tmp_
     assert done.deliverable_expected is False and done.outputs == []
 
 
-async def test_a_run_that_planned_still_writes_its_deliverable(store, checkpointer, tmp_path):
-    """The other half, and the one that must not move: a request that said
-    nothing about a document and whose run built one still gets a file."""
+async def test_a_run_that_planned_writes_the_document_it_was_asked_for(
+    store, checkpointer, tmp_path
+):
+    """The half that must not move: a request that asked for a document gets
+    one. What changed in #96 is only who has to ask — the plan no longer
+    does it on the request's behalf."""
     mgr = make_manager(store, checkpointer, tmp_path)
-    done = await mgr.run_job((await mgr.create_job("compare the chairs")).job_id)
+    done = await mgr.run_job(
+        (await mgr.create_job("compare the chairs", formats=["markdown"])).job_id)
 
     assert done.deliverable_expected is True
     assert done.report_path == str(tmp_path / "artifacts" / f"{done.job_id}.md")
@@ -136,9 +139,12 @@ async def test_a_request_for_no_document_is_obeyed_by_a_run_that_planned(
 
 
 async def test_saying_nothing_is_not_saying_no(store, checkpointer, tmp_path):
-    """The two silences the record must keep apart. `None` is "the run
-    decides" and `[]` is "no document" — collapsing them (`formats or []`) is
-    the one-line way to make every silent job refuse a file."""
+    """The two silences the record must keep apart. `None` is "the request
+    said nothing" and `[]` is "no document". Since #96 they END the same way,
+    and they are still two facts: `None` is what the engine's document step
+    may still fill from the sentence ("write me a report"), `[]` is what it
+    must never override — collapsing them (`formats or []`) would deafen that
+    step to every silent request."""
     mgr = make_manager(store, checkpointer, tmp_path)
     silent = await mgr.create_job("compare the chairs")
     refused = await mgr.create_job("compare the chairs", formats=[])
@@ -188,7 +194,8 @@ async def test_the_three_reasons_there_is_no_report_are_told_apart(
     # 2. the write failed
     broken = make_manager(store, checkpointer, tmp_path)
     broken.reporter = Boom()
-    write_failed = await broken.run_job((await broken.create_job("compare them")).job_id)
+    write_failed = await broken.run_job(
+        (await broken.create_job("compare them", formats=["markdown"])).job_id)
 
     # 3. the run never answered (input validation rejects, terminal user_error)
     failing = make_manager(store, checkpointer, tmp_path)
@@ -333,12 +340,14 @@ def test_a_front_end_says_no_file_rather_than_not_yet():
     assert "no file" in outputs_block([], expected=False)
     assert "no file yet" in outputs_block([], expected=True)
 
-    # ...and the notice shown BEFORE the run says it too: an omitted line is
-    # what an unstated format already looks like, so silence cannot carry it.
+    # ...and the notice shown BEFORE the run says it too, in both shapes of
+    # "no file": asked for none (#84), and said nothing (#96) — which is no
+    # file as well now, so leaving the line out would read as a file nobody
+    # mentioned.
     asked_none = job_lines({"query": "q", "formats": []})
     assert any("no file" in line for line in asked_none)
     said_nothing = job_lines({"query": "q"})
-    assert not any("writes" in line for line in said_nothing)
+    assert any("writes" in line and "no file" in line for line in said_nothing)
     assert any("markdown" in line for line in job_lines({"query": "q", "formats": ["markdown"]}))
 
 
@@ -346,9 +355,10 @@ def test_a_filename_is_never_shown_for_a_file_nobody_will_write():
     """The trap in `deliverable_filenames`: it guessed markdown for an empty
     `formats`, because empty used to mean "the deployment decides". A job that
     named its document and asked for no file would then be announced as
-    writing `chair_notes.md`, which is the promise #55 exists to stop."""
+    writing `chair_notes.md`, which is the promise #55 exists to stop — and
+    since #96 the same is true of `None`, which it went on guessing for."""
     from jobsmith.jobs.report import deliverable_filenames
 
-    assert deliverable_filenames("chair_notes", None) == ["chair_notes.md"]
+    assert deliverable_filenames("chair_notes", None) == []
     assert deliverable_filenames("chair_notes", []) == []
     assert deliverable_filenames("chair_notes", ["html"]) == ["chair_notes.html"]

@@ -15,8 +15,8 @@ it is the four properties that make such a node safe to run mid-flight:
   through `jobs/runner.py` and `JobManager._apply`, like every other;
 - **it cannot refuse**: it chooses from what this deployment can render, and
   anything else degrades to silence;
-- **it is fail-open**, so every error lands on exactly the behaviour that
-  existed before it.
+- **it is fail-open**, so every error lands on silence — which, since #96,
+  is no file: a missing document is said on the record, an invented one is not.
 """
 from __future__ import annotations
 
@@ -41,6 +41,7 @@ ANSWER = "A sufficiently long final answer for the job test."
 NAMED_HTML = json.dumps({"document": "named", "formats": ["html"]})
 NO_FILE = json.dumps({"document": "none"})
 UNSPECIFIED = json.dumps({"document": "unspecified"})
+REQUESTED = json.dumps({"document": "requested"})
 
 
 def make_node(reply: str, *, formats: tuple[str, ...] = RENDERABLE) -> DocumentIntent:
@@ -61,14 +62,33 @@ async def test_a_format_named_in_the_request_becomes_the_decision():
         "document_formats": ["html"]}
 
 
-async def test_a_request_that_names_no_format_writes_nothing():
-    """Silence, not a default: whatever already decides keeps deciding.
-
-    That is the whole of the fail-open contract — this answer is the state
-    every run was in before the node existed.
+async def test_a_request_that_says_nothing_writes_nothing():
+    """Silence, not a default. Since #96 that silence IS the decision — no
+    file — and it is written as nothing so the fail-open path and the
+    ordinary one are the same path.
     """
     node = make_node(UNSPECIFIED)
     assert await node.run({"query": "compare X and Y"}) == {}
+
+
+async def test_a_document_without_a_format_becomes_the_deployment_s_formats():
+    """"write me a report" wants a file and names none (#96): the node answers
+    with the default it was handed, as names, so nothing downstream learns a
+    fourth state."""
+    node = DocumentIntent(Deps(llm=FakeLLM({"document step": REQUESTED})), RENDERABLE,
+                          default_formats=("html", "markdown"))
+    assert await node.run({"query": "write me a report on X"}) == {
+        "document_formats": ["html", "markdown"]}
+
+
+async def test_a_document_without_a_format_is_silence_where_no_default_was_given():
+    """A node nobody told the default cannot pick one — the same rule as a
+    node told no renderable format. Silence, i.e. no file: never markdown by
+    guess, which is the fallback #96 removed everywhere else."""
+    for default in ((), ("docx",)):
+        node = DocumentIntent(Deps(llm=FakeLLM({"document step": REQUESTED})),
+                              RENDERABLE, default_formats=default)
+        assert await node.run({"query": "write me a report on X"}) == {}
 
 
 async def test_a_request_for_no_file_at_all_is_a_decision_and_says_so():
@@ -172,8 +192,10 @@ def make_engine(store, checkpointer, tmp_path, llm: FakeLLM) -> JobManager:
     graph = build_agent(
         Deps(llm=llm), CapabilityRegistry([SlowEcho("alpha")]),
         checkpointer=checkpointer, document_formats=RENDERABLE,
+        default_document_formats=("markdown",),
     )
-    return JobManager(graph, store, reports_dir=tmp_path / "artifacts")
+    return JobManager(graph, store, reports_dir=tmp_path / "artifacts",
+                      default_formats=("markdown",))
 
 
 async def test_a_request_that_names_its_format_gets_that_file(
@@ -265,21 +287,54 @@ async def test_a_run_that_stops_still_records_that_it_owed_no_document(
     assert index.value["deliverable_expected"] is False
 
 
-async def test_a_silent_request_still_decides_the_way_it_always_did(
+async def test_a_silent_request_gets_no_document_even_though_it_planned(
     store, checkpointer, tmp_path
 ):
-    """Fail-open, end to end: the plan shape answers what the request did not.
+    """#96, end to end: the node found nothing in the sentence, the run
+    planned and executed a step — and no file, because nobody asked for one.
 
-    The two rules compose on disjoint questions (#84 + #90) — the node reads
-    what a request can say, the run's shape answers the rest — so a run the
-    node said nothing about is byte-for-byte the run that existed before it.
+    Until #96 the plan's shape answered what the request did not, and this
+    run wrote markdown. `formats` stays `None` on the record: "said nothing"
+    is kept apart from "said no file" even though both end without one.
     """
     mgr = make_engine(store, checkpointer, tmp_path, intent_llm(UNSPECIFIED))
     job = await mgr.create_job("compare X and Y")
 
     done = await mgr.run_job(job.job_id)
+    assert done.plan is not None and "alpha" in done.results
     assert done.formats is None
-    assert done.deliverable_expected is True
+    assert done.deliverable_expected is False
+    assert done.report_path is None and done.error is None
+    assert not list((tmp_path / "artifacts").rglob("*.md"))
+
+
+async def test_silence_is_recorded_when_the_node_answers_not_at_the_end(
+    store, checkpointer, tmp_path
+):
+    """Known when it is decided, recorded when it is decided — the rule the
+    `[]` answer already follows, applied to silence now that silence is a
+    decision (#96). A run that stops after the document step and before its
+    terminal must not leave a record promising a file it never owed."""
+    llm = FakeLLM({"document step": UNSPECIFIED, "planner": "not json at all"},
+                  default=ANSWER)
+    mgr = make_engine(store, checkpointer, tmp_path, llm)
+    done = await mgr.run_job((await mgr.create_job("compare X and Y")).job_id)
+
+    assert done.status is JobStatus.FAILED
+    assert done.formats is None and done.deliverable_expected is False
+
+
+async def test_a_document_asked_for_without_a_format_gets_the_deployment_s(
+    store, checkpointer, tmp_path
+):
+    """The one question `$JOBSMITH_REPORT_FORMAT` still answers (#96): which
+    format, for a request that wants a document and named none. The node
+    resolves it to names, so the record says what was written."""
+    mgr = make_engine(store, checkpointer, tmp_path,
+                      intent_llm(json.dumps({"document": "requested"})))
+    done = await mgr.run_job((await mgr.create_job("write me a report on X")).job_id)
+
+    assert done.formats == ["markdown"] and done.deliverable_expected is True
     assert done.report_path is not None and done.report_path.endswith(".md")
 
 
@@ -318,9 +373,16 @@ async def test_only_the_node_s_own_write_is_announced():
     assert graph.inputs[0]["document_formats"] == ["markdown"]
 
 
-async def test_a_node_that_decided_nothing_announces_nothing():
-    runner = GraphRunner(FakeGraph({"document_intent": {}}))
-    assert [u async for u in runner.stream("j1", "q", {}, None)] == []
+async def test_a_node_that_decided_nothing_announces_that_it_finished():
+    """Silence is a decision since #96, so its moment is news: the runner
+    says the step finished having written nothing, in both shapes LangGraph
+    publishes it — `None` for a node that returned `{}`, and a dict without
+    the key. Whether that is silence or a caller who had already spoken is
+    the manager's to tell; it holds the record the graph was seeded from."""
+    for published in ({}, None):
+        runner = GraphRunner(FakeGraph({"document_intent": published}))
+        assert [u async for u in runner.stream("j1", "q", {}, None)] == [
+            FormatsChosen(None)]
 
 
 # ------------------------------------------------------- the graph's shape

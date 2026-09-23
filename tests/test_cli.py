@@ -54,7 +54,7 @@ async def test_daemon_client_full_chat_flow(store, checkpointer, tmp_path):
     rule — `test_service.py` drives the nominal one through both backings."""
     manager = make_manager(store, checkpointer, tmp_path)
     saver = MemorySaver()
-    responses = [launch_call("analyse it", "multi-step"), AIMessage(content="launched!")]
+    responses = [launch_call("analyse it", "multi-step", formats=["default"]), AIMessage(content="launched!")]
 
     def session_factory(session_id=None):
         return ChatSession(manager, ScriptedChatModel(responses=list(responses)),
@@ -83,7 +83,7 @@ async def test_embedded_client_same_shapes(tmp_path):
     client = await embedded(tmp_path)
     try:
         assert client.persistent is False         # jobs die with the process
-        launched = await client.launch_job("research something")
+        launched = await client.launch_job("research something", formats=["default"])
         job = await wait_done(client, launched["job_id"])
         assert job["status"] == "done"
         # the registry depends on what is installed (`slide_deck` needs
@@ -197,7 +197,7 @@ async def test_report_on_a_binary_deliverable_says_where_the_file_is(tmp_path, c
     client = await embedded(tmp_path)
     try:
         client.manager.reporter = StubPdf()
-        launched = await client.launch_job("print it")
+        launched = await client.launch_job("print it", formats=["default"])
         job_id = launched["job_id"]
         await wait_done(client, job_id)
 

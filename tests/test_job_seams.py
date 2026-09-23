@@ -105,7 +105,7 @@ async def test_use_cases_run_without_a_graph_or_a_store(tmp_path):
         StepFinished("alpha", {"ok": True, "data": {"echo": "hi"}}),
         Terminal("answer", "The final answer.", None),
     )
-    job = await mgr.create_job("do it", {"k": "v"}, session_id="s1")
+    job = await mgr.create_job("do it", {"k": "v"}, session_id="s1", formats=["markdown"])
     done = await mgr.run_job(job.job_id)
 
     assert done.status is JobStatus.DONE
@@ -155,7 +155,7 @@ async def test_resuming_goes_through_the_runner_port_too(tmp_path):
     mgr = make_manager(tmp_path, PlanReady(PLAN),
                        Terminal("answer", "Finished on the second try.", None),
                        pending=("cap_alpha",))
-    job = await mgr.create_job("resume me")
+    job = await mgr.create_job("resume me", formats=["markdown"])
     await mgr.cancel_job(job.job_id)
 
     done = await mgr.resume_job(job.job_id)
@@ -252,7 +252,7 @@ async def test_how_many_deliverables_a_job_has_is_the_reporter_s_business(tmp_pa
     reporter = TwoFormats()
     mgr = make_manager(tmp_path, PlanReady(PLAN), Terminal("answer", "Done.", None),
                        reporter=reporter)
-    job = await mgr.create_job("q")
+    job = await mgr.create_job("q", formats=["markdown"])
     done = await mgr.run_job(job.job_id)
 
     assert reporter.calls == [job.job_id]            # written once, not once per output
@@ -278,7 +278,7 @@ async def test_a_failed_report_write_leaves_the_job_done_and_persisted(tmp_path)
 
     mgr = make_manager(tmp_path, PlanReady(PLAN), Terminal("answer", "The answer.", None),
                        reporter=Boom())
-    job = await mgr.create_job("q")
+    job = await mgr.create_job("q", formats=["markdown"])
     done = await mgr.run_job(job.job_id)
 
     assert done.status is JobStatus.DONE          # the work is not the file
@@ -305,7 +305,7 @@ async def test_deliverables_already_written_survive_a_later_failure(tmp_path):
 
     mgr = make_manager(tmp_path, PlanReady(PLAN), Terminal("answer", "The answer.", None),
                        reporter=MultiReporter([MarkdownReport(), Boom()]))
-    job = await mgr.create_job("q")
+    job = await mgr.create_job("q", formats=["markdown"])
     done = await mgr.run_job(job.job_id)
 
     assert done.status is JobStatus.DONE

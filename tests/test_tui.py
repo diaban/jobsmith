@@ -687,7 +687,7 @@ async def test_the_screen_follows_a_job_while_it_runs(store, checkpointer, tmp_p
         await settle(pilot)
         assert len(app.query_one("#job-list", ListView)) == 0
 
-        job = await manager.create_job("a chain")
+        job = await manager.create_job("a chain", formats=["markdown"])
         manager.start_job(job.job_id)
 
         assert await until(pilot, lambda: len(app.query_one("#job-list", ListView)) == 1), \

@@ -30,7 +30,10 @@ async def test_default_pack_job_runs_keyless(tmp_path):
     assert caps[:3] == ["research", "analysis", "critique"]
     assert [s["capability"] for s in done.plan["steps"]] == caps
     assert set(done.results) == set(caps)
-    assert done.report_path is not None
+    # a request that said nothing about a document gets none, however much
+    # it planned (#96) — and the answer is on the record in full
+    assert done.report_path is None and done.deliverable_expected is False
+    assert done.final_answer
 
 
 async def test_chat_session_runs_the_task_in_the_turn(tmp_path):
@@ -47,7 +50,9 @@ async def test_chat_session_runs_the_task_in_the_turn(tmp_path):
     (job,) = await app.manager.list_jobs(session_id=session.session_id)
     assert job.query == "please research topic X"
     assert job.status is JobStatus.DONE
-    assert job.report_path is not None
+    # the chat's own fake named no format and the sentence asked for no
+    # file: the answer came back in the turn, and nothing was written (#96)
+    assert job.report_path is None and job.deliverable_expected is False
 
 
 async def test_the_kept_approval_gate_composes_too(tmp_path):

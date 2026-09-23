@@ -158,7 +158,7 @@ async def test_a_file_a_step_produced_becomes_an_annex(store, checkpointer, tmp_
     as an annex, attributed to the step, next to the deliverable."""
     chart = ChartCapability(LocalArtifactStore(tmp_path / "artifacts"))
     mgr = make_manager(store, checkpointer, tmp_path, [chart])
-    job = await mgr.create_job("draw me something")
+    job = await mgr.create_job("draw me something", formats=["markdown"])
     done = await mgr.run_job(job.job_id)
 
     assert done.status is JobStatus.DONE
@@ -185,7 +185,7 @@ async def test_a_job_without_artifacts_hands_back_exactly_what_it_did_before(
 ):
     """The single-Reporter path is untouched: no declaration, no annex."""
     mgr = make_manager(store, checkpointer, tmp_path, [PlainCapability()])
-    done = await mgr.run_job((await mgr.create_job("no files here")).job_id)
+    done = await mgr.run_job((await mgr.create_job("no files here", formats=["markdown"])).job_id)
 
     assert [(o.role, o.format) for o in done.outputs] == [("main", "markdown")]
     assert done.error is None
@@ -200,7 +200,7 @@ async def test_a_missing_file_is_dropped_and_said_out_loud(store, checkpointer, 
     phantom = PhantomCapability(LocalArtifactStore(tmp_path / "artifacts"),
                                 filename=str(tmp_path / "never-written.svg"))
     mgr = make_manager(store, checkpointer, tmp_path, [phantom])
-    done = await mgr.run_job((await mgr.create_job("promise me a file")).job_id)
+    done = await mgr.run_job((await mgr.create_job("promise me a file", formats=["markdown"])).job_id)
 
     assert done.status is JobStatus.DONE             # the answer is still the work
     assert [o.role for o in done.outputs] == ["main"]
@@ -222,7 +222,7 @@ async def test_annexes_survive_a_report_that_could_not_be_written(
 
     chart = ChartCapability(LocalArtifactStore(tmp_path / "artifacts"))
     mgr = make_manager(store, checkpointer, tmp_path, [chart], reporter=Boom())
-    done = await mgr.run_job((await mgr.create_job("draw me something")).job_id)
+    done = await mgr.run_job((await mgr.create_job("draw me something", formats=["markdown"])).job_id)
 
     assert done.status is JobStatus.DONE
     [annex] = done.outputs
@@ -241,7 +241,7 @@ async def test_annexes_do_not_disturb_which_output_is_the_report(
     chart = ChartCapability(LocalArtifactStore(tmp_path / "artifacts"))
     mgr = make_manager(store, checkpointer, tmp_path, [chart],
                        reporter=compose_reporters("markdown,html"))
-    done = await mgr.run_job((await mgr.create_job("draw me something")).job_id)
+    done = await mgr.run_job((await mgr.create_job("draw me something", formats=["markdown"])).job_id)
 
     assert [(o.format, o.role) for o in done.outputs] == [
         ("markdown", "main"), ("html", "alternate"), ("svg", "annex")]
@@ -315,7 +315,7 @@ async def test_the_composition_root_hands_a_capability_a_store(tmp_path):
                               reports_dir=str(tmp_path))
         try:
             done = await app.manager.run_job(
-                (await app.manager.create_job("draw me something")).job_id)
+                (await app.manager.create_job("draw me something", formats=["markdown"])).job_id)
         finally:
             await app.aclose()
     finally:
@@ -466,7 +466,7 @@ async def test_a_resumed_job_lists_each_file_exactly_once(store, checkpointer, t
     slow = SlowCapability()
     mgr = make_two_step_manager(store, checkpointer, tmp_path, [chart, slow],
                                 {"slow": ["chart"]})
-    job = await mgr.create_job("draw, then take forever")
+    job = await mgr.create_job("draw, then take forever", formats=["markdown"])
     mgr.start_job(job.job_id)
     for _ in range(500):
         await asyncio.sleep(0.01)

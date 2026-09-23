@@ -151,7 +151,7 @@ async def test_the_job_is_done_keeps_its_work_and_says_it_did_not_answer(
     reported, the tokens were spent. FAILED would misreport the work — and
     would throw away the deliverable that explains what was missing."""
     mgr = make_manager(store, checkpointer, tmp_path, REFUSAL)
-    job = await mgr.create_job("summarize the quarterly report")
+    job = await mgr.create_job("summarize the quarterly report", formats=["markdown"])
     done = await mgr.run_job(job.job_id)
 
     assert done.status is JobStatus.DONE
