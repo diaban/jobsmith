@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from typing import Any
 
 import pytest
@@ -147,6 +148,10 @@ def plan_json(*caps: str, deps: dict[str, list[str]] | None = None) -> str:
     })
 
 
+def _no_dotenv(path: str = ".env") -> None:
+    """The test process never reads a `.env` (see `sandboxed_data_dir`)."""
+
+
 @pytest.fixture(scope="session", autouse=True)
 def sandboxed_data_dir(tmp_path_factory):
     """No test may write into the user's real jobsmith data directory (#63).
@@ -172,6 +177,19 @@ def sandboxed_data_dir(tmp_path_factory):
         mp.setenv("XDG_DATA_HOME", str(sandbox))
         for name in ("JOBSMITH_DB", "JOBSMITH_REPORTS_DIR"):
             mp.delenv(name, raising=False)
+        # ...and nothing puts them back. The entrypoints (`cli.main.main`,
+        # `python -m evals`) load `.env` from the working directory with
+        # `setdefault`, so on a machine whose `.env` names a `JOBSMITH_DB` a
+        # test driving one would refill what was just cleared and write
+        # OUTSIDE the sandbox, where the check below cannot see it. The loader
+        # is therefore a no-op for the whole session — on its module (for
+        # anything importing it later) and on every module that already
+        # holds it by name (`evals/__main__.py` imports it at collection).
+        from jobsmith.app import providers
+        original = providers.load_dotenv
+        for module in [providers, *sys.modules.values()]:
+            if getattr(module, "load_dotenv", None) is original:
+                mp.setattr(module, "load_dotenv", _no_dotenv)
         yield sandbox
     written = sorted(str(p.relative_to(sandbox)) for p in sandbox.rglob("*"))
     assert not written, (

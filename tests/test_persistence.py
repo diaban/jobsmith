@@ -223,3 +223,30 @@ def test_xdg_data_home_wins_everywhere_and_a_relative_one_is_ignored(monkeypatch
     monkeypatch.setattr("sys.platform", "win32")
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
     assert data_dir() == tmp_path / "Local" / "jobsmith"
+
+
+def test_the_test_process_never_reads_a_dot_env(monkeypatch, tmp_path):
+    """The sandbox clears `$JOBSMITH_DB`; a `.env` must not refill it (#63).
+
+    `jobsmith`'s entrypoint loads `.env` from the working directory with
+    `setdefault`, so on a machine whose `.env` names a database, a test that
+    drives the CLI would put the variable back after the sandbox removed it
+    and write outside the data dir the session checks — unseen.
+    """
+    from jobsmith.cli.main import main
+
+    outside = tmp_path / "outside.db"
+    (tmp_path / ".env").write_text(
+        f"JOBSMITH_DB={outside}\nJOBSMITH_SANDBOX_PROBE=leaked\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.argv", ["jobsmith"])
+    for name in ("JOBSMITH_DB", "JOBSMITH_SANDBOX_PROBE", "JOBSMITH_LLM"):
+        monkeypatch.delenv(name, raising=False)
+    try:
+        assert main(["--llm", "fake", "--local", "--db", "memory", "jobs"]) == 0
+        assert "JOBSMITH_SANDBOX_PROBE" not in os.environ, ".env was read"
+        assert "JOBSMITH_DB" not in os.environ
+        assert not outside.exists()
+    finally:                        # whatever happened, leak nothing onward
+        for name in ("JOBSMITH_DB", "JOBSMITH_SANDBOX_PROBE", "JOBSMITH_LLM"):
+            os.environ.pop(name, None)
