@@ -393,13 +393,18 @@ def check_grounding_reaches_reasoning(case: EvalCase, obs: Observation) -> Check
 # ---------------------------------------------------------------- deliverable
 
 def _report_applies(case: EvalCase, obs: Observation, name: str) -> Check | None:
-    """Is there a deliverable for this run to be scored on?
+    """Is there a deliverable FILE for this run to be scored on?
+
+    The gate of the checks that read the file — `report_written`, its title,
+    the answer being in it, the way back to the run — and of those only.
+    The checks that read the *answer* go through `_answer_applies` instead
+    (#96), because since then most runs are asked for no file at all.
 
     The fourth condition is #84's, and it is the one that is not about how
     the run *ended*: a run is asked for a document, or it is not. A request
-    that named `formats: []` and a run that answered with no plan both leave
-    no file — deliberately — and scoring a document that was never going to
-    exist is how a check stops meaning anything. `no_unwanted_document` is
+    that named `formats: []`, and since #96 one that said nothing, leave no
+    file — deliberately — and scoring a document that was never going to
+    exist is how a check stops meaning anything. `document_as_requested` is
     what scores those runs, on the property they actually have.
     """
     if case.expect_terminal != "answer":
@@ -410,6 +415,37 @@ def _report_applies(case: EvalCase, obs: Observation, name: str) -> Check | None
         return _skip(name, "the run produced no answer to report")
     if case.expect_document is False or not obs.deliverable_expected:
         return _skip(name, "the run was asked for no document")
+    return None
+
+
+def _answer_applies(case: EvalCase, obs: Observation, name: str) -> Check | None:
+    """Is there a generated answer for this run to be scored on (#96)?
+
+    The gate for the checks that read the **answer**, and deliberately not
+    `_report_applies`: since #96 a request that says nothing about a document
+    gets none, and that is most of the golden set — so gating these on a file
+    would switch #58's and #73's instruments off for every silent request
+    while the tier kept reading 100%. Measured, not feared: on the golden set
+    as it stood, `report_reader_facing` and `report_answers_request` went from
+    7 applicable runs to 2 with nothing failing. The answer is the thing the
+    reader gets on every door now — in the file when one was asked for, in
+    the turn and on the record always (#83, #85) — so its register and its
+    substance are scored wherever it exists.
+
+    It needs a **plan**, which is #80's guard falling out of the same change:
+    a run that answered with no plan went through `DirectResponder`, whose
+    prompt asks for a chat turn, and scoring a chat turn for a deliverable's
+    register is the confusion #80 names. Only the generator, writing from the
+    steps' material, is held to that register.
+    """
+    if case.expect_terminal != "answer":
+        return _skip(name, "case expects no answer")
+    if obs.error:
+        return _skip(name, "run did not complete")
+    if obs.terminal_kind != "answer":
+        return _skip(name, "the run produced no answer")
+    if not obs.plan_steps:
+        return _skip(name, "no plan: a direct reply is a chat turn, not a deliverable")
     return None
 
 
@@ -587,13 +623,16 @@ def check_report_reader_facing(case: EvalCase, obs: Observation) -> Check:
     *about* the run by design, and it quotes the request, so scanning the whole
     document would fire on the scaffolding and on the user's own words.
     `check_report_answer` already pins that this text is what the deliverable
-    carries.
+    carries — and since #96 it is scored whether or not a file was written
+    (`_answer_applies`): the answer reaches its reader in the conversation
+    either way, and the name keeps its `report_` prefix only so stored runs
+    stay comparable.
 
     Honest about its limit: a marker list catches what it lists. It is a floor
     under the prompts, not a proof of good register.
     """
     name = "report_reader_facing"
-    if (s := _report_applies(case, obs, name)) is not None:
+    if (s := _answer_applies(case, obs, name)) is not None:
         return s
     answer = normalize(obs.final_answer or "").lower()
     hits = [m for m in PRODUCER_FACING_MARKERS if m in answer]
@@ -622,6 +661,10 @@ def check_report_answers_request(case: EvalCase, obs: Observation) -> Check:
       that cannot be satisfied by restating the brief, which is why it is
       measured against the generator's input rather than against the request.
 
+    Like `report_reader_facing` it reads the **answer**, never the file, so it
+    applies to every planned run that answered, asked for a document or not
+    (#96).
+
     Honest about what it is not. It reads the answer as a bag of words, so it
     detects a deliverable that **abandoned** its material, never one that
     regurgitates it — a generator that dumped the context would score
@@ -630,10 +673,10 @@ def check_report_answers_request(case: EvalCase, obs: Observation) -> Check:
     one at a document with nothing in it.
     """
     name = "report_answers_request"
-    if (s := _report_applies(case, obs, name)) is not None:
+    # The answer, not the file (#96) — see `_answer_applies`, which also
+    # carries the no-plan skip this check always had: no plan, no material.
+    if (s := _answer_applies(case, obs, name)) is not None:
         return s
-    if not obs.plan_steps:
-        return _skip(name, "no plan: no material was produced to answer from")
     answer = terms(normalize(obs.final_answer or ""))
 
     problems = []

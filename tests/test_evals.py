@@ -92,6 +92,26 @@ def test_the_score_does_not_depend_on_the_deliverable_format(
     assert html.checks == markdown.checks
 
 
+def test_the_answer_is_scored_on_more_runs_than_the_file(structural_run):
+    """#96 made most runs file-less, which is exactly how the answer checks
+    could go dark while the tier kept reading 100%: gated on a file, they
+    fell from 7 applicable runs to 2 and nothing failed. "Every check applies
+    somewhere" (above) cannot see that — it held at 2 — so this pins the
+    shape instead: the checks that read the ANSWER apply to every planned run
+    that answered, and those are strictly more than the runs with a file."""
+    cases, result = structural_run
+    answered = [c for c in cases
+                if c.expect_route == "plan" and c.expect_terminal == "answer"]
+    for name in ("report_reader_facing", "report_answers_request"):
+        assert result.checks[name]["applicable"] == len(answered), name
+        assert (result.checks[name]["applicable"]
+                > result.checks["report_written"]["applicable"]), name
+    # ...and the golden set still carries silent requests AND requests for a
+    # file, on both terminals — or one half of the contract goes unmeasured
+    claims = {(c.expect_terminal, c.expect_document) for c in cases}
+    assert {("answer", True), ("answer", False), ("unanswered", True)} <= claims
+
+
 def test_structural_tier_covers_both_routes_and_the_guard(structural_run):
     cases, result = structural_run
     routes = {c.expect_route for c in cases}
@@ -301,6 +321,33 @@ def test_report_reader_facing_catches_the_run_that_opened_it():
     clean = _obs(report_text=f"# t\n\n{ANSWER}\n\n- Request: prochaines étapes\n"
                              "- Job: job1\n\n| research | analysis |\n")
     assert _status(PLAN_CASE, clean, "report_reader_facing") == "pass"
+
+
+@pytest.mark.parametrize("name", ["report_reader_facing", "report_answers_request"])
+def test_the_answer_checks_read_the_answer_whether_or_not_a_file_was_written(name):
+    """Gated on a file, these two went dark for every silent request once
+    #96 stopped writing one — and a skip is not a failure, so nothing said
+    so. They read the answer, which reaches its reader either way."""
+    producer_facing = ("## Next steps\n\n- Option A or option B, please confirm")
+    obs = _obs(final_answer=producer_facing, report_text=None, report_path=None,
+               deliverable_expected=False,
+               query="compare the approaches to caching", material=RETRIEVED)
+    silent = EvalCase(id="c", query="compare the approaches to caching",
+                      expect_route="plan", expect_document=False)
+    assert _status(silent, obs, name) == "fail"
+    # ...while the checks that read the FILE rightly skip that run
+    assert _status(silent, obs, "report_written") == "skip"
+
+
+def test_the_answer_checks_skip_a_reply_that_had_no_plan():
+    """#80's guard, which falls out of re-gating on the answer: a direct
+    reply is a chat turn by construction, and scoring it for a deliverable's
+    register is the confusion #80 names — even when a file WAS asked for."""
+    direct = EvalCase(id="c", query="q", expect_route="direct", expect_document=True)
+    obs = _obs(route="direct", plan_steps=[], results={},
+               final_answer="Let me know if you would like more.")
+    assert _status(direct, obs, "report_reader_facing") == "skip"
+    assert _status(direct, obs, "report_answers_request") == "skip"
 
 
 def test_report_answers_request_catches_the_run_that_opened_it():

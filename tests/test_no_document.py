@@ -14,8 +14,10 @@ One gate, and it is not a guess about duration or mode: **the request**.
 channel and stopped one field short of it. #84 left the *silent* request to
 the run's shape (a run that planned filed its answer); #96 closed that too,
 once #85 gave every answer a verbatim way back — so a request that said
-nothing gets no file whatever the run did. `tests/test_silent_request.py`
-pins that half; this file pins the ones that spoke and the absences.
+nothing gets no file whatever the run did — pinned end to end on each door
+(`test_document_intent.py` for the engine, `test_app.py` for the composed
+product, `test_api.py` for `POST /jobs`, `test_service.py` for both backings);
+this file pins the requests that spoke and the absences.
 
 The third thing pinned here is that the absence is *legible*: `report_path is
 None` already meant "the run did not answer" and "the write failed", and a
@@ -320,6 +322,42 @@ async def test_the_api_404_says_which_absence_it_is(store, checkpointer, tmp_pat
         assert refused.status_code == 404
         assert "none was asked for" in refused.json()["detail"]
         assert "not DONE yet" not in refused.json()["detail"]
+
+
+async def test_a_silent_run_that_failed_reads_as_failed_not_as_unwanted(
+    store, checkpointer, tmp_path, capsys
+):
+    """Since #96 a silent request expects no file from its document step on,
+    so a run of one that then FAILED carries both facts: no document was
+    asked for, and the run did not answer. Every surface must lead with the
+    second — "none was asked for (the answer is in jobsmith job …)" points
+    the reader at an answer that does not exist."""
+    from types import SimpleNamespace
+
+    from test_api import client_for, make_app, wait_done
+
+    from jobsmith.cli.main import cmd_report
+    from jobsmith.service import LocalAgentService
+
+    llm = FakeLLM({"planner": "not json at all"}, default=ANSWER)
+    mgr = make_manager(store, checkpointer, tmp_path, llm=llm)
+    failed = await mgr.run_job((await mgr.create_job("compare them")).job_id)
+    assert failed.status is JobStatus.FAILED
+    assert failed.formats is None and failed.deliverable_expected is False
+
+    service = LocalAgentService(mgr, lambda session_id=None: None)
+    assert await cmd_report(service, SimpleNamespace(job_id=failed.job_id[:8])) == 1
+    printed = capsys.readouterr().out
+    assert "none was asked for" not in printed and "is the job done" in printed
+
+    app, api_mgr = make_app(store, checkpointer, tmp_path, [])
+    api_mgr.runner = mgr.runner        # the same failing graph, behind HTTP
+    async with client_for(app) as client:
+        job = await wait_done(client, (await client.post(
+            "/jobs", json={"query": "compare them"})).json()["job_id"])
+        assert job["status"] == "failed"
+        detail = (await client.get(f"/jobs/{job['job_id']}/report")).json()["detail"]
+        assert "none was asked for" not in detail
 
 
 # ------------------------------------------------- what the screens say
