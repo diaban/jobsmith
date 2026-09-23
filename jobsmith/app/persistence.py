@@ -231,6 +231,14 @@ class _ImmediateBegin:
         # Not async on purpose: aiosqlite's `execute` returns an object that
         # is both awaitable and an async context manager, and the store uses
         # it both ways — so it is handed back untouched, not awaited here.
+        #
+        # BEGIN now WAITS (up to the busy timeout), and a statement already on
+        # aiosqlite's thread lands even if its awaiter is cancelled — which,
+        # had the store's caller been the one waiting, would open a write
+        # transaction nobody commits. It is not: the store runs every batch
+        # in a background task of its own (`AsyncBatchedBaseStore`), so a
+        # cancelled `aput` stops waiting for the batch and never interrupts
+        # it. tests/test_sqlite_concurrency.py pins that, measured.
         if sql.strip().upper() == "BEGIN":
             sql = "BEGIN IMMEDIATE"
         return self._conn.execute(sql, parameters)

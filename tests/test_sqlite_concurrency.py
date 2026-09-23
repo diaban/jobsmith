@@ -71,3 +71,36 @@ async def test_concurrent_processes_write_one_file_without_locking_out(tmp_path,
 async def test_processes_opening_a_fresh_file_together_all_get_it(tmp_path):
     results = await hammer(str(tmp_path / "fresh.db"), "setup", rounds=0)
     assert results == ["ok 0"] * PROCESSES, results
+
+
+async def test_a_batch_cancelled_while_waiting_for_the_lock_leaves_no_transaction(tmp_path):
+    """The price of `BEGIN IMMEDIATE` is that BEGIN waits, and a caller is
+    often cancelled while it waits (a heartbeat stopped, a run cancelled). A
+    statement already on aiosqlite's thread lands anyway, so if the caller's
+    cancellation could interrupt the batch between its BEGIN and its COMMIT,
+    the store's connection would sit in a write transaction nobody commits —
+    holding the file's lock against every other process and refusing its own
+    next BEGIN. It cannot today, because the store runs batches in a task of
+    its own and a cancelled call only stops waiting for it; this pins that,
+    deterministically, in one process: another connection holds the lock
+    while the call is cancelled, then lets go."""
+    import aiosqlite
+
+    db = await initialised(tmp_path)
+    async with AsyncExitStack() as stack:
+        _, store = await open_persistence(db, stack)
+        async with aiosqlite.connect(db, isolation_level=None) as holder:
+            await holder.execute("BEGIN IMMEDIATE")          # the lock is taken
+            put = asyncio.create_task(store.aput(("t",), "k", {"v": 1}))
+            await asyncio.sleep(0.2)                         # ...waiting on it
+            put.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await put
+            await holder.execute("COMMIT")                   # the lock is free
+
+            await asyncio.sleep(0.2)                         # the BEGIN has landed
+            # the store's own connection is usable, and the file is not locked
+            await asyncio.wait_for(store.aput(("t",), "k2", {"v": 2}), 2)
+            await holder.execute("BEGIN IMMEDIATE")
+            await holder.execute("COMMIT")
+        assert (await store.aget(("t",), "k2")) is not None
