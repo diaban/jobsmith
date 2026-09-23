@@ -147,6 +147,38 @@ def plan_json(*caps: str, deps: dict[str, list[str]] | None = None) -> str:
     })
 
 
+@pytest.fixture(scope="session", autouse=True)
+def sandboxed_data_dir(tmp_path_factory):
+    """No test may write into the user's real jobsmith data directory (#63).
+
+    An unconfigured `build_app` now keeps its jobs in a SQLite file and its
+    reports under the per-user data dir, so a test that forgot to say
+    `db="memory"` / `reports_dir=...` would quietly add jobs to the list of
+    whoever ran the suite. Two things make that impossible AND visible:
+
+    - the data dir is relocated for the whole session (`XDG_DATA_HOME`, which
+      `data_dir()` honours on every platform), and the variables that would
+      redirect a default somewhere else entirely are cleared — a developer's
+      own `$JOBSMITH_DB` must not become where a careless test writes;
+    - at the end of the session the relocated directory must still not
+      exist. A site relying on the default fails the run here, by name,
+      instead of passing while writing to a disk nobody is watching.
+
+    A test that exercises the default on purpose points `XDG_DATA_HOME` at
+    its own `tmp_path` (monkeypatch), so it never touches this one.
+    """
+    sandbox = tmp_path_factory.mktemp("xdg-data")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("XDG_DATA_HOME", str(sandbox))
+        for name in ("JOBSMITH_DB", "JOBSMITH_REPORTS_DIR"):
+            mp.delenv(name, raising=False)
+        yield sandbox
+    written = sorted(str(p.relative_to(sandbox)) for p in sandbox.rglob("*"))
+    assert not written, (
+        "the suite wrote into the (sandboxed) user data dir — some build_app "
+        f"relies on the persistent default instead of saying db='memory': {written}")
+
+
 @pytest.fixture
 def checkpointer():
     return MemorySaver()

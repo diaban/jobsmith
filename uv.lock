@@ -848,6 +848,7 @@ source = { editable = "." }
 dependencies = [
     { name = "langchain" },
     { name = "langgraph" },
+    { name = "langgraph-checkpoint-sqlite" },
 ]
 
 [package.optional-dependencies]
@@ -868,7 +869,6 @@ chat-openai = [
 dev = [
     { name = "fastapi" },
     { name = "httpx" },
-    { name = "langgraph-checkpoint-sqlite" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -890,9 +890,6 @@ postgres = [
 pptx = [
     { name = "python-pptx" },
 ]
-sqlite = [
-    { name = "langgraph-checkpoint-sqlite" },
-]
 tui = [
     { name = "textual" },
 ]
@@ -913,8 +910,7 @@ requires-dist = [
     { name = "langchain-openai", marker = "extra == 'chat-openai'", specifier = ">=0.3" },
     { name = "langgraph", specifier = ">=1.0" },
     { name = "langgraph-checkpoint-postgres", marker = "extra == 'postgres'", specifier = ">=3.1" },
-    { name = "langgraph-checkpoint-sqlite", marker = "extra == 'dev'", specifier = ">=3.1" },
-    { name = "langgraph-checkpoint-sqlite", marker = "extra == 'sqlite'", specifier = ">=3.1" },
+    { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1" },
     { name = "openai", marker = "extra == 'openai'", specifier = ">=1.60" },
     { name = "psycopg", extras = ["binary", "pool"], marker = "extra == 'postgres'", specifier = ">=3.2" },
     { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.400" },

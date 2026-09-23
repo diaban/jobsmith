@@ -35,7 +35,7 @@ from ..jobs.report import (
     parse_report_formats,
 )
 from ..jobs.repository import StoreJobRepository
-from .persistence import open_persistence, pick_db
+from .persistence import open_persistence, pick_db, pick_reports_dir
 from .providers import make_chat_model, make_llm, pick_provider
 
 
@@ -97,7 +97,7 @@ async def build_app(
     chat_model: Any = None,
     resources: Any = None,
     db: str | None = None,
-    reports_dir: str = "artifacts",
+    reports_dir: str | None = None,
     report_format: str | None = None,
 ) -> AgentApp:
     # An agent is a capability pack + a profile (+ a chat persona): everything
@@ -107,6 +107,12 @@ async def build_app(
         choice = pick_provider()
         llm = llm if llm is not None else make_llm(choice)
         chat_model = chat_model if chat_model is not None else make_chat_model(choice)
+
+    # Absolute, and next to the jobs unless somebody said otherwise (#63):
+    # every path a job records is built from this, and those records now
+    # outlive the process — a relative `artifacts/` would be a path to
+    # nothing from any other working directory.
+    reports_root = pick_reports_dir(reports_dir)
 
     stack = AsyncExitStack()
     try:
@@ -127,7 +133,7 @@ async def build_app(
         # A capability that produces a file writes through this port; it is
         # rooted where the manager keeps deliverables, so a job's annexes sit
         # next to its report and no capability has to know that layout.
-        artifacts = LocalArtifactStore(reports_dir)
+        artifacts = LocalArtifactStore(reports_root)
         # ...and reads a named one from under the same root. That is the whole
         # of what this deployment declares readable: the tree the product's own
         # paths point into, so the report a job just wrote is a file the next
@@ -136,7 +142,7 @@ async def build_app(
         registry = CapabilityRegistry(
             definition.capabilities(
                 AgentContext(llm, resources, artifacts,
-                             readable_roots=(str(reports_dir),),
+                             readable_roots=(str(reports_root),),
                              # ...and reads what an EARLIER RUN produced by its
                              # id (#74). The other referent, and the one that
                              # needs no file: a follow-up asking for "a
@@ -180,7 +186,7 @@ async def build_app(
             graph, store, repository=repository,
             reporter_factory=reporter_for,
             default_formats=default_formats,
-            reports_dir=reports_dir,
+            reports_dir=reports_root,
         )
         # A previous process may have died mid-run: settle those jobs first.
         await manager.recover_interrupted()

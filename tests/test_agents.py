@@ -28,7 +28,7 @@ def test_registry_lists_both_shipped_agents():
 
 @pytest.mark.parametrize("name", ["default", "banking"])
 async def test_every_shipped_agent_composes_through_the_same_build_app(name):
-    app = await build_app(agent=name, llm=object(), chat_model=object())
+    app = await build_app(agent=name, llm=object(), chat_model=object(), db="memory")
     try:
         assert app.agent_name == name
         capability_nodes = {n for n in app.manager.graph.nodes if n.startswith("cap_")}
@@ -107,7 +107,7 @@ async def test_a_third_party_agent_needs_no_shared_code(store, checkpointer, tmp
     try:
         llm = FakeLLM({"planner": plan_json("echo")},
                       default="A sufficiently long final answer for this run.")
-        app = await build_app(agent="mine", llm=llm, chat_model=object(),
+        app = await build_app(agent="mine", llm=llm, chat_model=object(), db="memory",
                               reports_dir=str(tmp_path))
         try:
             job = await app.manager.create_job("hello there")
