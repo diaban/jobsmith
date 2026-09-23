@@ -14,10 +14,14 @@ events, markdown report), so `JobManager(graph, store)` still works.
 
 Cancellation semantics: `cancel_job` cancels the in-process asyncio.Task;
 cancellation propagates into the running invocation, the checkpointer retains
-the last completed superstep, and the job is marked CANCELLED. With no task
-registered in this process (another process, or already finished), a CANCELLED
-tombstone is written best-effort — true cross-process preemption is out of
-scope for v1.
+the last completed superstep, and the job is marked CANCELLED. On a store
+other processes share (#10) a job may be running in ANOTHER process, and then
+the cancel is a request written to the store, which the owner reads on its
+heartbeat and turns into that same task cancellation — so the job ends
+CANCELLED through the same path, written by the process that actually stopped
+it. If the owner is provably gone, the canceller settles the record itself.
+On a process-local store there is no other process, and a job with no task
+here gets a CANCELLED tombstone as it always did. See `ownership.py`.
 
 Resume semantics: a stopped job kept its checkpoint, so `resume_job` re-enters
 the thread instead of paying for the whole plan again. Only the steps that had
@@ -41,6 +45,14 @@ from ..core.state import TERMINAL_UNANSWERED, NodeError
 from ..core.usage import Usage, UsageLedger, current_ledger, usage_ledger
 from .events import InProcessEvents, JobEvents, job_event
 from .models import Job, JobOutput, JobStatus, now_iso
+from .ownership import (
+    Heartbeat,
+    JobControl,
+    LeasePolicy,
+    ProcessIdentity,
+    death_is_certain,
+    owner_is_gone,
+)
 from .report import (
     ReportWriteError,
     compose_reporters,
@@ -95,6 +107,7 @@ class JobManager:
         repository: JobRepository | None = None,
         runner: GraphRunner | None = None,
         events: JobEvents | None = None,
+        lease: LeasePolicy | None = None,
     ):
         if repository is None and store is None:
             raise ValueError("JobManager needs a store or an explicit repository")
@@ -128,6 +141,11 @@ class JobManager:
         self.default_formats: list[str] = list(default_formats)
         self.reports_dir = Path(reports_dir)  # where deliverables are written
         self._tasks: dict[str, asyncio.Task] = {}  # in-process cancellation handles
+        # Who this manager is on the leases it writes, and the timings of
+        # ownership (#10). Only consulted when the repository is `shared`:
+        # a process-local store pays nothing for any of it.
+        self.identity = ProcessIdentity.current()
+        self.lease = lease or LeasePolicy()
 
     async def _persist_summary(self, job: Job) -> None:
         job.updated_at = now_iso()
@@ -199,7 +217,8 @@ class JobManager:
         job = await self._require(job_id)
         if job.status is not JobStatus.QUEUED:
             raise ValueError(f"job {job_id} is {job.status.value}, expected queued")
-        await self._begin(job)
+        if not await self._begin(job):
+            return job
         return await self._drive(job, self.runner.stream(
             job.job_id, job.query, job.inputs, job.formats))
 
@@ -217,11 +236,27 @@ class JobManager:
             raise KeyError(f"unknown job: {job_id}")
         return job
 
-    async def _begin(self, job: Job) -> None:
+    async def _begin(self, job: Job) -> bool:
         """Mark the job RUNNING before anything is driven, so a caller that
-        starts it in the background already sees the new status."""
+        starts it in the background already sees the new status.
+
+        On a shared store the lease is written FIRST: a record that says
+        RUNNING with no owner is exactly what another process's startup
+        settles as interrupted, and the gap between two writes is enough.
+        A cancel already requested — by a process that saw this job QUEUED
+        while this one was picking it up — is honoured before anything runs,
+        and `False` says so.
+        """
+        if self.repo.shared:
+            await self.repo.save_lease(job.job_id, self.identity.lease(self.lease.ttl))
+            if (await self.repo.load_control(job.job_id)).cancel_requested_at:
+                job.status = JobStatus.CANCELLED
+                await self._persist_summary(job)
+                await self.repo.release_lease(job.job_id)
+                return False
         job.status = JobStatus.RUNNING
         await self._persist_summary(job)
+        return True
 
     async def _begin_resume(self, job_id: str) -> Job:
         """Check that this job can be resumed, and open the attempt.
@@ -261,6 +296,10 @@ class JobManager:
         # `list_finished_unannounced`, and its answer never reaches the
         # conversation that asked for it.
         job.announced = False
+        # A cancel request is a message to the attempt it stopped; left in the
+        # store, it would stop the resumed one on its first heartbeat.
+        if self.repo.shared:
+            await self.repo.clear_cancel(job_id)
         await self._begin(job)
         return job
 
@@ -282,21 +321,49 @@ class JobManager:
             # `job.usage` the job's total cost rather than the last attempt's;
             # the per-step breakdown stays in each result's own `meta`.
             ledger.add(EARLIER_ATTEMPTS, Usage.from_dict(job.usage))
+        # On a shared store the run is watched for a stop requested from
+        # another process, and its lease renewed (#10). None otherwise: a
+        # process-local store has nobody to hear from.
+        watch = self._watch(job)
         with usage_ledger(ledger):
             try:
                 async for update in updates:
                     await self._apply(job, update, errors)
             except asyncio.CancelledError:
+                if watch is not None:
+                    watch.stop()        # before any await: nothing may cancel the settling
+                    if watch.lost:
+                        return await self._abandon(job, watch)
                 job.status = JobStatus.CANCELLED
                 self._collect_artifacts(job)       # the steps that did finish left files
                 await self._persist_summary(job)   # cancelled work was still paid for
+                if watch is not None:
+                    await self._release(job, watch)
+                    # A stop asked for from another process is not this
+                    # caller's cancellation: whoever awaits the run here (the
+                    # chat's `launch_job`, `jobsmith run --wait`) gets the
+                    # CANCELLED job back, as it would any other ending. A
+                    # local cancel landing at the same time still propagates.
+                    current = asyncio.current_task()
+                    if watch.requested and current is not None and current.uncancel() == 0:
+                        return job
                 raise
             except Exception as e:
+                if watch is not None:
+                    watch.stop()
                 job.status = JobStatus.FAILED
                 job.error = str(e)
                 self._collect_artifacts(job)
                 await self._persist_summary(job)
+                if watch is not None:
+                    await self._release(job, watch)
                 return job
+            finally:
+                # Synchronous, and reached with no `await` after the run's
+                # last update: from here on nothing can cancel this run, so a
+                # stop that arrives now is too late and the ending stands.
+                if watch is not None:
+                    watch.stop()
 
             if errors:
                 await self.repo.save_errors(job.job_id, errors)
@@ -319,7 +386,38 @@ class JobManager:
                 # whichever of the two it was.
                 self._collect_artifacts(job)
             await self._persist_summary(job)
+            if watch is not None:
+                await self._release(job, watch)
         return job
+
+    def _watch(self, job: Job) -> Heartbeat | None:
+        """Start watching this run on a shared store: renew its lease, and
+        hear a cancel requested from another process. Cancels the task that
+        drives the run — the same mechanism a local `cancel_job` uses."""
+        task = asyncio.current_task()
+        if not self.repo.shared or task is None:
+            return None
+        return Heartbeat(self.repo, job.job_id, self.identity, self.lease, task)
+
+    async def _release(self, job: Job, watch: Heartbeat) -> None:
+        """Give up the lease of a run that settled its own record."""
+        await watch.wait_closed()
+        await self.repo.release_lease(job.job_id)
+
+    async def _abandon(self, job: Job, watch: Heartbeat) -> Job:
+        """This run lost its lease: another process judged it dead and settled
+        the job. Stop WITHOUT writing — the record is that process's now, and
+        a write here would overwrite its settlement (and let a resume there
+        race this run on one checkpoint). The caller gets the record as the
+        store has it; this is not the caller's cancellation, so it does not
+        propagate as one."""
+        await watch.wait_closed()
+        current = asyncio.current_task()
+        if current is not None and current.uncancel() > 0:
+            raise asyncio.CancelledError
+        print(f"[jobs: {job.job_id[:8]} was settled by another process while "
+              f"this one ran it; stopped without writing]", file=sys.stderr)
+        return await self.get_job(job.job_id) or job
 
     @staticmethod
     def _deliverable_wanted(job: Job) -> bool:
@@ -593,6 +691,24 @@ class JobManager:
         return task
 
     async def cancel_job(self, job_id: str) -> Job | None:
+        """Stop a job, wherever it runs, and answer with the status it has.
+
+        Never answers CANCELLED for a run that carries on. In order:
+
+        - the run is a task of THIS process: cancel it, as always;
+        - the store is process-local: there is no other process, so a job with
+          no task here is not running anywhere and gets the tombstone;
+        - QUEUED on a shared store: the request is recorded first and the
+          tombstone after, so a process picking the job up at that instant
+          still hears it (`_begin`);
+        - RUNNING elsewhere: the request is recorded and the owner — the only
+          process that can stop the run — acts on it at its next heartbeat;
+          this waits for that, up to `LeasePolicy.wait`, and answers with
+          what the store then says. If the owner is provably gone, nobody
+          will act on it, so the record is settled here. If it is alive and
+          slow, the answer is still RUNNING and the request stands: the
+          truth, rather than a CANCELLED the run would later contradict.
+        """
         task = self._tasks.get(job_id)
         if task is not None and not task.done():
             task.cancel()
@@ -601,11 +717,76 @@ class JobManager:
             except asyncio.CancelledError:
                 pass
             return await self.get_job(job_id)
-        # No in-process task: best-effort tombstone (see module docstring).
         job = await self.get_job(job_id)
-        if job is not None and job.status in (JobStatus.QUEUED, JobStatus.RUNNING):
-            job.status = JobStatus.CANCELLED
-            await self._persist_summary(job)
+        if job is None or job.status not in (JobStatus.QUEUED, JobStatus.RUNNING):
+            return job
+        if self.repo.shared:
+            await self.repo.request_cancel(job_id, now_iso())
+            if job.status is JobStatus.RUNNING:
+                return await self._await_remote_stop(job_id)
+        job.status = JobStatus.CANCELLED
+        await self._persist_summary(job)
+        return job
+
+    async def _await_remote_stop(self, job_id: str) -> Job | None:
+        """Wait for the owner of a running job to act on a cancel request."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.lease.wait
+        while True:
+            job = await self.get_job(job_id)
+            if job is None or job.status is not JobStatus.RUNNING:
+                return job
+            control = await self.repo.load_control(job_id)
+            if (owner_is_gone(control.lease, here=self.identity)
+                    and await self._take_over([(job, control)])):
+                return await self._settle(
+                    job, JobStatus.CANCELLED,
+                    "cancelled after the process running it had already stopped")
+            if loop.time() >= deadline:
+                return job
+            await asyncio.sleep(self.lease.poll)
+
+    async def _take_over(self, orphans: list[tuple[Job, JobControl]]) -> list[Job]:
+        """Fence the owners of these jobs, and keep the ones none answered for.
+
+        Each lease is overwritten FIRST with one of ours that has already
+        expired: it claims nothing (another process may settle the job too,
+        to the same effect), but it names somebody else, which is how an
+        owner that was only stalled learns at its next heartbeat that the
+        job is no longer its to write (`Heartbeat.lost`).
+
+        A store with no compare-and-set leaves one race: an owner that read
+        its own lease just before the overwrite renews it just after, and
+        never sees the fence. So when the proof of death is only an expired
+        lease — which a stalled owner can come back from — this waits one
+        heartbeat and reads again: a lease renewed since is an owner alive,
+        and its job is left to it. A missing pid on this machine is certain
+        and needs no wait, which keeps the common case (a crash, then a
+        restart) immediate. What is left is an owner whose read-then-write
+        of one heartbeat straddles that whole wait; the TTL makes reaching
+        it at all require a stall of thirty seconds.
+        """
+        uncertain: set[str] = set()
+        for job, control in orphans:
+            await self.repo.save_lease(job.job_id, self.identity.lease(0))
+            if not death_is_certain(control.lease, here=self.identity):
+                uncertain.add(job.job_id)
+        if uncertain:
+            await asyncio.sleep(self.lease.heartbeat)
+        taken: list[Job] = []
+        for job, _ in orphans:
+            if job.job_id in uncertain:
+                lease = (await self.repo.load_control(job.job_id)).lease
+                if lease is None or lease.owner != self.identity.token:
+                    continue                    # renewed under our fence: alive
+            taken.append(job)
+        return taken
+
+    async def _settle(self, job: Job, status: JobStatus, error: str) -> Job:
+        """Write the ending of a job this process took over (`_take_over`)."""
+        job.status = status
+        job.error = error
+        await self._persist_summary(job)
         return job
 
     # ---------------- Queries ----------------
@@ -630,9 +811,14 @@ class JobManager:
     async def recover_interrupted(self) -> list[Job]:
         """Settle jobs left RUNNING by a process that died (persistent stores).
 
-        Call once at startup, before any job runs: with no in-process task
-        alive, a RUNNING record can only be a leftover. They are marked FAILED
-        while their checkpoint is retained, so a resume stays possible later.
+        Call once at startup, before any job runs. A RUNNING record with no
+        task here is a leftover only if nobody else can be running it: always
+        true of a process-local store, and on a shared one only once its
+        owner is provably gone (`ownership.owner_is_gone`) — a second
+        `jobsmith chat` opened on the same database must not fail the jobs
+        the first is still running (#10). Leftovers are marked FAILED while
+        their checkpoint is retained, so a resume stays possible later; a job
+        whose owner is alive is left to it, and both are said on stderr.
         QUEUED jobs are left alone — they never started and can still be run.
 
         The fourth terminal, and the one that does NOT collect artifacts
@@ -644,14 +830,32 @@ class JobManager:
         purpose, so a resume settles through `_drive`, which collects. Nothing
         is lost here that the next attempt cannot record.
         """
-        stale = [j for j in await self.list_jobs(status=JobStatus.RUNNING, limit=1000)
-                 if j.job_id not in self._tasks]
-        for job in stale:
-            job.status = JobStatus.FAILED
-            job.error = "interrupted: the process running this job stopped"
-            await self._persist_summary(job)
+        running = [j for j in await self.list_jobs(status=JobStatus.RUNNING, limit=1000)
+                   if j.job_id not in self._tasks]
+        if self.repo.shared:
+            # On a shared store "not in this process" is not "dead": another
+            # terminal may be running it right now (#10). Only an owner that
+            # is provably gone — lease expired, or its pid gone from this
+            # machine — leaves a job to settle, and only once it is fenced.
+            # A process-local store has no other process, so there every
+            # RUNNING record is a leftover.
+            orphans = []
+            for job in running:
+                control = await self.repo.load_control(job.job_id)
+                if owner_is_gone(control.lease, here=self.identity):
+                    orphans.append((job, control))
+            leftovers = await self._take_over(orphans)
+        else:
+            leftovers = running
+        stale = [await self._settle(job, JobStatus.FAILED,
+                                    "interrupted: the process running this job stopped")
+                 for job in leftovers]
+        alive = len(running) - len(stale)
         if stale:
             print(f"[jobs: {len(stale)} interrupted job(s) marked failed on startup]",
+                  file=sys.stderr)
+        if alive:
+            print(f"[jobs: {alive} job(s) still running in another process, left to it]",
                   file=sys.stderr)
         return stale
 

@@ -51,7 +51,13 @@ class FakeRunner:
 
 
 class DictRepository:
-    """A JobRepository backed by plain dicts — no store, no namespaces."""
+    """A JobRepository backed by plain dicts — no store, no namespaces.
+
+    Process-local, so the manager never asks it for the control half of the
+    port (leases, cancel requests): that half exists for other processes.
+    """
+
+    shared = False
 
     def __init__(self):
         self.summaries: dict[str, dict] = {}
