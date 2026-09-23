@@ -684,6 +684,11 @@ make coverage      # per-module coverage report
 make fix           # ruff --fix
 ```
 
+**Why the code is the way it is** lives in [`docs/decisions/`](docs/decisions/README.md):
+one record per decision, numbered by issue, with what was measured and the
+alternatives that lost. A PR that takes a decision writes its record there;
+`CLAUDE.md` keeps only the rules, under a 40k-character budget a test enforces.
+
 `make types` runs **pyright**, configured once in `[tool.pyright]` — the same
 block Pylance reads, so VS Code and CI agree instead of each flagging what the
 other ignores. It is the only gate here that can see a bug the tests cannot: a
