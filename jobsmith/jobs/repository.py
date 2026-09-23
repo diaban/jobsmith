@@ -29,8 +29,6 @@ port — nothing above it needs to change.
 """
 from __future__ import annotations
 
-import asyncio
-import sqlite3
 from typing import Any, Protocol
 
 from langgraph.store.memory import InMemoryStore
@@ -40,16 +38,6 @@ from .models import Job, JobOutput, JobStatus
 from .ownership import JobControl, Lease
 
 CONTROL = "control"
-
-# How many times a store call that met a busy SQLite file is tried again, and
-# the first pause (doubled each time: 20 ms … ~5 s in total).
-BUSY_RETRIES = 8
-BUSY_PAUSE = 0.02
-
-
-def _is_busy(error: BaseException) -> bool:
-    return isinstance(error, sqlite3.OperationalError) and "locked" in str(error)
-
 
 class JobRepository(Protocol):
     """Persistence of job records, in the domain's own vocabulary.
@@ -90,27 +78,18 @@ class StoreJobRepository:
                              if shared is None else shared)
 
     async def _io(self, method: str, *args: Any, **kwargs: Any) -> Any:
-        """One store call, tried again while a SQLite file reports itself busy.
+        """One store call — the single door every record goes through.
 
-        Measured with two processes on one file (#10): LangGraph's SQLite
-        store opens each batch with a *deferred* `BEGIN`, reads, then writes
-        — and a read transaction that must upgrade to a write after another
-        connection committed fails at once with "database is locked", the
-        busy timeout never consulted (SQLite's WAL snapshot rule). The failed
-        statement is the batch's first write, so nothing of it was written
-        and every op here is an upsert, a delete or a read: trying again is
-        safe, and the conflict is gone as soon as the other writer is. Any
-        other error, and a file still busy after ~5 s, is raised as it was.
+        It used to retry "database is locked" (#10): LangGraph's SQLite store
+        opened each batch with a *deferred* `BEGIN`, and a batch whose read
+        snapshot another process had committed past was refused at once,
+        the busy timeout never consulted. That is fixed where the connection
+        is opened, for every writer rather than for job records only
+        (`app/persistence.py::_ImmediateBegin`, #63): each batch takes the
+        write lock up front and waits. What is left to see here is a lock
+        held past the busy timeout, which is raised as the error it is.
         """
-        pause = BUSY_PAUSE
-        for attempt in range(BUSY_RETRIES + 1):
-            try:
-                return await getattr(self.store, method)(*args, **kwargs)
-            except Exception as e:
-                if attempt == BUSY_RETRIES or not _is_busy(e):
-                    raise
-            await asyncio.sleep(pause)
-            pause *= 2
+        return await getattr(self.store, method)(*args, **kwargs)
 
     # -------- writes --------
 

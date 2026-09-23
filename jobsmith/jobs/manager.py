@@ -729,14 +729,39 @@ class JobManager:
         return job
 
     async def _await_remote_stop(self, job_id: str) -> Job | None:
-        """Wait for the owner of a running job to act on a cancel request."""
+        """Wait for the owner of a running job to act on a cancel request.
+
+        **A summary that is already terminal is never fenced nor rewritten,
+        whatever the lease says** — the owner settled it, and its ending is
+        the job's. Two reads decide that, and their ORDER is what makes the
+        second one sufficient: the control record first, the summary after.
+
+        It rests on one ordering the owner keeps on every path that gives a
+        lease up: **its final summary is written before the lease is
+        released** — `_drive` on a normal end, on a cancel and on a failure
+        (`_persist_summary`, then `_release`), and `_begin` when it hears a
+        cancel before running (the same two, in that order). A fenced owner
+        (`_abandon`) writes nothing and releases nothing: the lease it lost
+        is the fencer's. So a control record read with no lease means the
+        summary read AFTER it is already final, and the check below returns
+        it untouched.
+
+        Read the other way round, the two reads straddle the owner's
+        settlement: the summary says RUNNING, the owner then writes CANCELLED
+        and releases, the control record says "no lease", and the canceller
+        took over a job that had just ended — a fence lease left behind and a
+        second CANCELLED, with a wrong reason, over the owner's (#63, measured:
+        a few runs in forty once `BEGIN IMMEDIATE` made reads queue behind
+        writes). `_settle` re-reads before it writes as well, so the rule
+        does not depend on this loop alone.
+        """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.lease.wait
         while True:
+            control = await self.repo.load_control(job_id)
             job = await self.get_job(job_id)
             if job is None or job.status is not JobStatus.RUNNING:
                 return job
-            control = await self.repo.load_control(job_id)
             if (owner_is_gone(control.lease, here=self.identity)
                     and await self._take_over([(job, control)])):
                 return await self._settle(
@@ -783,7 +808,15 @@ class JobManager:
         return taken
 
     async def _settle(self, job: Job, status: JobStatus, error: str) -> Job:
-        """Write the ending of a job this process took over (`_take_over`)."""
+        """Write the ending of a job this process took over (`_take_over`).
+
+        Never over an ending already written: an owner that settled the job
+        while the takeover was deciding had the last word, and it stands.
+        """
+        current = await self.get_job(job.job_id)
+        if current is not None and current.status not in (JobStatus.QUEUED,
+                                                          JobStatus.RUNNING):
+            return current
         job.status = status
         job.error = error
         await self._persist_summary(job)

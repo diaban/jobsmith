@@ -10,8 +10,8 @@ It opens the file through `open_persistence` — the production path, so the
 connections are configured exactly as the product's are — then waits until
 `start_at` (a wall-clock time shared by every hammer) so the processes really
 overlap, and writes `rounds` times through ONE of the two LangGraph backends,
-straight on the backend and never through `StoreJobRepository`, whose retry
-(#10) would hide exactly what this measures:
+straight on the backend and never through `StoreJobRepository`, so nothing
+between the backend and the file can hide what this measures:
 
     store   a batch that READS then WRITES (a GetOp and a PutOp in one
             `abatch`) — the shape of every store batch that fails with a

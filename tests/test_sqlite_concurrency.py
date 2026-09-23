@@ -3,7 +3,7 @@
 Measured, not argued: each test starts real processes (`tests/sqlite_hammer.py`)
 that write to the same file at the same moment, straight through LangGraph's
 backends as `open_persistence` configures them — never through
-`StoreJobRepository`, whose retry (#10) would hide what is measured here.
+`StoreJobRepository`, so nothing between the backend and the file can hide it.
 
 Before the fixes in `app/persistence.py`, measured with 4–6 processes:
 
