@@ -5,8 +5,12 @@ in this process, feeding the API's SSE stream. Delivery is best-effort: a
 subscriber that stops draining is dropped rather than allowed to block a
 running job.
 
-Making progress visible across processes (Postgres LISTEN/NOTIFY, Redis) is
-another implementation of this port, not a change to the JobManager.
+Making progress visible across processes (Postgres LISTEN/NOTIFY, a SQLite
+`data_version` poll) is another implementation of this port, not a change to
+the JobManager — #100, and why #10 did not take it: cancellation crosses
+processes through per-job keys the owner already knows, while a feed has to
+ask "what changed anywhere", which a BaseStore can only answer by rereading
+the whole index.
 """
 from __future__ import annotations
 
@@ -37,7 +41,7 @@ class JobEvents(Protocol):
 
 
 class InProcessEvents:
-    """Fan-out to in-process queues. Same v1 scope as task cancellation."""
+    """Fan-out to in-process queues: what THIS process persists (see #100)."""
 
     def __init__(self) -> None:
         self._subscribers: set[asyncio.Queue] = set()

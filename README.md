@@ -740,10 +740,12 @@ markdown deliverables.
 
 Honest v1 boundaries:
 
-- **Cancellation and SSE are in-process.** A client can cancel a job the daemon
-  runs; cross-process preemption writes a best-effort tombstone. This matters
-  more than it used to: cancelling is the undo that replaced the approval card,
-  so it is the only control over a task already running.
+- **Cancellation crosses processes; live events do not yet.** On a shared
+  database (SQLite, Postgres) a cancel from any process reaches the one running
+  the job within about two seconds, and a second `jobsmith chat` no longer
+  mistakes the first one's running jobs for crashed ones. Progress events
+  (`/events`, the TUI's live repaint) still only see jobs the same process runs
+  (#100); `jobsmith jobs` and F5 read the database and see them all.
 - **The answer lives in the turn and in a file, and nothing yet decides which.**
   A task that finishes in the conversation delivers its answer there word for
   word *and* writes the report; a promoted one only writes it. That is a
