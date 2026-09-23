@@ -10,6 +10,7 @@ front-ends is the expensive half.
 from __future__ import annotations
 
 import asyncio
+import inspect
 
 import pytest
 from conftest import FakeLLM, ScriptedChatModel, plan_json
@@ -38,8 +39,24 @@ from jobsmith.chat.tools import (
     recent_conversation,
     running_steps,
 )
+from jobsmith.clients import DEFAULT_MODEL as ANTHROPIC_MODEL
 from jobsmith.core.state import CONVERSATION_INPUT_KEY
 from jobsmith.jobs.models import Job, JobOutput, JobStatus, now_iso
+
+
+def format_for_anthropic(anthropic_chat_models, messages):
+    """Call the private `_format_messages` across the versions this suite has
+    to run on: langchain-anthropic 1.7.3 made `model` a required keyword-only
+    argument (it decides whether the model supports mid-conversation system
+    messages), 1.7.1 takes none. Inspecting the signature, never catching
+    `TypeError`, keeps the one refusal these tests exist to catch from being
+    swallowed by a compatibility shim. `ANTHROPIC_MODEL` is the chat stack's
+    own default (`jobsmith/app/providers.py`), so this exercises the model
+    Claude sessions actually run under, not a stand-in."""
+    formatter = anthropic_chat_models._format_messages
+    if "model" in inspect.signature(formatter).parameters:
+        return formatter(messages, model=ANTHROPIC_MODEL)
+    return formatter(messages)
 
 
 def launch_call(query: str, rationale: str, **args) -> AIMessage:
@@ -859,7 +876,7 @@ async def test_notices_survive_the_real_provider_formatters(store, checkpointer,
     openai = pytest.importorskip("langchain_openai.chat_models.base")
     call = await both_notices_turn(store, checkpointer, tmp_path)
 
-    system, formatted = anthropic._format_messages(call)   # raises on the old placement
+    system, formatted = format_for_anthropic(anthropic, call)  # raises on the old placement
     hoisted = " ".join(block["text"] for block in system)
     assert NOTICE_MARKER in hoisted and PROGRESS_MARKER in hoisted
     assert [m["role"] for m in formatted] == ["user"]      # only the real turn remains
@@ -883,7 +900,7 @@ def test_a_tool_calling_thread_also_formats(store, checkpointer, tmp_path):
     notice = SystemMessage(f"[job progress] {PROGRESS_MARKER}: 1/2 steps done")
 
     injected = JobNotificationMiddleware._inject(thread, [notice])
-    system, formatted = anthropic._format_messages(injected)
+    system, formatted = format_for_anthropic(anthropic, injected)
 
     assert PROGRESS_MARKER in " ".join(block["text"] for block in system)
     assert [m["role"] for m in formatted] == ["user", "assistant", "user"]
