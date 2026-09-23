@@ -1,6 +1,6 @@
 # 0000 — Foundations: decisions older than the issue that would carry them
 
-- **Issue:** none — these predate the issue that would have carried them; each passage names its own origin commit in `git log -S`
+- **Issue:** none — these predate the issue that would have carried them; a passage's origin commit is found with `git log -S '<phrase>' -- CLAUDE.md`
 - **Status:** accepted
 - **Source:** migrated verbatim from `CLAUDE.md` at `8326b98` (#102). The text is the original; only the headings (which section of `CLAUDE.md` it lived in) and the links were added.
 
