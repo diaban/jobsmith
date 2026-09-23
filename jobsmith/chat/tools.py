@@ -488,14 +488,15 @@ def make_job_tools(
         may not exist at all, and may not be readable. A job of another
         conversation is not yours to reference.
 
-        `formats` decides WHETHER there is a file and which. Pass the formats
-        the user asked for (`["markdown"]`, `["markdown", "pdf"]`, ...) when
-        they want a document — a report, a file to keep, something to send or
-        to print; the FIRST one is the main deliverable. Pass `[]` when they
-        asked for an answer and explicitly no file. Leave it out when they
-        said nothing about it, and the run decides: a task that actually
-        researches or analyses something leaves a document, a question
-        answered on the spot does not. Ask for what the user asked for and
+        `formats` decides WHETHER there is a file and which. Leave it out when
+        the user said nothing about a file: then NO file is written, however
+        much work the task takes, and the whole answer is delivered here, in
+        this conversation. Pass `["default"]` when they want a document — a
+        report, a file to keep, something to send or to print — without
+        naming a format: this deployment's usual format is used. Pass the
+        formats they named (`["pdf"]`, `["markdown", "html"]`, ...) when they
+        named some; the FIRST one is the main deliverable. Pass `[]` when they
+        explicitly asked for no file. Ask for what the user asked for and
         nothing more, and never promise a file in your own prose — only this
         argument produces one.
 
@@ -553,9 +554,14 @@ def make_job_tools(
         # model can fix on the spot, and the answer goes back to it as text.
         # `PathRefused` is a `ValueError`, so one arm covers both.
         try:
-            # `None` and `[]` are two different answers here (#84): "you
-            # decide" and "no document". `formats or []` would collapse them.
-            wanted = ensure_formats_available(formats)
+            # `None` and `[]` are two different answers here (#84): "the user
+            # said nothing" and "no document" — the same outcome since #96,
+            # two different facts on the record, and `formats or []` would
+            # collapse them. "default" is resolved HERE rather than in
+            # `create_job` alone because the notice below must show the
+            # formats it became, not the alias (#55: what the user is shown
+            # is what will be written).
+            wanted = ensure_formats_available(formats, default=manager.default_formats)
             given = (document_name or "").strip()
             name = document_stem(given) if given else ""
         except ValueError as refused:

@@ -214,17 +214,20 @@ def deliverable_filenames(
     and there is no job id yet at the moment this is shown, so a caller says
     what it can honestly say: the formats.
 
-    `formats` carries the three states of `Job.formats` and the difference
-    matters here more than anywhere: `None` is a request that said nothing,
-    so the deployment's default is the only honest guess and it is made;
-    **`[]` is a request for no document at all** (#84), and guessing markdown
-    there would print a filename for a file nobody will write — a promise in
-    exactly the place #55 built to stop making them.
+    `formats` carries the three states of `Job.formats`, and **only a list of
+    names promises a file**. `[]` is a request for no document at all (#84);
+    `None` is a request that said nothing, which since #96 means no document
+    either — unless the engine's own document step reads one out of the
+    sentence, which has not happened yet at the moment this is shown. This
+    used to guess markdown for `None`, which was the deployment's default
+    back when silence meant "a file in the default format"; it would now print
+    a filename for a file nobody will write — a promise in exactly the place
+    #55 built to stop making them.
     """
-    if not document_name or formats is not None and not list(formats):
+    wanted = [f.strip().lower() for f in formats or [] if f and f.strip()]
+    if not document_name or not wanted:
         return []
     extensions = known_extensions()
-    wanted = [f.strip().lower() for f in formats or [] if f and f.strip()] or ["markdown"]
     return [f"{document_name}.{extensions.get(f, f)}" for f in wanted]
 
 
@@ -248,8 +251,20 @@ def available_formats(registry: Any = None) -> list[str]:
     return sorted(names)
 
 
+#: The name a caller uses for "a document, in whatever format this deployment
+#: writes one" (#96). A request can want a file without naming its format —
+#: "write me a report" — and the answer to *which* format is then the
+#: deployment's (`$JOBSMITH_REPORT_FORMAT`, `app/agent.py::pick_report_formats`).
+#: It is resolved into those names before a job is recorded, so the record
+#: always says what will actually be written; a job never carries the alias.
+DEFAULT_FORMATS_ALIAS = "default"
+
+
 def ensure_formats_available(
-    formats: Iterable[str] | str | None, *, registry: Any = None
+    formats: Iterable[str] | str | None,
+    *,
+    registry: Any = None,
+    default: Sequence[str] | None = None,
 ) -> list[str] | None:
     """The requested formats, or a `ValueError` saying which cannot be had.
 
@@ -265,15 +280,34 @@ def ensure_formats_available(
     through unchanged: `None` for a request that said nothing, `[]` for one
     that asked for **no document**, the names otherwise. `[]` composes
     nothing on purpose — there is no Reporter to check, which is the whole
-    content of the answer.
+    content of the answer. **`None` is never turned into a format here**
+    (#96): a request that said nothing gets no document, so there is no
+    default to reach for on its behalf.
+
+    `DEFAULT_FORMATS_ALIAS` is the one name that is not a format: it says
+    "a document, in this deployment's format" and is replaced by `default`
+    (the deployment's list, which only the caller knows — a module-level
+    fallback here would be the silent markdown this function stopped being).
+    Asking for it where no default was given is refused like an unknown name.
     """
     if formats is None:
         return None
     names = parse_report_formats(formats) if isinstance(formats, str) else list(formats)
     if not names:
         return []
-    compose_reporters(names, registry)
-    return names
+    resolved: list[str] = []
+    for name in names:
+        if str(name).strip().lower() == DEFAULT_FORMATS_ALIAS:
+            if not default:
+                raise ValueError(
+                    f"{DEFAULT_FORMATS_ALIAS!r} names this deployment's document "
+                    "format, and none was given here")
+            expansion = list(default)
+        else:
+            expansion = [name]
+        resolved.extend(n for n in expansion if n not in resolved)
+    compose_reporters(resolved, registry)
+    return resolved
 
 
 def build_document(

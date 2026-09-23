@@ -55,6 +55,7 @@ class AgentBuilder:
         profile: AgentProfile | None = None,
         checkpointer: Any = None,
         document_formats: tuple[str, ...] | list[str] = (),
+        default_document_formats: tuple[str, ...] | list[str] = (),
     ):
         self.deps = deps
         self.registry = registry
@@ -65,6 +66,10 @@ class AgentBuilder:
         # `document_intent` silent: `core/` never learns what a Reporter is,
         # so a builder nobody told cannot invent a format. See core/document.py.
         self.document_formats = tuple(document_formats)
+        # ...and which of them a request gets when it asks for a document
+        # without naming a format (#96) — the deployment's, never guessed
+        # here. Empty leaves that answer silent too, i.e. no file.
+        self.default_document_formats = tuple(default_document_formats)
 
         # --- Step instances ---
         self.input_validator  = InputValidator(self.profile)
@@ -72,6 +77,7 @@ class AgentBuilder:
                                        prompt_template=self.profile.router_prompt_template)
         self.document_intent  = DocumentIntent(
             deps, self.document_formats,
+            default_formats=self.default_document_formats,
             prompt_template=self.profile.document_intent_prompt_template)
         self.planner          = Planner(deps, registry,
                                         prompt_template=self.profile.planner_prompt_template)
@@ -234,6 +240,8 @@ def build_agent(
     profile: AgentProfile | None = None,
     checkpointer: Any = None,
     document_formats: tuple[str, ...] | list[str] = (),
+    default_document_formats: tuple[str, ...] | list[str] = (),
 ):
     return AgentBuilder(deps, registry, profile=profile, checkpointer=checkpointer,
-                        document_formats=document_formats).build()
+                        document_formats=document_formats,
+                        default_document_formats=default_document_formats).build()

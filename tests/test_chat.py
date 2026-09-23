@@ -120,7 +120,7 @@ async def test_a_task_runs_in_the_turn_and_nothing_is_asked_first(
     turn ends.
     """
     session, _ = make_session(store, checkpointer, tmp_path, [
-        launch_call("analyse the alpha data", "needs several capability steps"),
+        launch_call("analyse the alpha data", "needs several capability steps", formats=["default"]),
         AIMessage(content="Done — the report is on disk."),
     ])
     agent = session.build()
@@ -148,7 +148,7 @@ async def test_the_answer_is_delivered_verbatim_and_not_through_the_model(
     never sees them.
     """
     session, model = make_session(store, checkpointer, tmp_path, [
-        launch_call("analyse the alpha data", "multi-step"),
+        launch_call("analyse the alpha data", "multi-step", formats=["default"]),
         AIMessage(content="Saved."),
     ])
     runner = ChatRunner(session.build())
@@ -373,7 +373,7 @@ async def test_the_kept_gate_still_interrupts_and_runs_on_approval(
     front-ends. Deleting it would mean building all of that again.
     """
     session, _ = make_session(store, checkpointer, tmp_path, [
-        launch_call("analyse the alpha data", "needs several capability steps"),
+        launch_call("analyse the alpha data", "needs several capability steps", formats=["default"]),
         AIMessage(content="Job launched — I'll share the report when it's done."),
     ], approval=True)
     agent = session.build()
@@ -419,7 +419,7 @@ async def test_finished_job_injected_once_then_marked_announced(store, checkpoin
         AIMessage(content="Your analysis is ready — see the report."),
     ])
     # a session job finished before the user's next message
-    job = await session.manager.create_job("crunch numbers", session_id=session.session_id)
+    job = await session.manager.create_job("crunch numbers", session_id=session.session_id, formats=["default"])
     await session.manager.run_job(job.job_id)
     agent = session.build()
 
@@ -457,7 +457,7 @@ async def test_a_job_whose_report_failed_is_announced_honestly(
     session, model = make_session(store, checkpointer, tmp_path,
                                   [AIMessage(content="Here is what came back.")])
     session.manager.reporter = Boom()
-    job = await session.manager.create_job("crunch numbers", session_id=session.session_id)
+    job = await session.manager.create_job("crunch numbers", session_id=session.session_id, formats=["default"])
     done = await session.manager.run_job(job.job_id)
     assert done.status is JobStatus.DONE and done.report_path is None
 
@@ -563,7 +563,7 @@ async def test_a_resumed_job_is_news_again(store, checkpointer, tmp_path):
     model = ScriptedChatModel(responses=[AIMessage(content="I stopped it."),
                                          AIMessage(content="Here it is at last.")])
     session = ChatSession(manager, model, checkpointer=MemorySaver())
-    job = await manager.create_job("a job worth resuming", session_id=session.session_id)
+    job = await manager.create_job("a job worth resuming", session_id=session.session_id, formats=["default"])
     manager.start_job(job.job_id)
     for _ in range(500):                       # wait until `slow` is really running
         await asyncio.sleep(0.01)
@@ -1045,7 +1045,7 @@ async def test_a_promoted_jobs_answer_comes_back_verbatim(store, checkpointer, t
     sees them.
     """
     session, model = make_session(store, checkpointer, tmp_path, [
-        launch_call("a long one", "multi-step"),
+        launch_call("a long one", "multi-step", formats=["default"]),
         AIMessage(content="It is running in the background."),
         AIMessage(content="That one is done."),
     ], sync_timeout=0)
@@ -1075,7 +1075,7 @@ async def test_an_answer_too_long_to_read_here_is_left_in_its_file(
     then handed the text to synthesize, which is what it was doing before.
     """
     session, model = make_session(store, checkpointer, tmp_path, [
-        launch_call("a long one", "multi-step"),
+        launch_call("a long one", "multi-step", formats=["default"]),
         AIMessage(content="It is running in the background."),
         AIMessage(content="Here is the gist; the report has the rest."),
     ], sync_timeout=0, inline_answer_max=10)

@@ -235,10 +235,14 @@ class AgentService(ABC):
         launch a job but not name what it produces would send its users back
         through the conversation to get a filename.
 
-        `formats` has three states and the third is #84's: `None` leaves the
-        choice to the run, a list of names asks for exactly those, and **`[]`
-        asks for no document at all** — an answer, no file. It travels as
-        `null` / `[]` over HTTP, so both backings say the same thing.
+        `formats` has three states and the third is #84's: `None` says
+        nothing — which since #96 is **no document**, unless the query asks
+        for one in words (the graph's document step reads it) — a list of
+        names asks for exactly those (`"default"` standing for this
+        deployment's format), and **`[]` asks for no document at all**. `None`
+        and `[]` end the same way and stay two facts on the record, so they
+        travel as `null` / `[]` over HTTP and both backings say the same
+        thing.
 
         A name that is not a filename and a format nothing can render here are
         refused as `ValueError` on BOTH backings — the remote one maps the

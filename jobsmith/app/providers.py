@@ -118,7 +118,7 @@ class KeywordLLM:
 
     It also reports *plausible* token usage (~4 chars per token) under a
     priced fake model, so the whole cost path — ledger, per-step meta, the
-    report's "About this job" line — is exercised by CI and by anyone trying
+    job record's usage — is exercised by CI and by anyone trying
     the product without an API key. Estimated, obviously: no tokenizer runs.
     """
 
@@ -137,6 +137,11 @@ class KeywordLLM:
     # deployment's own (`available_formats`), read back out of the rendered
     # prompt, so this stays true of a build that ships another Reporter.
     FORMAT_LINE = re.compile(r"^- ([a-z][a-z0-9_]*)$", re.MULTILINE)
+    # A request that wants a document and names no format (#96) — the one
+    # shape that still gets a file without naming one, now that silence gets
+    # none. Recognised the same crude way, and deliberately narrow: "the
+    # attached quarterly report" is material, not a request for a report.
+    DOCUMENT_WORDS = ("a report", "a document")
     MODEL = "fake-keyword-llm"
 
     @staticmethod
@@ -163,6 +168,8 @@ class KeywordLLM:
             ]
             if named:
                 return json.dumps({"document": "named", "formats": named})
+            if any(w in user.lower() for w in self.DOCUMENT_WORDS):
+                return json.dumps({"document": "requested"})
             return json.dumps({"document": "unspecified"})
         if "triage" in system.lower():
             direct = any(w in user.lower() for w in self.DIRECT_WORDS)

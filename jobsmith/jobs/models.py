@@ -30,8 +30,9 @@ class JobOutput:
 
     - "main"      the deliverable, exactly one per job — what
                   `report_path`, `jobsmith report` and `/report` point at
-    - "alternate" the same report rendered in another format (asked for
-                  with `JOBSMITH_REPORT_FORMAT=markdown,html`)
+    - "alternate" the same report rendered in another format (a request
+                  naming two, or `JOBSMITH_REPORT_FORMAT=markdown,html` for a
+                  document asked for without naming one)
     - "annex"     per-step material a capability produced (a chart, an
                   exported table) — supporting material, not the report
 
@@ -86,8 +87,9 @@ class Job:
     outputs: list[JobOutput] = field(default_factory=list)   # the deliverables
     # Was a deliverable meant to be written at all (#84)? False says the
     # absence of one is the *decision* and not a failure — the request asked
-    # for no document (`formats == []`), or the run had none to make (it
-    # answered without a plan, so there is nothing but a chat turn to file).
+    # for no document (`formats == []`), or it said nothing about one
+    # (`formats is None` once the engine's document step found nothing in
+    # the sentence either, #96): silence is not a request for a file.
     # It is a fact about the ending, like `terminal_kind`, and it exists
     # because `report_path is None` already means two other things: the run
     # did not answer, and the write failed (`error` says which). A caller

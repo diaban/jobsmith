@@ -21,7 +21,7 @@ from test_report_pdf import StubPdf
 
 from jobsmith.api import create_api
 from jobsmith.chat import ChatSession
-from jobsmith.jobs.report import compose_reporters, make_reporter
+from jobsmith.jobs.report import compose_reporters
 from jobsmith.service import LocalAgentService
 
 
@@ -56,19 +56,20 @@ async def wait_done(client: AsyncClient, job_id: str) -> dict:
 
 async def test_chat_flow_proposal_approval_report(store, checkpointer, tmp_path):
     app, _ = make_app(store, checkpointer, tmp_path, [
-        launch_call("analyse the data", "several steps needed"),
+        launch_call("analyse the data", "several steps needed", formats=["default"]),
         AIMessage(content="Job launched — report coming."),
     ], approval=True)
     async with client_for(app) as client:
         sid = (await client.post("/sessions")).json()["session_id"]
 
         r = (await client.post(f"/sessions/{sid}/messages",
-                               json={"text": "please analyse the data"})).json()
+                               json={"text": "please analyse the data, as a report"})).json()
         assert r == {"type": "proposal", "query": "analyse the data",
                      "rationale": "several steps needed", "sources": [],
-                     # `null`, not `[]`: the model named no format, which is
-                     # "the run decides" — `[]` would mean "no document" (#84)
-                     "document_name": "", "document_title": "", "formats": None}
+                     # the model asked for a document and named no format:
+                     # "default", resolved BEFORE the card to what will be
+                     # written — the user approves names, never an alias (#96)
+                     "document_name": "", "document_title": "", "formats": ["markdown"]}
 
         r = (await client.post(f"/sessions/{sid}/approval", json={"approved": True})).json()
         assert r["type"] == "message" and "report coming" in r["content"]
@@ -97,18 +98,18 @@ async def test_report_content_type_follows_the_deliverable_format(
     """/report announces what it actually serves. Every other test asserts on
     the body, which is how an HTML report kept being labelled text/markdown —
     correct bytes, wrong header, unreadable in a browser."""
-    app, manager = make_app(store, checkpointer, tmp_path, [AIMessage(content="hi")])
+    app, _ = make_app(store, checkpointer, tmp_path, [AIMessage(content="hi")])
 
     async with client_for(app) as client:
         job = await wait_done(client, (await client.post(
-            "/jobs", json={"query": "a markdown run"})).json()["job_id"])
+            "/jobs", json={"query": "a markdown run", "formats": ["markdown"]})).json()["job_id"])
         report = await client.get(f"/jobs/{job['job_id']}/report")
         assert report.headers["content-type"].startswith("text/markdown")
 
-        # the Reporter is the manager's documented swap seam: same run, other format
-        manager.reporter = make_reporter("html")
+        # same run, other format — asked for by the request, which is now the
+        # only thing that ever asks for a file (#96)
         job = await wait_done(client, (await client.post(
-            "/jobs", json={"query": "an html run"})).json()["job_id"])
+            "/jobs", json={"query": "an html run", "formats": ["html"]})).json()["job_id"])
         report = await client.get(f"/jobs/{job['job_id']}/report")
         assert report.headers["content-type"].startswith("text/html")
         assert report.text.startswith("<!doctype html>")
@@ -126,7 +127,7 @@ async def test_a_binary_deliverable_is_refused_by_report_and_offered_by_outputs(
 
     async with client_for(app) as client:
         job = await wait_done(client, (await client.post(
-            "/jobs", json={"query": "a printed run"})).json()["job_id"])
+            "/jobs", json={"query": "a printed run", "formats": ["default"]})).json()["job_id"])
 
         report = await client.get(f"/jobs/{job['job_id']}/report")
         assert report.status_code == 415
@@ -145,7 +146,7 @@ async def test_every_deliverable_is_listed_and_downloadable(store, checkpointer,
 
     async with client_for(app) as client:
         job = await wait_done(client, (await client.post(
-            "/jobs", json={"query": "two formats"})).json()["job_id"])
+            "/jobs", json={"query": "two formats", "formats": ["default"]})).json()["job_id"])
         assert len(job["outputs"]) == 2
 
         outputs = (await client.get(f"/jobs/{job['job_id']}/outputs")).json()
@@ -181,7 +182,11 @@ async def test_direct_job_launch_and_cancel_and_404s(store, checkpointer, tmp_pa
         r = await client.post("/jobs", json={"query": "direct run"})
         assert r.status_code == 201
         job = await wait_done(client, r.json()["job_id"])
-        assert job["report_path"] is not None
+        # the contract change of #96, on this door: a request that said
+        # nothing about a document gets none — and says so on the record
+        assert job["status"] == "done" and job["plan"] is not None
+        assert job["report_path"] is None and job["deliverable_expected"] is False
+        assert job["final_answer"]
 
         # cancel on a finished job is a no-op status echo
         r = await client.post(f"/jobs/{job['job_id']}/cancel")

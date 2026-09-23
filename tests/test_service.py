@@ -258,10 +258,14 @@ async def test_a_job_that_wanted_no_document_reads_the_same_on_both_backings(
         assert await client.get_report(job["job_id"]) is None
         assert await client.list_outputs(job["job_id"]) == []
 
-        # ...while saying nothing still lets the run decide, on both backings
+        # ...and saying nothing ends the same way since #96 — no file — while
+        # staying a different fact on the record, on both backings: `null`
+        # must cross HTTP as `null`, or the engine's document step could
+        # never fill it from the sentence
         silent = await wait_done(client, (await client.launch_job("compare them"))["job_id"])
-        assert silent["formats"] is None and silent["deliverable_expected"] is True
-        assert silent["report_path"] is not None
+        assert silent["formats"] is None and silent["deliverable_expected"] is False
+        assert silent["report_path"] is None and silent["error"] is None
+        assert await client.get_report(silent["job_id"]) is None
     finally:
         await client.aclose()
 
@@ -281,7 +285,7 @@ async def test_a_binary_deliverable_is_refused_the_same_way_by_both_backings(
     service.manager.reporter = StubPdf()
     client = daemon_client_over(create_api(service)) if over_http else service
     try:
-        launched = await client.launch_job("print it")
+        launched = await client.launch_job("print it", formats=["default"])
         job = await wait_done(client, launched["job_id"])
         job_id = job["job_id"]
         assert [(o["role"], o["format"]) for o in job["outputs"]] == [("main", "pdf")]
@@ -332,7 +336,7 @@ async def test_progress_events_reach_either_backing(store, checkpointer, tmp_pat
             queue = client.subscribe()
             await _await_subscription(service)
 
-            launched = await client.launch_job("watch it")
+            launched = await client.launch_job("watch it", formats=["default"])
             job_id = launched["job_id"]
             seen = []
             while not seen or seen[-1]["status"] not in ("done", "failed"):

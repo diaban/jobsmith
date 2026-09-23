@@ -381,7 +381,7 @@ async def test_the_job_records_the_deck_as_an_annex(store, checkpointer, tmp_pat
     graph = build_agent(Deps(llm=llm), CapabilityRegistry([cap]), checkpointer=checkpointer)
     manager = JobManager(graph, store, reports_dir=tmp_path / "artifacts")
 
-    done = await manager.run_job((await manager.create_job("brief the board")).job_id)
+    done = await manager.run_job((await manager.create_job("brief the board", formats=["markdown"])).job_id)
 
     assert done.status is JobStatus.DONE
     main, annex = done.outputs

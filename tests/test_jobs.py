@@ -56,7 +56,8 @@ class CountingEcho(SlowEcho):
         return self._emit_success({"echo": f"{self.spec.name}#{self.runs}"})
 
 
-async def cancelled_midway(store, checkpointer, tmp_path, *, session_id=None):
+async def cancelled_midway(store, checkpointer, tmp_path, *, session_id=None,
+                           formats=None):
     """A job stopped *inside* its second step: one result stored, one pending.
 
     The shape every resume test needs — and the one a job really stops in,
@@ -70,7 +71,8 @@ async def cancelled_midway(store, checkpointer, tmp_path, *, session_id=None):
         default="A sufficiently long final answer for the job test.",
     )
     mgr = make_manager(store, checkpointer, tmp_path, caps=[alpha, slow], llm=llm)
-    job = await mgr.create_job("a job worth resuming", session_id=session_id)
+    job = await mgr.create_job("a job worth resuming", session_id=session_id,
+                               formats=formats)
     mgr.start_job(job.job_id)
     for _ in range(500):                       # wait until `slow` is actually running
         await asyncio.sleep(0.01)
@@ -197,7 +199,8 @@ async def test_resume_finishes_a_cancelled_job_without_redoing_finished_steps(
 ):
     """The point of resuming: the steps already paid for are kept, only the
     interrupted one runs again — and the job ends exactly like a normal run."""
-    mgr, job, alpha, slow = await cancelled_midway(store, checkpointer, tmp_path)
+    mgr, job, alpha, slow = await cancelled_midway(store, checkpointer, tmp_path,
+                                                   formats=["markdown"])
 
     slow.delay = 0.0                              # the pending step can finish now
     done = await mgr.resume_job(job.job_id)
@@ -275,7 +278,7 @@ async def test_resume_refuses_wrong_statuses(store, checkpointer, tmp_path):
 
 async def test_report_written_on_done(store, checkpointer, tmp_path):
     mgr = make_manager(store, checkpointer, tmp_path, caps=[SlowEcho("alpha"), SlowEcho("beta")])
-    job = await mgr.create_job("write the report")
+    job = await mgr.create_job("write the report", formats=["markdown"])
     done = await mgr.run_job(job.job_id)
 
     assert done.report_path is not None
@@ -356,7 +359,7 @@ async def test_every_terminal_is_announceable_and_a_resume_unmarks_it(
 async def test_subscribe_streams_job_events(store, checkpointer, tmp_path):
     mgr = make_manager(store, checkpointer, tmp_path)
     queue = mgr.subscribe()
-    job = await mgr.create_job("watched", session_id="s1")
+    job = await mgr.create_job("watched", session_id="s1", formats=["markdown"])
     await mgr.run_job(job.job_id)
 
     events = []
@@ -429,7 +432,7 @@ async def test_annexes_are_opt_in_and_rendered_by_the_capability(store, checkpoi
     registry = CapabilityRegistry(caps)
     mgr = make_manager(store, checkpointer, tmp_path, caps=caps)
     mgr.reporter = MarkdownReport(registry, with_annexes=True)
-    job = await mgr.create_job("render me")
+    job = await mgr.create_job("render me", formats=["markdown"])
     done = await mgr.run_job(job.job_id)
 
     report = (tmp_path / "artifacts" / f"{done.job_id}.md").read_text()
@@ -513,7 +516,7 @@ async def test_several_formats_are_all_recorded_as_deliverables(
 
     mgr = make_manager(store, checkpointer, tmp_path)
     mgr.reporter = compose_reporters("markdown,html")   # the documented swap seam
-    job = await mgr.create_job("two deliverables")
+    job = await mgr.create_job("two deliverables", formats=["markdown"])
     done = await mgr.run_job(job.job_id)
 
     assert [(o.format, o.role) for o in done.outputs] == [

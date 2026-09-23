@@ -313,7 +313,8 @@ async def test_a_job_reads_the_report_the_previous_job_wrote(tmp_path):
                           db="memory", reports_dir=str(tmp_path / "artifacts"))
     try:
         first = await app.manager.run_job(
-            (await app.manager.create_job("study the topic in depth")).job_id)
+            (await app.manager.create_job(
+                "study the topic in depth and write a report")).job_id)
         assert first.status is JobStatus.DONE and first.report_path
 
         second = await app.manager.create_job(

@@ -28,7 +28,12 @@ from ..core.deps import Deps
 from ..core.registry import CapabilityRegistry
 from ..jobs.manager import JobManager
 from ..jobs.prior import RepositoryPriorJobs
-from ..jobs.report import available_formats, compose_reporters, parse_report_formats
+from ..jobs.report import (
+    available_formats,
+    compose_reporters,
+    ensure_formats_available,
+    parse_report_formats,
+)
 from ..jobs.repository import StoreJobRepository
 from .persistence import open_persistence, pick_db
 from .providers import make_chat_model, make_llm, pick_provider
@@ -60,13 +65,23 @@ class AgentApp:
 
 
 def pick_report_formats(flag: str | None = None) -> list[str]:
-    """Which formats a finished job hands back: argument > env > markdown.
+    """The format(s) of a document ASKED FOR without naming one: arg > env > markdown.
 
     Same precedence shape as `pick_db`, and the value is a comma-separated
-    list: `JOBSMITH_REPORT_FORMAT=markdown,html` makes one run write both.
-    A single name is the ordinary case and behaves exactly as it always did.
-    **The first name is the main deliverable** — the one `report_path` and
-    `/report` point at — so the order is a decision, not a formality.
+    list: `JOBSMITH_REPORT_FORMAT=markdown,html` makes such a document come in
+    both. **The first name is the main deliverable** — the one `report_path`
+    and `/report` point at — so the order is a decision, not a formality.
+
+    What it answers narrowed with #96, and the narrowing is the point. It
+    used to answer "which formats, when a file is written and nobody named
+    one" — and a file was written for every run that planned, so it was in
+    effect the format of *every* silent request. A silent request now gets no
+    file at all, so it no longer asks this question. What still asks it is a
+    request that wants a document and names no format: "write me a report"
+    read by the graph's document step, or a caller passing
+    `DEFAULT_FORMATS_ALIAS` ("default") — the chat model, `POST /jobs`. It
+    is therefore never a reason to write a file, only the answer to *which*
+    file once one was asked for.
 
     There is no CLI flag yet: the entrypoints belong to another seam, so the
     environment variable is how an operator switches the deliverable today.
@@ -131,6 +146,13 @@ async def build_app(
                              prior_jobs=RepositoryPriorJobs(repository))
             )
         )
+        # What "a document" is here when a request wants one and names no
+        # format (#96). Composed now, so a format nothing can render — `pdf`
+        # without pango — fails at startup rather than at the end of the
+        # first job that asked for a report; the same rule `PdfReport`
+        # applies to its engine.
+        default_formats = pick_report_formats(report_format)
+        ensure_formats_available(default_formats, registry=registry)
         graph = AgentBuilder(
             Deps(llm=llm), registry,
             profile=definition.profile, checkpointer=checkpointer,
@@ -140,20 +162,24 @@ async def build_app(
             # actually render — `.[pdf]` needs pango where the daemon runs,
             # so the list is composed here and nowhere in `core/`.
             document_formats=available_formats(registry),
+            # ...and what it resolves "a report, no format named" to: the
+            # SAME list the manager resolves the "default" argument to, so the
+            # sentence and the argument cannot disagree about one request.
+            default_document_formats=default_formats,
         ).build()
         # The registry is passed so capabilities present their own results;
-        # the formats asked for are composed into one reporter, whose first
-        # name is the main deliverable. The same closure answers again for a
-        # job that requested formats of its own (#55) — the deployment's
-        # knowledge has to reach a reporter built later, or a requested PDF
-        # would come back without the registry the composed one holds.
+        # a job's formats are composed into one reporter, whose first name is
+        # the main deliverable. A factory, because every document is now one
+        # somebody asked for (#55, #96) — the deployment's knowledge has to
+        # reach a reporter built for that job, or a requested PDF would come
+        # back without the registry.
         def reporter_for(formats: Sequence[str]) -> Any:
             return compose_reporters(formats, registry)
 
         manager = JobManager(
             graph, store, repository=repository,
-            reporter=reporter_for(pick_report_formats(report_format)),
             reporter_factory=reporter_for,
+            default_formats=default_formats,
             reports_dir=reports_dir,
         )
         # A previous process may have died mid-run: settle those jobs first.

@@ -134,7 +134,12 @@ GOLDEN_CASES: tuple[EvalCase, ...] = (
         ),
         expect_route="plan",
         min_steps=2,
-        note="two distinct asks (compare, then recommend) should decompose",
+        expect_document=False,
+        note=(
+            "two distinct asks (compare, then recommend) should decompose — "
+            "and nothing asks for a file: however much it plans, a silent "
+            "request gets its answer and no document (#96)"
+        ),
     ),
     EvalCase(
         id="plan_research_and_critique",
@@ -154,6 +159,7 @@ GOLDEN_CASES: tuple[EvalCase, ...] = (
         expect_route="plan",
         min_steps=2,
         must_include=("analysis",),
+        expect_document=False,
         note="an explicit 'analyse' should reach the analysis capability when it exists",
     ),
     EvalCase(
@@ -169,7 +175,9 @@ GOLDEN_CASES: tuple[EvalCase, ...] = (
         note=(
             "no file was named, so the step that reads one must be dropped as "
             "inapplicable — true of the fakes too, which chain the whole "
-            "registry and let plan validation do the dropping"
+            "registry and let plan validation do the dropping. It asks for "
+            "a report and names no format: since #96 that is what earns a "
+            "file in the deployment's default format, where silence earns none"
         ),
     ),
     EvalCase(
@@ -180,6 +188,24 @@ GOLDEN_CASES: tuple[EvalCase, ...] = (
         ),
         expect_route="plan",
         min_steps=1,
+        expect_document=False,
+        note="a summary is an answer, not a file (#96)",
+    ),
+    EvalCase(
+        id="plan_document_requested_without_format",
+        query=(
+            "research how teams version their database schemas, compare the "
+            "approaches, and put the result in a document I can keep"
+        ),
+        expect_route="plan",
+        min_steps=1,
+        expect_document=True,
+        note=(
+            "a document asked for in words, with no format named (#96): the "
+            "one request `$JOBSMITH_REPORT_FORMAT` still answers. Since a "
+            "silent request gets no file, it is also one of the few runs the "
+            "checks that read the FILE can be scored on"
+        ),
     ),
 
     # ---------------- the shape of the deliverable ----------------
@@ -257,6 +283,7 @@ GOLDEN_CASES: tuple[EvalCase, ...] = (
         expect_route="plan",
         min_steps=2,
         must_include=("read_files",),
+        expect_document=False,
         inputs={"source_files": [FIXTURE_REF]},
         note=(
             "the request names a file, so the run has real material — and "
@@ -280,7 +307,25 @@ GOLDEN_CASES: tuple[EvalCase, ...] = (
         note=(
             "nothing was attached: the run must declare that it could not "
             "answer, rather than write a speculative report that reads like "
-            "one (#59)"
+            "one (#59). It asks for no file, so the refusal is scored on the "
+            "answer alone (`refusal_is_bare`)"
+        ),
+    ),
+    EvalCase(
+        id="unanswerable_as_a_document",
+        query=(
+            "write a report on the attached survey results and list the three "
+            "findings it names"
+        ),
+        expect_route="plan",
+        expect_terminal="unanswered",
+        min_steps=1,
+        expect_document=True,
+        note=(
+            "the same refusal, asked for as a document: the file must say the "
+            "run could not answer (`refusal_declared`). Since #96 the case "
+            "above writes no file, so without this one the declaration in the "
+            "deliverable would be scored on nothing at all"
         ),
     ),
 

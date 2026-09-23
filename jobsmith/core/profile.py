@@ -68,23 +68,28 @@ says.
 Formats this deployment can write:
 {formats}
 
-Return ONLY a JSON object, no prose, no markdown fences, in one of three shapes:
+Return ONLY a JSON object, no prose, no markdown fences, in one of four shapes:
 {{"document": "named", "formats": ["<format>", ...]}}
     the request asked for a file in one or more of the formats above ("as a
     PDF", "an HTML page I can open"). List only names from that list, in the
     order the request implies — the first one is the document itself.
+{{"document": "requested"}}
+    the request asked for a document to keep, send or print — "write me a
+    report", "put it in a document", "something I can print" — but named none
+    of the formats above.
 {{"document": "none"}}
     the request EXPLICITLY asked for no file: it says the answer should stay
     here, or that nothing is to be written.
 {{"document": "unspecified"}}
-    the request said nothing either way. This is the ordinary answer, and the
+    the request said nothing about a file. This is the ordinary answer, and the
     right one whenever you are unsure.
 
 Rules:
-- Only the words of the request decide. Never infer a format from the subject,
+- Only the words of the request decide. Never infer a file from the subject,
   the length of the task, or how useful a file would be.
-- Asking for "a report", "a summary" or "a comparison" names no format: that
-  is "unspecified", and something else decides.
+- Asking for "a summary", "a comparison", "an analysis" or "a recommendation"
+  is asking for an answer, not for a file: that is "unspecified".
+- Asking for "a report" or "a document" without a format is "requested".
 - A format that is not in the list above does not exist here; do not name it,
   and do not substitute the nearest one you know.
 - A greeting or a question about the assistant is "unspecified" too: it asked

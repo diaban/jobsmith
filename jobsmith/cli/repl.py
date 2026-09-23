@@ -63,9 +63,11 @@ def job_lines(event: dict, indent: str = "    ") -> list[str]:
     a name is only a name once there is a job id to hang it on, so a proposal
     can legitimately have formats and nothing to call them. **And it says so
     when there will be no file at all** (#84): `formats == []` is a decision
-    the user is entitled to see, exactly as a filename is — the line is not
-    dropped for it, because a missing line is what an unstated format already
-    looks like.
+    the user is entitled to see, exactly as a filename is. Since #96 an
+    unstated format (`None`) says so too — silence means no file, unless the
+    request itself asks for one in words (the engine's document step reads it
+    after this is shown) — so no state is left to a missing line, which
+    would read like a file nobody mentioned.
     """
     lines = [f"{indent}task     : {event.get('query')}"]
     if rationale := event.get("rationale"):
@@ -81,6 +83,8 @@ def job_lines(event: dict, indent: str = "    ") -> list[str]:
         lines.append(f"{indent}writes   : {', '.join(formats)}")
     elif formats is not None:
         lines.append(f"{indent}writes   : no file — the answer stays here")
+    else:
+        lines.append(f"{indent}writes   : no file, unless the request asks for one")
     return lines
 
 
@@ -259,7 +263,8 @@ async def run_repl(client: AgentClient, session_id: str) -> None:
                         report = await client.get_report(job["job_id"])
                         print(report or "  " + (
                             no_document_note(job)
-                            if not job.get("deliverable_expected", True)
+                            if job.get("status") == "done"
+                            and not job.get("deliverable_expected", True)
                             else "no report yet (is the job done?)"))
                     except BinaryDeliverable as refused:
                         print(f"  {refused}")

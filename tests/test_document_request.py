@@ -24,6 +24,7 @@ from test_jobs import make_manager
 
 from jobsmith.chat import ChatRunner, JobStarted
 from jobsmith.core.paths import PathRefused
+from jobsmith.jobs.models import JobStatus
 from jobsmith.jobs.report import (
     NAME_MAX,
     available_formats,
@@ -43,7 +44,7 @@ async def test_the_deliverable_takes_the_name_and_keeps_the_job_its_own_folder(
     unique to nobody — so a named deliverable lands in the job's own
     directory, where its annexes already are."""
     mgr = make_manager(store, checkpointer, tmp_path)
-    job = await mgr.create_job("compare the chairs", document_name=NAME)
+    job = await mgr.create_job("compare the chairs", document_name=NAME, formats=["markdown"])
     done = await mgr.run_job(job.job_id)
 
     assert done.report_path == str(
@@ -58,7 +59,7 @@ async def test_an_unnamed_job_writes_exactly_where_it_always_did(
 ):
     """Nothing about a job with no name of its own needed a directory."""
     mgr = make_manager(store, checkpointer, tmp_path)
-    job = await mgr.create_job("compare the chairs")
+    job = await mgr.create_job("compare the chairs", formats=["markdown"])
     done = await mgr.run_job(job.job_id)
 
     assert done.report_path == str(tmp_path / "artifacts" / f"{job.job_id}.md")
@@ -70,9 +71,9 @@ async def test_two_jobs_with_one_name_keep_two_files(store, checkpointer, tmp_pa
     find (#28)."""
     mgr = make_manager(store, checkpointer, tmp_path)
     first = await mgr.run_job(
-        (await mgr.create_job("compare the chairs", document_name=NAME)).job_id)
+        (await mgr.create_job("compare the chairs", document_name=NAME, formats=["markdown"])).job_id)
     second = await mgr.run_job(
-        (await mgr.create_job("compare them again", document_name=NAME)).job_id)
+        (await mgr.create_job("compare them again", document_name=NAME, formats=["markdown"])).job_id)
 
     assert first.report_path != second.report_path
     assert {p.name for p in (tmp_path / "artifacts").rglob("*.md")} == {f"{NAME}.md"}
@@ -114,7 +115,7 @@ async def test_the_requested_title_is_the_heading_and_the_name_never_decides_it(
 ):
     mgr = make_manager(store, checkpointer, tmp_path)
     job = await mgr.create_job("compare the chairs", document_name=NAME,
-                               document_title="Comparatif des chaises")
+                               document_title="Comparatif des chaises", formats=["markdown"])
     await mgr.run_job(job.job_id)
 
     written = (tmp_path / "artifacts" / job.job_id / f"{NAME}.md").read_text()
@@ -128,7 +129,7 @@ async def test_a_job_that_asked_for_neither_still_derives_both(
     """#54 stays the floor under #55: no title asked for, one derived from the
     request rather than a job id or an empty heading."""
     mgr = make_manager(store, checkpointer, tmp_path)
-    job = await mgr.create_job("compare the chairs for a home office")
+    job = await mgr.create_job("compare the chairs for a home office", formats=["markdown"])
     done = await mgr.run_job(job.job_id)
 
     assert done.report_path is not None
@@ -153,15 +154,64 @@ async def test_a_job_composes_the_formats_it_asked_for(store, checkpointer, tmp_
     assert done.report_path.endswith(".html")
 
 
-async def test_a_job_that_asked_for_nothing_uses_what_the_deployment_composed(
+async def test_a_job_that_asked_for_nothing_composes_nothing(
     store, checkpointer, tmp_path
 ):
-    """The default path is untouched: no formats asked for, the composed
-    reporter writes, and the factory is never consulted."""
+    """No formats asked for is no document (#96), so no Reporter is composed
+    and the factory is never consulted. It used to fall back on the
+    deployment's composed reporter; that fallback was the old contract."""
     mgr = make_manager(store, checkpointer, tmp_path)
     mgr.reporter_factory = lambda formats: pytest.fail("should not be consulted")
     done = await mgr.run_job((await mgr.create_job("compare the chairs")).job_id)
-    assert done.report_path.endswith(".md")
+    assert done.report_path is None and done.deliverable_expected is False
+
+
+async def test_a_reporter_that_cannot_be_composed_is_a_failed_write_not_a_hung_job(
+    store, checkpointer, tmp_path
+):
+    """Composing the Reporter happened outside `_write_outputs`' own `try`, so
+    a factory that raised skipped the final persist and left the job RUNNING
+    for ever — every waiter on it hung. Found by falsifying #96 (composing an
+    empty list raises by design); held to the rule a failed write already
+    follows: DONE, the answer kept, the cause in `job.error`."""
+    mgr = make_manager(store, checkpointer, tmp_path)
+
+    def broken(formats):
+        raise RuntimeError("renderer unavailable")
+
+    mgr.reporter_factory = broken
+    done = await mgr.run_job(
+        (await mgr.create_job("compare the chairs", formats=["markdown"])).job_id)
+
+    assert done.status is JobStatus.DONE and done.final_answer
+    assert "renderer unavailable" in (done.error or "")
+    assert (await mgr.get_job(done.job_id)).status is JobStatus.DONE
+
+
+async def test_default_is_the_deployment_s_format_resolved_before_the_record(
+    store, checkpointer, tmp_path
+):
+    """`"default"` is how a caller asks for a document without naming its
+    format (#96). It becomes the deployment's names in `create_job`, so the
+    record — and every screen that reads it — says what will be written."""
+    mgr = make_manager(store, checkpointer, tmp_path)
+    mgr.default_formats = ["html", "markdown"]
+    job = await mgr.create_job("compare the chairs", formats=["default"])
+    assert job.formats == ["html", "markdown"]
+
+    done = await mgr.run_job(job.job_id)
+    assert [(o.role, o.format) for o in done.outputs] == [
+        ("main", "html"), ("alternate", "markdown")]
+
+
+async def test_default_where_no_default_exists_is_refused_not_guessed(
+    store, checkpointer, tmp_path
+):
+    """A manager told no default cannot invent markdown for one."""
+    mgr = make_manager(store, checkpointer, tmp_path)
+    mgr.default_formats = []
+    with pytest.raises(ValueError, match="default"):
+        await mgr.create_job("compare the chairs", formats=["default"])
 
 
 async def test_a_format_nothing_can_render_is_refused_in_front_of_the_asker(

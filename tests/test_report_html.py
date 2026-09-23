@@ -380,12 +380,15 @@ def test_pick_report_formats_reads_a_comma_separated_list(monkeypatch):
 
 
 async def test_the_composed_agent_can_hand_back_html(tmp_path):
-    """End to end, keyless: the format chosen at composition is the file the
-    job actually writes, and `report_path` still points at it."""
+    """End to end, keyless: the format chosen at composition is the file a
+    request for "a report" gets (#96 — it no longer names the file every run
+    writes, because a silent run writes none), and `report_path` points at it.
+    The request goes through the engine's own document step, so this is the
+    sentence reaching the deployment's default, not an argument."""
     app = await build_app(llm=KeywordLLM(), chat_model=KeywordChatModel(), db="memory",
                           reports_dir=str(tmp_path / "artifacts"), report_format="html")
     try:
-        job = await app.manager.create_job("study the topic in depth")
+        job = await app.manager.create_job("study the topic in depth and write a report")
         done = await app.manager.run_job(job.job_id)
         assert done.report_path.endswith(".html")
         # deliverables only: a pack that also produces a file (`slide_deck`,
@@ -534,7 +537,7 @@ async def test_the_composed_agent_can_hand_back_both_formats(tmp_path):
                           reports_dir=str(tmp_path / "artifacts"),
                           report_format="markdown,html")
     try:
-        job = await app.manager.create_job("study the topic in depth")
+        job = await app.manager.create_job("study the topic in depth and write a report")
         done = await app.manager.run_job(job.job_id)
         deliverables = [o for o in done.outputs if o.role != "annex"]   # see above
         assert [(o.format, o.role) for o in deliverables] == [

@@ -61,8 +61,10 @@ class JobIn(BaseModel):
     inputs: dict[str, Any] | None = None
     session_id: str | None = None
     # what the deliverable should be called, be titled and be written as (#55)
-    # — and whether there is to be one at all (#84): `formats` absent or null
-    # leaves it to the run, `[]` asks for no document, a list asks for those.
+    # — and whether there is to be one at all (#84, #96): `formats` absent or
+    # null said nothing, which is no document unless the query itself asks
+    # for one in words; `[]` asks for no document; a list asks for those, and
+    # `["default"]` for a document in this deployment's format.
     document_name: str = ""
     document_title: str = ""
     formats: list[str] | None = None
@@ -238,8 +240,13 @@ def create_api(service: LocalAgentService) -> FastAPI:
         except BinaryDeliverable as refused:
             raise HTTPException(415, str(refused)) from refused
         if report is None:
-            raise HTTPException(404, NO_DOCUMENT_DETAIL if not job.get(
-                "deliverable_expected", True) else "no report for this job (not DONE yet?)")
+            # "None was asked for" is said of a run that FINISHED: since #96
+            # a silent request expects no file from its first step on, so a
+            # run of one that then failed is both — and "why it stopped"
+            # reads first, as it does in `job.error` (#41).
+            raise HTTPException(404, NO_DOCUMENT_DETAIL if job.get("status") == "done"
+                                and not job.get("deliverable_expected", True)
+                                else "no report for this job (not DONE yet?)")
         return Response(report, media_type=_report_media_type(job))
 
     # ---------------- live events ----------------

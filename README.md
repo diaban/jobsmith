@@ -2,8 +2,8 @@
 
 A conversational agent that answers simple messages directly and **runs real
 tasks** for everything else — planning them into a DAG of capabilities,
-executing it, and writing a report. A task runs in the conversation and
-answers there; one that turns out to be slow moves to the background on its
+executing it, and answering — with a document when you ask for one. A task
+runs in the conversation and answers there; one that turns out to be slow moves to the background on its
 own, and comes back in the same conversation when it is done.
 
 Underneath, it is a domain-agnostic framework: a planner emits a DAG of
@@ -18,12 +18,12 @@ you> what can you do?
 you> summarise the two files I gave you
      → says what it is about to run, what it will read, what it will write
      → runs it now: read_files → analysis
-     → answers in this turn, word for word, and names the report file
+     → answers in this turn, word for word — and writes no file, since none was asked for
 
-you> compare hexagonal and layered architectures for an LLM agent
+you> compare hexagonal and layered architectures for an LLM agent, as a report
      → same start — but research → analysis → critique takes minutes
      → after 20 seconds it says so and carries on in the background
-     → later, in the same conversation: a synthesis + the path to the report
+     → later, in the same conversation: the answer + the path to the report
 ```
 
 Nothing predicts which of the two a task will be. It starts, and the clock
@@ -59,7 +59,7 @@ $ jobsmith chat
 [persistence: sqlite — agent.db]
 [session 1635d9410abb494a8d2c7c6c31bf558b]
 
-agent> compare hexagonal and layered architectures for an LLM agent
+agent> compare hexagonal and layered architectures for an LLM agent, as a report
 
   running this as job 17abcd66:
       task     : compare hexagonal and layered architectures for an LLM agent
@@ -288,9 +288,11 @@ you : compare the chairs for a home office, one page. Call it
       stop it  : /cancel 9c04e17b
 ```
 
-Say nothing and nothing is silently decided for you either: the model proposes
-a short name from the subject, the title falls back to the request, and the
-formats to whatever the deployment composed. And you do not have to go through
+Say nothing and nothing is silently decided for you either: say nothing about
+a file and there is none (see [No document unless you ask for one](#no-document-unless-you-ask-for-one));
+ask for "a report" without a format and it comes in the deployment's format
+(`$JOBSMITH_REPORT_FORMAT`); the model proposes a short name from the subject,
+and the title falls back to the request. And you do not have to go through
 the conversation to be heard — `jobsmith run "compare X and Y, give me that as
 a PDF"` gets a PDF, because the **engine** reads the request for a format when
 whoever launched the job named none. It only ever fills that silence: a format
@@ -307,7 +309,8 @@ still ask for another one — rather than at the end of a run that spent three
 minutes first.
 
 `POST /jobs` takes the same three (`document_name`, `document_title`,
-`formats`), and refuses them the same way, with a 400.
+`formats`), and refuses them the same way, with a 400. `formats: ["default"]`
+asks for a document in this deployment's format without naming it.
 
 ### Asking for a deck
 
@@ -350,8 +353,41 @@ when a daemon is running. Writing your own is covered under
 
 ## What a job produces
 
-The deliverable is a markdown file, and it is **an answer, not a record of the
-run**:
+### No document unless you ask for one
+
+> **Contract change (#96).** Until now every run that planned something wrote
+> a report file, whether or not anyone asked for one. **It no longer does.**
+> `jobsmith run "<task>"`, `POST /jobs`, `/bg` and the conversation all follow
+> one rule: a request that says nothing about a document gets **its answer and
+> no file**. If you relied on a `.md` appearing next to every job, ask for it.
+
+Every job answers; only a request that asks for a document gets one. The
+answer is never harder to reach for it: it is on the job record
+(`jobsmith job <id>`, `GET /jobs/{id}` → `final_answer`), `jobsmith run --wait`
+prints it, and the conversation delivers it word for word. A run that writes
+no file says so — `deliverable_expected: false` on the record, "none was asked
+for" from `jobsmith report` and `/report` — rather than looking like one that
+has not finished.
+
+Asking is done in words or in arguments, on every door:
+
+| you want | say | what is written |
+|---|---|---|
+| an answer | nothing about a file | no file |
+| a document | "…as a report", "…in a document I can keep" — or `formats: ["default"]` | the deployment's format (`$JOBSMITH_REPORT_FORMAT`, markdown by default) |
+| a given format | "…as a PDF", "…as an html page" — or `formats: ["pdf"]` | that format |
+| explicitly no file | "just answer here" — or `formats: []` | no file |
+
+The words are read by the engine itself, so `jobsmith run "… as a report"` is
+heard exactly like the same sentence in the conversation. Which step planned,
+how long the run took and which door it came through decide nothing: a
+four-minute comparison with no file is an answer, a ten-second request for a
+PDF is a PDF.
+
+### The deliverable
+
+The deliverable, when one is asked for, is a markdown file by default, and it
+is **an answer, not a record of the run**:
 
 ````markdown
 # compare hexagonal and layered architectures for an LLM agent
@@ -383,13 +419,14 @@ store, and the same two commands serve it. For a self-contained archive, both
 switch back on: `MarkdownReport(with_provenance=True, with_annexes=True)` folds
 the record and the step material into one file.
 
-**Or the same thing as a web page.** `JOBSMITH_REPORT_FORMAT=html` makes the
-deliverable a self-contained HTML file instead — same document, same order
+**Or the same thing as a web page.** Ask for html, or set
+`JOBSMITH_REPORT_FORMAT=html` to make it what "a report" means here: the
+deliverable becomes a self-contained HTML file instead — same document, same order
 (the answer, then one line back to the run), no dependency and no network:
 inline CSS, and — with `with_provenance` — the plan drawn as an inline SVG,
 since a browser renders no mermaid.
 
-**Or as a PDF.** `JOBSMITH_REPORT_FORMAT=pdf` prints that very same page:
+**Or as a PDF.** Asking for a PDF (or `JOBSMITH_REPORT_FORMAT=pdf`) prints that very same page:
 `PdfReport` renders what the HTML Reporter renders and hands the string to
 WeasyPrint, so there is one layout and no Reporter waiting on another's file.
 It is the one extra with a dependency **outside Python** — WeasyPrint draws
@@ -406,8 +443,8 @@ render refuses at startup rather than at the end of the first job that asked
 for one.
 
 **Or several at once.** The variable takes a comma-separated list —
-`JOBSMITH_REPORT_FORMAT=markdown,html` — and one run then writes one file per
-format, each recorded as an output of the job. The **first** name is the main
+`JOBSMITH_REPORT_FORMAT=markdown,html` — and a run asked for a document then
+writes one file per format, each recorded as an output of the job. The **first** name is the main
 deliverable: `report_path`, `jobsmith report <id>` and `GET /jobs/{id}/report`
 point at it, the others are the same report rendered again.
 
@@ -471,9 +508,10 @@ errors: execution_error → escalate (some result ok) | user_error (none) → EN
 - **Document intent** — a second dedicated decision node, answering what file
   the request asked for. It runs **only when the caller named no format**, that
   gate being structural (no model call at all otherwise), chooses among the
-  formats this deployment can actually render, and writes nothing when the
-  request said nothing — so any error, any answer it cannot use, leaves the run
-  exactly as it was. What it decides reaches the job record through the runner
+  formats this deployment can actually render (a document asked for without a
+  format gets the deployment's default), and writes nothing when the request
+  said nothing — which means **no file**, so any error or answer it cannot use
+  costs a document at worst, never invents one. What it decides reaches the job record through the runner
   and the manager, never from inside the node.
 - **Planner** — renders its prompt from the registry, validates the LLM's JSON
   DAG (names, applicability, dangling dependencies, Kahn cycle check).
@@ -589,7 +627,7 @@ handle per-provider tool formats), the job engine uses a dependency-light
 | extra `.[pptx]` | enables the `slide_deck` step — a `.pptx` annex next to the report; absent, the capability is not registered |
 | `--db memory\|<file.db>\|<postgres DSN>` | persistence (default: `$JOBSMITH_DB`, else memory) |
 | `$JOBSMITH_PRICES` | per-model prices for the cost estimate, as inline JSON or a path to a JSON file (USD per million tokens) |
-| `$JOBSMITH_REPORT_FORMAT` | `markdown` (default), `html` or `pdf` (extra `.[pdf]` + pango/cairo) — the deliverable a finished job writes; a comma-separated list (`markdown,pdf`) writes one file per format, the first being the main one |
+| `$JOBSMITH_REPORT_FORMAT` | `markdown` (default), `html` or `pdf` (extra `.[pdf]` + pango/cairo) — the format of a document **asked for without naming one** ("…as a report", `formats: ["default"]`). It never causes a file to be written: a request that says nothing about a document gets none (#96). A comma-separated list (`markdown,pdf`) writes one file per format, the first being the main one; a format nothing can render here is refused at startup |
 | `--url` / `--local` | point at another daemon / never use one |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | key auto-detection; Anthropic wins if both are set |
 | `ANTHROPIC_MODEL`, `OPENAI_MODEL`, `OPENAI_BASE_URL` | model override; the base URL points at Ollama, vLLM or a gateway |

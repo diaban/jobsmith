@@ -169,8 +169,11 @@ async def cmd_report(client: AgentClient, args) -> int:
         # done?" is the wrong question for a run that finished and answered
         # and was asked for no file: it sends the reader back to wait for
         # something that already happened.
-        print(no_document_note(job) if job is not None and not job.get(
-            "deliverable_expected", True) else "no report available (is the job done?)")
+        # Said of a run that FINISHED (#96: a silent request expects no file
+        # from its first step on, and one that then failed stopped first).
+        print(no_document_note(job) if job is not None and job.get("status") == "done"
+              and not job.get("deliverable_expected", True)
+              else "no report available (is the job done?)")
         return 1
     print(report)
     return 0
