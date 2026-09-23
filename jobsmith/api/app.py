@@ -24,7 +24,7 @@ against this API.
   human; /outputs/{name} downloads one; /report is a shortcut to the main one
   when it is text (415 otherwise, naming the download).
 - Live:       GET /events — SSE stream of job-progress events
-  (in-process pub/sub, same v1 scope as cancellation).
+  (in-process pub/sub — cross-process events are #100).
 
 Domain-agnostic: the domain arrives entirely through the injected service,
 which was composed from an agent definition by `build_app`. Sessions are
