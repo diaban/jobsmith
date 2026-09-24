@@ -723,6 +723,60 @@ def check_refusal_declared(case: EvalCase, obs: Observation) -> Check:
                   "the deliverable does not say the run could not answer")
 
 
+#: The kinds of file an answer can claim, and the output formats that make the
+#: claim true (#77). `None` is the generic claim — something is attached, or
+#: travels alongside — which any produced file makes true. Deliberately
+#: narrow: bare "slides", "annexe" or "file" are ordinary words ("les travaux
+#: annexes" came out of a real run and claims nothing), so only the words
+#: that name a file as a thing the reader has are listed.
+FILE_KINDS: tuple[tuple[str, re.Pattern[str], frozenset[str] | None], ...] = (
+    ("a slide deck", re.compile(
+        r"slide[- ]?decks?|\bdecks?\b|diaporama|diapositives|powerpoint|\.pptx\b"),
+     frozenset({"pptx"})),
+    ("a PDF", re.compile(r"\bpdf\b"), frozenset({"pdf"})),
+    ("a spreadsheet", re.compile(r"spreadsheet|tableur|\.xlsx\b"),
+     frozenset({"xlsx"})),
+    ("an attached file", re.compile(
+        r"\battached\b|\battachments?\b|\benclosed\b|ci-joint|pi[eè]ces? jointes?"
+        r"|alongside this (?:document|report|answer|text)"
+        r"|parall[eè]lement [aà] ce (?:document|rapport|texte)"), None),
+)
+
+
+def check_answer_invents_no_file(case: EvalCase, obs: Observation) -> Check:
+    """The answer names no file the run did not produce (#77).
+
+    The run that opened the issue delivered "a slide deck exists alongside
+    this document"; the plan never touched `slide_deck` and no deck existed.
+    Scored against `Job.outputs` — the one place that says which files exist
+    — and not against the case: this is not a decision the run could have
+    taken otherwise, it is whether the prose tells the truth about the files.
+
+    A kind the request or the material already names is not scored: a request
+    about PDF tooling, or a manufacturer's datasheet cited as "the PDF", puts
+    the word there for reasons that are not a claim about this run's outputs.
+    What is left is a file appearing from nowhere, which is the shape #77
+    observed. The limit that buys: a request that asked for a deck the run
+    then failed to make is not caught here (that is #55's side of the defect).
+    """
+    name = "answer_invents_no_file"
+    if (s := _answer_applies(case, obs, name)) is not None:
+        return s
+    answer = normalize(obs.final_answer or "").lower()
+    given = normalize(f"{obs.query}\n{obs.material}").lower()
+    produced = {f.lower() for f in obs.output_formats}
+    invented: list[str] = []
+    for kind, pattern, formats in FILE_KINDS:
+        found = pattern.search(answer)
+        if found is None or pattern.search(given):
+            continue
+        exists = bool(produced) if formats is None else bool(produced & formats)
+        if not exists:
+            invented.append(f"{kind} ({found.group(0)!r})")
+    return _check(name, not invented,
+                  f"names files the run did not produce: {', '.join(invented)}")
+
+
 #: A refusal has a shape (#73): what was asked, what the material did and did
 #: not support, what is known anyway — short, and nothing else. These are the
 #: three things it must not turn into, taken from the run that opened the
@@ -823,6 +877,7 @@ CHECKS: tuple[Callable[[EvalCase, Observation], Check], ...] = (
     check_report_answers_request,
     check_refusal_declared,
     check_refusal_is_bare,
+    check_answer_invents_no_file,
 )
 
 CHECK_NAMES: tuple[str, ...] = (
@@ -850,6 +905,7 @@ CHECK_NAMES: tuple[str, ...] = (
     "report_answers_request",
     "refusal_declared",
     "refusal_is_bare",
+    "answer_invents_no_file",
 )
 
 

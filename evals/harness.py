@@ -71,6 +71,10 @@ class Observation:
     #: fact about the machine, not about the prompt (#90).
     formats_available: tuple[str, ...] = ()
     material: str = ""                # the merged context the generator was handed
+    #: The format of every file the run left (`Job.outputs`: the document,
+    #: its alternates and the annexes a step declared) — what an answer
+    #: claiming a file is checked against (#77).
+    output_formats: tuple[str, ...] = ()
     registry: tuple[str, ...] = ()
     duration_s: float = 0.0
     error: str | None = None          # the harness itself blew up (not a run failure)
@@ -159,6 +163,7 @@ async def run_case(
         obs.final_answer = job.final_answer
         obs.report_path = job.report_path
         obs.deliverable_expected = job.deliverable_expected
+        obs.output_formats = tuple(o.format for o in job.outputs)
         main = next((o for o in job.outputs if o.role == "main"), None)
         if main is not None:
             obs.report_format = main.format
