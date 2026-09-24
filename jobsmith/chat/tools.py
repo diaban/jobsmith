@@ -112,9 +112,24 @@ from ..jobs.models import Job, JobStatus
 from ..jobs.report import (
     available_formats,
     document_stem,
+    document_title,
     ensure_formats_available,
 )
 from .runner import CUSTOM_ANSWER, CUSTOM_JOB_STARTED
+
+#: How much of a referenced job's query the notice carries (#104): enough to
+#: recognise which of the conversation's jobs it is, cut on a word — the
+#: notice names the job, it does not restate it.
+REFERENCE_QUERY_MAX = 60
+
+
+def job_reference(job: Job) -> dict[str, str]:
+    """A job a run builds on, as the notice shows it: its id and the start of
+    its query. Plain values, because this crosses HTTP and both backings must
+    answer with the same JSON."""
+    return {"job_id": job.job_id,
+            "query": document_title(job.query, limit=REFERENCE_QUERY_MAX)}
+
 
 # Bounds on the conversation excerpt attached to a launch (~400 tokens worst case).
 MAX_CONTEXT_TURNS = 6      # most recent user/assistant turns kept
@@ -536,7 +551,7 @@ def make_job_tools(
         # run, like an unusable format — the model can fix it on the spot,
         # where a job that silently dropped it would answer a different
         # question from the one the user asked.
-        referenced: list[str] = []
+        referenced: list[Job] = []
         for prefix in (str(j).strip() for j in from_jobs or []):
             if not prefix:
                 continue
@@ -545,9 +560,13 @@ def make_job_tools(
                 return (f"NOT launched: no unique job of this conversation matches "
                         f"{prefix!r}. Nothing ran. Check the id (list the session's "
                         "jobs if you need to) and propose a launch again.")
-            referenced.append(found.job_id)
+            # Once each, first-seen order: a full id and its prefix name the
+            # same run, and `prior_jobs` would otherwise load it twice and
+            # spend its budget twice — and the notice would list it twice.
+            if all(found.job_id != seen.job_id for seen in referenced):
+                referenced.append(found)
         if referenced:
-            job_inputs[FROM_JOBS_INPUT_KEY] = referenced
+            job_inputs[FROM_JOBS_INPUT_KEY] = [job.job_id for job in referenced]
 
         # Refused BEFORE the card, not after the run: a format nothing can
         # render here and a name that is not a filename are both things the
@@ -585,6 +604,11 @@ def make_job_tools(
             # gets, and for the stronger reason: this is the user handing
             # something over, not the model restating what they asked
             "sources": sources,
+            # the earlier jobs it builds on (#74), named so the user can tell
+            # which of this conversation's jobs the model picked (#104): a
+            # wrong one of three, or a prefix that resolved to another, is
+            # otherwise a second silent decision, exactly like a file
+            "from_jobs": [job_reference(job) for job in referenced],
         }
 
         # The gate, when a deployment asked for it back. Off by default: the

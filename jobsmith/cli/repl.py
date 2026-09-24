@@ -55,8 +55,8 @@ def job_lines(event: dict, indent: str = "    ") -> list[str]:
     One renderer for both shapes, because a notice and a proposal must show
     the user the same things: the reformulated query (the engine never sees
     the thread, and a reader is what catches a referent that has gone), the
-    files it may open (#60), and what the document will be called, titled and
-    written as (#55). A front-end that showed one and not the other would be
+    files it may open (#60), the earlier jobs it builds on (#104), and what
+    the document will be called, titled and written as (#55). A front-end that showed one and not the other would be
     the "second silent decision" each of those issues is about.
 
     `writes` prefers real filenames and falls back to the bare format names:
@@ -74,6 +74,12 @@ def job_lines(event: dict, indent: str = "    ") -> list[str]:
         lines.append(f"{indent}approach : {rationale}")
     if sources := event.get("sources"):
         lines.append(f"{indent}reads    : {', '.join(sources)}")
+    # the earlier jobs it builds on (#104), one per line: the short id is
+    # what `/job` and `/cancel` take, the query is what the user recognises
+    for n, ref in enumerate(event.get("from_jobs") or []):
+        label = "builds on" if n == 0 else ""
+        lines.append(f"{indent}{label:<9}: job {str(ref.get('job_id') or '')[:8]}"
+                     f" — {ref.get('query') or ''}")
     if title := event.get("document_title"):
         lines.append(f"{indent}titled   : {title}")
     formats = event.get("formats")

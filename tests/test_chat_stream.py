@@ -35,7 +35,7 @@ from jobsmith.chat import (
 )
 from jobsmith.chat.session import NOTICE_MARKER
 from jobsmith.cli.client import DaemonClient
-from jobsmith.cli.repl import TurnPrinter, render_turn, run_repl, tool_activity
+from jobsmith.cli.repl import TurnPrinter, job_lines, render_turn, run_repl, tool_activity
 from jobsmith.service import ChatStreamError, LocalAgentService, ServiceUnavailable
 
 ANSWER = "A reasonably long answer that no single chunk should carry."
@@ -285,6 +285,27 @@ async def test_the_repl_shows_what_the_run_will_do_and_how_to_stop_it(capsys):
     assert "writes   : chairs.md, chairs.html" in out
     assert "stop it  : /cancel abcdef01" in out
     assert "the answer" in out
+
+
+def test_the_repl_names_the_jobs_a_run_builds_on():
+    """#104: an earlier job a run is handed is shown like a file it may open —
+    by the short id `/job` and `/cancel` take and the start of its query, one
+    line each, on the notice and on the proposal alike (one renderer)."""
+    refs = [{"job_id": "0123456789abcdef", "query": "compare the two chairs"},
+            {"job_id": "fedcba9876543210", "query": "price the standing desk"}]
+    notice = {"type": "job_started", "job_id": "abcdef0123456789",
+              "query": "a one-pager out of both", "rationale": "several steps",
+              "sources": [], "formats": None, "from_jobs": refs}
+    proposal = {k: v for k, v in notice.items() if k != "job_id"} | {"type": "proposal"}
+
+    lines = job_lines(notice)
+    assert lines[2:4] == ["    builds on: job 01234567 — compare the two chairs",
+                          "             : job fedcba98 — price the standing desk"]
+    assert job_lines(proposal) == lines
+
+    # nothing referenced, nothing said — an empty line would read as a claim
+    assert not any("builds on" in line
+                   for line in job_lines(notice | {"from_jobs": []}))
 
 
 async def test_the_repl_streams_a_turn_and_still_asks_for_approval(capsys, monkeypatch):

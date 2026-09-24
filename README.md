@@ -290,8 +290,13 @@ the prose:
 ```
 you : make a one-pager out of that comparison
       task     : condense the chair comparison into a one-page brief
+      builds on: job 8aea26ec — compare the two ergonomic chairs on price, lumbar…
       stop it  : /cancel 4f21b0aa
 ```
+
+The notice names each job the run builds on — its short id and the start of
+its request — so a follow-up pointed at the wrong one of your recent jobs is
+caught before it runs, as a file you did not mean to hand over is.
 
 A report is a deliverable, not a trace: it never carried the research notes or
 the retrieved pages, it may be a PDF nobody can read back, and since a run only

@@ -111,9 +111,16 @@ def _formats_of(event: dict[str, Any]) -> list[str] | None:
     return None if formats is None else [str(f) for f in formats]
 
 
+def _job_references(event: dict[str, Any]) -> list[dict[str, str]]:
+    """The earlier jobs a payload says the run builds on (#104)."""
+    return [{"job_id": str(ref.get("job_id") or ""), "query": str(ref.get("query") or "")}
+            for ref in event.get("from_jobs") or [] if isinstance(ref, dict)]
+
+
 def _job_body(query: str, rationale: str, sources: Sequence[str],
               document_name: str, document_title: str,
-              formats: Sequence[str] | None) -> str:
+              formats: Sequence[str] | None,
+              from_jobs: Sequence[dict[str, str]] = ()) -> str:
     """What a run is about to do, as markup — the three guarantees of #83.
 
     One renderer for the notice and for the proposal, because both have to
@@ -127,6 +134,12 @@ def _job_body(query: str, rationale: str, sources: Sequence[str],
     """
     reads = (f"[{render.DIM}]reads {escape(', '.join(sources))}[/]\n"
              if sources else "")
+    # the earlier jobs it builds on (#104): the short id the jobs pane shows,
+    # and the start of that job's query, which is what the user recognises
+    builds = "".join(
+        f"[{render.DIM}]builds on job {escape(ref['job_id'][:8])}"
+        f" — {escape(ref['query'])}[/]\n"
+        for ref in from_jobs)
     written = deliverable_filenames(document_name, formats) or list(formats or [])
     writes = (f"[{render.DIM}]writes {escape(', '.join(written))}[/]\n"
               if written else
@@ -139,7 +152,7 @@ def _job_body(query: str, rationale: str, sources: Sequence[str],
               if document_title else "")
     return (f"[b]{escape(query)}[/b]\n"
             f"[{render.DIM}]{escape(rationale)}[/]\n"
-            f"{reads}{titled}{writes}")
+            f"{reads}{builds}{titled}{writes}")
 
 
 class JobNoticeCard(Static):
@@ -154,13 +167,14 @@ class JobNoticeCard(Static):
 
     def __init__(self, job_id: str, query: str, rationale: str,
                  sources: Sequence[str] = (), document_name: str = "",
-                 document_title: str = "", formats: Sequence[str] | None = None) -> None:
+                 document_title: str = "", formats: Sequence[str] | None = None,
+                 from_jobs: Sequence[dict[str, str]] = ()) -> None:
         super().__init__(classes="job-notice")
         short = escape(job_id[:8])
         self.update(
             f"[{render.RUNNING}]running this as job {short}[/]\n"
             + _job_body(query, rationale, sources, document_name,
-                        document_title, formats)
+                        document_title, formats, from_jobs)
             + f"\n[{render.DIM}]F3 then F8 twice stops it[/]"
         )
 
@@ -175,12 +189,13 @@ class ProposalCard(Static):
 
     def __init__(self, query: str, rationale: str, sources: Sequence[str] = (),
                  document_name: str = "", document_title: str = "",
-                 formats: Sequence[str] | None = None) -> None:
+                 formats: Sequence[str] | None = None,
+                 from_jobs: Sequence[dict[str, str]] = ()) -> None:
         super().__init__(classes="proposal")
         self.update(
             f"[{render.ATTENTION}]a background job is proposed[/]\n"
             + _job_body(query, rationale, sources, document_name,
-                        document_title, formats)
+                        document_title, formats, from_jobs)
             + f"\n[b {render.DONE}]y[/] [{render.DIM}]launch it[/]     "
               f"[b]n[/] [{render.DIM}]not now[/]"
         )
@@ -559,7 +574,8 @@ class JobsmithApp(App[None]):
             [str(s) for s in event.get("sources") or []],
             str(event.get("document_name") or ""),
             str(event.get("document_title") or ""),
-            _formats_of(event)))
+            _formats_of(event),
+            _job_references(event)))
         conversation.scroll_end(animate=False)
         # A card between the tokens and the ones that follow: the next token
         # must open a NEW bubble, or it would be appended above the card.
@@ -576,7 +592,8 @@ class JobsmithApp(App[None]):
             [str(s) for s in terminal.get("sources") or []],
             str(terminal.get("document_name") or ""),
             str(terminal.get("document_title") or ""),
-            _formats_of(terminal)))
+            _formats_of(terminal),
+            _job_references(terminal)))
         conversation.scroll_end(animate=False)
         self._awaiting_approval = True
         prompt = self.query_one("#prompt", Input)

@@ -34,6 +34,7 @@ from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
 from test_chat import launch_call
 from test_jobs import SlowEcho, make_manager
+from textual.content import Content
 from textual.widgets import Input, ListView, Static
 
 from jobsmith.chat import ChatSession
@@ -487,6 +488,7 @@ async def test_the_job_notice_says_what_will_run_and_how_to_stop_it(
         assert "sixel.md" in shown                      # what it will write
         assert "Sixel support" in shown                 # ...and its title
         assert "stops it" in shown, "the undo is not offered anywhere"
+        assert "builds on" not in shown, "a run that references no job names one"
         assert not app.query(ProposalCard), "the nominal path still asked"
         assert not app._awaiting_approval
         assert app.query_one("#prompt").placeholder == "message the agent…"
@@ -496,6 +498,42 @@ async def test_the_job_notice_says_what_will_run_and_how_to_stop_it(
         # the answer the run produced was written into the conversation
         settled = await manager.get_job(job.job_id)
         assert any(settled.final_answer in b.text for b in app.query(Bubble))
+
+
+@pytest.mark.parametrize("approval", [False, True], ids=["notice", "proposal"])
+async def test_the_card_names_the_jobs_a_run_builds_on(
+    store, checkpointer, tmp_path, approval
+):
+    """#104: the earlier jobs a run is handed, on the notice and on the
+    proposal alike — each by its short id and the start of its query, escaped
+    like every other piece of model or user text on the card."""
+    manager = make_manager(store, checkpointer, tmp_path)
+    first = await manager.create_job("compare [b]both[/b] chairs", session_id="s-tui")
+    second = await manager.create_job("price the standing desk", session_id="s-tui")
+    model = ScriptedChatModel(responses=[
+        launch_call("a one-pager out of both", "several steps",
+                    from_jobs=[first.job_id[:8], second.job_id[:8]]),
+        AIMessage(content="Saved."),
+    ])
+    saver = MemorySaver()
+    service = LocalAgentService(manager, lambda session_id=None: ChatSession(
+        manager, model, session_id=session_id, checkpointer=saver,
+        approval_required=approval))
+    session_id = await service.new_session("s-tui")
+
+    app = JobsmithApp(service, session_id)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press(*"one-pager out of both")
+        await pilot.press("enter")
+        await settle(pilot)
+
+        (card,) = app.query(ProposalCard if approval else JobNoticeCard)
+        # the text as drawn, not the markup: an unescaped `[b]` would be
+        # swallowed as a tag here, and the query would read "compare both"
+        shown = Content.from_markup(str(card.content)).plain
+        assert f"builds on job {first.job_id[:8]} — compare [b]both[/b] chairs" in shown
+        assert f"builds on job {second.job_id[:8]} — price the standing desk" in shown
 
 
 async def test_a_proposal_is_approved_through_the_ui(store, checkpointer, tmp_path):

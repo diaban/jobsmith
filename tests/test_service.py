@@ -153,7 +153,8 @@ async def test_identical_answers_through_either_backing(
         assert reply == {"type": "proposal", "query": "analyse it",
                          "rationale": "multi-step", "sources": [],
                          "document_name": "chair_notes",
-                         "document_title": "Comparatif", "formats": ["markdown"]}
+                         "document_title": "Comparatif", "formats": ["markdown"],
+                         "from_jobs": []}
 
         approved = await client.approve(session_id, True)
         assert approved["type"] == "message"
@@ -381,7 +382,7 @@ async def test_a_turn_is_the_same_flow_through_either_backing(
                                  "rationale": "multi-step", "sources": [],
                                  "document_name": "chair_notes",
                                  "document_title": "Comparatif",
-                                 "formats": ["markdown"]}
+                                 "formats": ["markdown"], "from_jobs": []}
 
         answering = [e async for e in client.stream_approval(session_id, True)]
         assert {"type": "tool_finished", "name": "launch_job"} in answering
@@ -470,7 +471,8 @@ async def test_a_task_runs_inside_the_turn_on_either_backing(
         assert started == {"type": "job_started", "job_id": job["job_id"],
                            "query": "analyse it", "rationale": "multi-step",
                            "sources": [], "document_name": "chair_notes",
-                           "document_title": "Comparatif", "formats": ["markdown"]}
+                           "document_title": "Comparatif", "formats": ["markdown"],
+                           "from_jobs": []}
 
         finished = await client.get_job(job["job_id"])
         assert finished["status"] == "done"
@@ -479,6 +481,50 @@ async def test_a_task_runs_inside_the_turn_on_either_backing(
         streamed = "".join(e["text"] for e in events if e["type"] == "token")
         assert answer in streamed
         assert events[-1] == {"type": "message", "content": streamed}
+    finally:
+        await client.aclose()
+
+
+LONG_QUERY = ("compare the two ergonomic chairs on price, lumbar support, "
+              "warranty and delivery time")
+
+
+@pytest.mark.parametrize("approval", [False, True], ids=["notice", "proposal"])
+@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
+async def test_the_jobs_a_run_builds_on_cross_either_backing(
+    store, checkpointer, tmp_path, over_http, approval
+):
+    """#104: the earlier jobs a run is handed are shown like the files it may
+    open — on the notice and on the proposal, and identically on both
+    backings: a list of plain `{job_id, query}` dicts, never a tuple, with
+    each query cut on a word so the user recognises the job without the
+    notice restating it."""
+    manager = make_manager(store, checkpointer, tmp_path)
+    first = await manager.create_job(LONG_QUERY, session_id="s-builds")
+    second = await manager.create_job("price the standing desk", session_id="s-builds")
+    responses = [launch_call("a one-pager out of both", "builds on them",
+                             from_jobs=[first.job_id[:8], second.job_id[:8]]),
+                 AIMessage(content="launched!")]
+    saver = MemorySaver()
+
+    def session_factory(session_id=None):
+        from jobsmith.chat import ChatSession
+        return ChatSession(manager, ScriptedChatModel(responses=list(responses)),
+                           session_id=session_id, checkpointer=saver,
+                           approval_required=approval)
+
+    service = LocalAgentService(manager, session_factory)
+    client = daemon_client_over(create_api(service)) if over_http else service
+    try:
+        session_id = await client.new_session("s-builds")
+        events = [e async for e in client.stream(session_id, "one-pager out of both")]
+        (shown,) = [e for e in events if e["type"] in ("job_started", "proposal")]
+        assert shown["type"] == ("proposal" if approval else "job_started")
+        assert shown["from_jobs"] == [
+            {"job_id": first.job_id,
+             "query": "compare the two ergonomic chairs on price, lumbar support…"},
+            {"job_id": second.job_id, "query": "price the standing desk"},
+        ]
     finally:
         await client.aclose()
 
