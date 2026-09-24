@@ -152,10 +152,12 @@ class TurnPrinter:
         """
         self.end()
         short = str(event.get("job_id") or "")[:8]
+        # flushed, like every write here: the plan that follows goes to
+        # stderr, and a notice still in stdout's buffer would land after it
         print(f"\n{self.indent}running this as job {short}:")
         for line in job_lines(event, self.indent + "  "):
             print(line)
-        print(f"{self.indent}  stop it  : /cancel {short}\n")
+        print(f"{self.indent}  stop it  : /cancel {short}\n", flush=True)
 
     def end(self) -> None:
         """Close the answer's line. The terminal event restates the reply the

@@ -68,7 +68,7 @@ agent> compare hexagonal and layered architectures for an LLM agent, as a report
       writes   : architecture_comparison.md
       stop it  : /cancel 17abcd66
 
-  … running the task
+  … plan: research → analysis → critique
   It is taking longer than 20s, so it is now running in the background —
   I will report back here when it lands.
 
@@ -124,8 +124,9 @@ exists, empty, so old install commands keep working.
 own knowledge or to run a task on the engine; it does not ask permission, it
 says what it is doing. The answer is printed **as it is written** — and when a
 task answers, its answer is printed *verbatim*, never a summary of it — while
-what the agent is doing meanwhile (`… running the task`) shows on stderr, so
-stdout stays the conversation and nothing else. In-REPL commands:
+what the agent is doing meanwhile (`… running the task`, then the plan the
+moment it is decided, `… plan: web_search → research → analysis`) shows on
+stderr, so stdout stays the conversation and nothing else. In-REPL commands:
 
 | command | |
 |---|---|
@@ -635,7 +636,7 @@ handle per-provider tool formats), the job engine uses a dependency-light
 |---|---|
 | `POST /sessions` · `POST /sessions/{id}/messages` | chat; a reply is `{"type": "message"}`, or `{"type": "proposal"}` where the approval gate was kept. A task runs inside the turn, so this can take as long as the task |
 | `POST /sessions/{id}/approval` | answer a proposal — `{"approved": bool}` |
-| `.../messages/stream` · `.../approval/stream` | the same turn as SSE: `token`, `tool_started`, `tool_finished`, `job_started`, then that same reply |
+| `.../messages/stream` · `.../approval/stream` | the same turn as SSE: `token`, `tool_started`, `tool_finished`, `job_started`, `job_planned`, then that same reply |
 | `GET /jobs` · `GET /jobs/{id}` | listing and full detail (plan, timings, results) |
 | `POST /jobs` · `POST /jobs/{id}/cancel` | direct launch, cancellation |
 | `GET /jobs/{id}/outputs[/{name}]` · `/report` | the deliverables (`/report` is text-only: `415` on a PDF, pointing at the download) |
