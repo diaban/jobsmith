@@ -95,20 +95,38 @@ dropped from 5.88 s to ~4.3 s (`[saver]` similarly), the remainder being the
 subprocess start-up and the 4 s synchronization stagger this change did not
 touch.
 
-Suite total: 672 tests / 84.56 s (pytest) / 93.3 s wall → 679 tests / 70.90 s
-(pytest) / 79.6 s wall for the full, unfiltered run (`make test`/`make
-check`/CI unchanged in what they run). `make test-fast` (`-m "not slow"`):
-652 tests, 28.2 s (pytest) / 33.3 s wall.
+Suite total (rebased on `main` after #108 landed, which is what this PR
+ships against): 689 tests / 76.13 s (pytest) / 88.9 s wall for the full,
+unfiltered run (`make test`/`make check`/CI unchanged in what they run).
+`make test-fast` (`-m "not slow"`): 650 tests, 22.9 s (pytest) / 28.4 s wall
+— no `weasyprint` import anywhere in that run (confirmed by its absence from
+the warnings summary, which fires from inside the library's own module body
+on import).
 
-One remaining cost this issue did not touch: `test_agents.py`'s
-`test_every_shipped_agent_composes_through_the_same_build_app` pays a
-several-second `weasyprint` import tax on whichever parametrization is the
-first `build_app` call in the process to construct a `PdfReport` (#108's
-subject). Marking the `"default"` case `slow` does not remove that cost from
-`make test-fast`: the next unmarked call (`"banking"`) pays it instead,
-because the tax is per-process, not per-test. Left as `"default"`
-regardless, since that is the one CI's ordering charges it to; #108 owns
-actually removing the cost.
+**A real `weasyprint` import moves to whichever test is first to need it, and
+that took real chasing.** #108 stopped `build_app` from probing the engine
+eagerly, but several tests still exercise the *real* engine deliberately (a
+render only pango/cairo can do correctly is not something a stub proves), and
+the ~4 s import is paid once per test **process**, by whichever of those
+tests pytest reaches first — so marking one specific test `slow` only moves
+the tax to the next unmarked one, not off the `test-fast` run. Chased down to
+two sources and fixed at the root of each rather than the symptom:
+
+- `tests/test_report_pdf.py` and `tests/test_pdf_lazy_probe.py` share one
+  `requires_pdf` marker (skip when `.[pdf]` is not installed); every test it
+  guards turned out to genuinely invoke the real engine (`import weasyprint`
+  directly, or `PdfReport.render`/`.write`), so `requires_pdf` itself now
+  also applies `slow` (`requires_pdf = lambda func:
+  pytest.mark.slow(_skip_without_pdf(func))`) — one definition, so a new
+  `@requires_pdf` test is `slow` without a second decorator to remember.
+- `tests/test_evals.py`'s structural tier (`structural_run`/
+  `html_structural_run` fixtures, and the CLI-driven
+  `test_cli_runs_and_gates_the_structural_tier`) resolves at least one golden
+  case onto a PDF format even on `provider="fake"`, and #108's document step
+  proves that choice by really loading the engine before it lets the run
+  keep it. Marked `slow`; root-causing *which* case resolves to `pdf` and
+  whether it should is #108/#90 territory, out of scope here (this PR does
+  not touch `core/document.py`, `jobs/report*.py`, `app/`, or the PDF probe).
 
 ## Consequences
 

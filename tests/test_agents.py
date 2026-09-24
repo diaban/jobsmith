@@ -26,12 +26,7 @@ def test_registry_lists_both_shipped_agents():
         get_agent("nope")
 
 
-@pytest.mark.parametrize("name", [
-    # #108: composing "default" probes the PDF engine at startup — several
-    # seconds against the ~0.03s "banking" pays for the same build_app.
-    pytest.param("default", marks=pytest.mark.slow),
-    "banking",
-])
+@pytest.mark.parametrize("name", ["default", "banking"])
 async def test_every_shipped_agent_composes_through_the_same_build_app(name):
     app = await build_app(agent=name, llm=object(), chat_model=object(), db="memory")
     try:
