@@ -35,7 +35,13 @@ from jobsmith.app.persistence import open_persistence
 
 TESTS = Path(__file__).parent
 PROCESSES = 5
-ROUNDS = 150
+# #109: measured at 1/2/3/5/10/150 rounds, 10 runs each, on this worktree with
+# `_ImmediateBegin`'s effect removed (BEGIN left DEFERRED): every count failed
+# 10/10 — the race is decided by the first batch each process runs at the
+# synchronized `start_at`, not by how many follow, so more rounds buy no more
+# reliability. 10 keeps a real loop (round count is not degenerately 1) while
+# passing 10/10 with the fix restored; see docs/decisions/0109-faster-suite.md.
+ROUNDS = 10
 
 
 async def hammer(db: str, mode: str, *, rounds: int = ROUNDS) -> list[str]:
