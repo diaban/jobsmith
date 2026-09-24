@@ -1,6 +1,6 @@
 # 0086 — The plan is announced in the turn that waits on it, as activity
 
-- **Issue:** #86 · **PR:** #PR
+- **Issue:** #86 · **PR:** #107
 - **Status:** accepted
 - **Rule in `CLAUDE.md`:** "A turn is a flow … a seventh, `job_planned` (#86)" → 0050, 0083, 0086; "The plan is activity" (CLI) → 0086
 - **See also:** [0083](0083-synchronous-by-default.md), [0050](0050-streamed-turn.md), [0048](0048-terminal-ui.md), [0006](0006-job-notices.md), [0104](0104-notice-names-prior-jobs.md)
