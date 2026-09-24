@@ -232,23 +232,46 @@ def deliverable_filenames(
 
 
 def available_formats(registry: Any = None) -> list[str]:
-    """The format names this deployment can actually render, canonical, sorted.
+    """The format names this deployment OFFERS, canonical, sorted — loading nothing.
 
     Not the same list as `known_extensions()`: a Reporter that ships can still
-    be unavailable here — `.[pdf]` needs pango/cairo where the daemon runs,
-    and `PdfReport` probes for it when it is constructed. So each one is built
-    and thrown away, and the answer is what survived. Read on the refusal path
-    only, where naming the alternatives is the whole point of refusing.
+    be unavailable here — `.[pdf]` is an optional extra. Answered from each
+    class's `installed()`, never by constructing it (#108): constructing the
+    PDF Reporter imports its engine, ~4 s, and this is asked at every startup
+    (the formats `document_intent` may choose from) and on every refusal.
+
+    Offered is not proved: with the distribution present and pango missing,
+    PDF is offered until the first request that wants one probes the engine
+    — `create_job` refuses that request (`ensure_formats_available`), and the
+    document step drops the format (`renderable_formats`) — after which it is
+    no longer offered. `registry` is accepted for symmetry with the composers.
     """
+    del registry            # what a format needs to be offered is not in it
     names: list[str] = []
-    for name in _reporter_classes():
+    for cls in _reporter_classes().values():
+        if cls.format not in names and cls.installed():
+            names.append(cls.format)
+    return sorted(names)
+
+
+def renderable_formats(formats: Iterable[str], registry: Any = None) -> list[str]:
+    """Those of `formats` that can really be rendered here, in the order given.
+
+    The proving twin of `available_formats`: each is composed, which probes
+    an engine (once per process), and dropped if that fails or the name is
+    unknown. For a caller that must not refuse and must not promise — the
+    document step, which chooses a format mid-run where nobody is listening
+    (#90), and the evals, which skip a case this machine cannot render.
+    """
+    chosen: list[str] = []
+    for name in formats:
         try:
             reporter = make_reporter(name, registry)
         except Exception:
             continue
-        if reporter.format not in names:
-            names.append(reporter.format)
-    return sorted(names)
+        if reporter.format not in chosen:
+            chosen.append(reporter.format)
+    return chosen
 
 
 #: The name a caller uses for "a document, in whatever format this deployment
@@ -270,7 +293,10 @@ def ensure_formats_available(
 
     Composing IS the check — `make_reporter` refuses an unknown name and
     `PdfReport` probes its engine in `__init__` — so this asks the question by
-    building the answer and throwing it away. That matters for `.[pdf]`, this
+    building the answer and throwing it away. It is therefore where the PDF
+    engine is first loaded (#108): only for a request that names PDF (or
+    whose deployment default is PDF), never to compose the app. Blocking on
+    that first probe — seconds — so async callers run it in a thread. That matters for `.[pdf]`, this
     project's one deployment constraint: a format nothing can render here must
     be refused where the person who asked can still see it (the notice
     `chat/tools.py` writes, `create_job`), never at the end of a run that
@@ -306,7 +332,16 @@ def ensure_formats_available(
         else:
             expansion = [name]
         resolved.extend(n for n in expansion if n not in resolved)
-    compose_reporters(resolved, registry)
+    try:
+        compose_reporters(resolved, registry)
+    except RuntimeError as unavailable:
+        # An engine that cannot load (`report_pdf.engine`) is a refusal like
+        # an unknown name, and every door says refusals as `ValueError` — the
+        # chat tool's "NOT launched", the API's 400, `DaemonClient`'s mapping
+        # back. Raised as `RuntimeError` it was a crashed tool and a 500; it
+        # went unseen while the probe ran at startup, and is the path now
+        # that the first PDF request is where it runs (#108).
+        raise ValueError(str(unavailable)) from unavailable
     return resolved
 
 
@@ -499,6 +534,16 @@ class FileReporter:
         self.with_annexes = with_annexes
         self.with_provenance = with_provenance
 
+    @classmethod
+    def installed(cls) -> bool:
+        """May this format be offered here — answered WITHOUT constructing it.
+
+        Constructing is the real check (a Reporter with an engine probes it
+        in `__init__`), and that can cost seconds; offering a format is asked
+        at every startup (#108). A pure-Python Reporter is always installed.
+        """
+        return True
+
     def write(self, job: Job, directory: Path) -> list[JobOutput]:
         path = self.path_for(job, directory)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -611,7 +656,8 @@ def _reporter_classes() -> dict[str, type[FileReporter]]:
     module, so importing them at the top would be a cycle. Neither of them
     imports its engine at module scope, so listing PDF here costs nothing to
     someone who never asked for one — `.[pdf]` is probed when a `PdfReport`
-    is actually constructed.
+    is actually constructed, and offering it (`available_formats`) asks the
+    class, not an instance (#108).
     """
     from .report_html import HtmlReport
     from .report_pdf import PdfReport

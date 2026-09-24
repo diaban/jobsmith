@@ -616,7 +616,9 @@ def make_job_tools(
             # `create_job` alone because the notice below must show the
             # formats it became, not the alias (#55: what the user is shown
             # is what will be written).
-            wanted = ensure_formats_available(formats, default=manager.default_formats)
+            # In a thread: the first PDF request loads its engine (#108).
+            wanted = await asyncio.to_thread(
+                ensure_formats_available, formats, default=manager.default_formats)
             given = (document_name or "").strip()
             name = document_stem(given) if given else ""
         except ValueError as refused:

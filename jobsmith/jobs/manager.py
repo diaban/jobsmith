@@ -196,7 +196,10 @@ class JobManager:
         document without naming its format, and the record carries the names
         it became, never the alias.
         """
-        wanted = ensure_formats_available(formats, default=self.default_formats)
+        # In a thread: a request for PDF is where its engine is first loaded
+        # (#108), seconds of import that must not stall every other session.
+        wanted = await asyncio.to_thread(
+            ensure_formats_available, formats, default=self.default_formats)
         job = Job(
             job_id=uuid.uuid4().hex,
             status=JobStatus.QUEUED,
