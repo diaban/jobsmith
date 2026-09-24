@@ -21,13 +21,23 @@ applies the document's CSS to HTML boxes only and would otherwise draw the
 plan as black blocks — and the engine's absence, which is a **deployment** fact rather than a
 Python one: WeasyPrint renders through pango/cairo, loaded at import time, so
 a daemon asked for PDFs needs those libraries where it runs. That is why the
-engine is probed when a `PdfReport` is *constructed* (at composition, from
-`compose_reporters`) rather than when a job finally asks for its file: a
-format nothing can render must not be composed, exactly as a capability
-nothing can serve stays out of the registry.
+engine is probed when a `PdfReport` is *constructed* rather than when a job
+finally asks for its file: a format nothing can render must not be composed,
+exactly as a capability nothing can serve stays out of the registry.
+
+**Constructed on the first real need, not at startup** (#108). Importing the
+engine costs ~4 s, and composing the app used to pay it on every command
+whether or not anyone ever asked for a PDF. So two questions are kept apart:
+*is it offered* — `engine_installed()`, a `find_spec` that loads nothing,
+which is what `available_formats` lists — and *can it render* — `engine()`,
+the full import, reached only when a `PdfReport` is built: in `create_job`
+for a job that asked for one (still before any work, where #55 put the
+refusals), at startup only when the deployment's own default is PDF. The
+probe's outcome, either way, is cached for the life of the process.
 """
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 from types import ModuleType
 
@@ -97,6 +107,46 @@ def _engine() -> ModuleType:
     return weasyprint
 
 
+#: What the one real probe found: the engine, or why it cannot be had. `None`
+#: until something needed a PDF. Cached both ways — a success because the
+#: import is the whole cost, a failure because neither cause is fixed without
+#: a restart (pango is dlopen'ed once; a fresh `pip install` is not picked up
+#: by a half-failed import either), so asking again would only pay again.
+_probed: ModuleType | RuntimeError | None = None
+
+
+def engine() -> ModuleType:
+    """The print engine, probed once per process, with 0034's two messages."""
+    global _probed
+    if _probed is None:
+        try:
+            _probed = _engine()
+        except RuntimeError as unavailable:
+            _probed = unavailable
+    if isinstance(_probed, RuntimeError):
+        raise RuntimeError(str(_probed)) from _probed.__cause__
+    return _probed
+
+
+def engine_installed() -> bool:
+    """May PDF be OFFERED here — answered without loading the engine.
+
+    True when the distribution is on the path and no probe has yet said it
+    cannot load. It does not prove pango is present: that costs the import,
+    and is proved by `engine()` on the first request that actually wants a
+    PDF — which refuses it, before any work, with the libraries message. Once
+    a probe has failed, the format stops being offered.
+    """
+    if isinstance(_probed, RuntimeError):
+        return False
+    if _probed is not None:
+        return True
+    try:
+        return importlib.util.find_spec("weasyprint") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 class PdfReport(HtmlReport):
     """The deliverable as a PDF: same document, same layout, paged."""
 
@@ -115,7 +165,11 @@ class PdfReport(HtmlReport):
     ):
         super().__init__(registry, with_annexes=with_annexes,
                          with_provenance=with_provenance)
-        self._weasyprint = _engine()
+        self._weasyprint = engine()
+
+    @classmethod
+    def installed(cls) -> bool:
+        return engine_installed()
 
     def serialize(self, document: JobDocument, path: Path) -> None:
         """The one step that differs from the HTML Reporter."""

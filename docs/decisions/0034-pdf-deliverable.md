@@ -1,7 +1,7 @@
 # 0034 — A PDF deliverable: a peer Reporter, not a post-processor
 
 - **Issue:** #34 · **PR:** #44
-- **Status:** accepted
+- **Status:** accepted · partially superseded by [0108](0108-pdf-engine-probed-on-first-need.md) (the engine is probed on the first request that needs it, not at startup)
 - **Source:** migrated verbatim from `CLAUDE.md` at `8326b98` (#102). The text is the original; only the headings (which section of `CLAUDE.md` it lived in) and the links were added.
 - **See also:** [0009](0009-reporters-and-html.md), [0076](0076-nested-lists.md)
 

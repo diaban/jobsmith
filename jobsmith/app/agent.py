@@ -33,6 +33,7 @@ from ..jobs.report import (
     compose_reporters,
     ensure_formats_available,
     parse_report_formats,
+    renderable_formats,
 )
 from ..jobs.repository import StoreJobRepository
 from .persistence import open_persistence, pick_db, pick_reports_dir
@@ -155,8 +156,9 @@ async def build_app(
         # What "a document" is here when a request wants one and names no
         # format (#96). Composed now, so a format nothing can render — `pdf`
         # without pango — fails at startup rather than at the end of the
-        # first job that asked for a report; the same rule `PdfReport`
-        # applies to its engine.
+        # first job that asked for a report. The one place startup still
+        # loads the PDF engine (#108): only when the deployment itself made
+        # PDF its default, which is asking for it before any request does.
         default_formats = pick_report_formats(report_format)
         ensure_formats_available(default_formats, registry=registry)
         graph = AgentBuilder(
@@ -166,8 +168,11 @@ async def build_app(
             # engine reads the request for a format when the caller named
             # none, and it may only choose among what this deployment can
             # actually render — `.[pdf]` needs pango where the daemon runs,
-            # so the list is composed here and nowhere in `core/`.
+            # so the list is composed here and nowhere in `core/`. What is
+            # INSTALLED is offered, loading nothing (#108); a choice is proved
+            # by `renderable_formats` when a run makes it, before any work.
             document_formats=available_formats(registry),
+            confirm_document_formats=lambda names: renderable_formats(names, registry),
             # ...and what it resolves "a report, no format named" to: the
             # SAME list the manager resolves the "default" argument to, so the
             # sentence and the argument cannot disagree about one request.
