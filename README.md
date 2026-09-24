@@ -78,7 +78,7 @@ agent> /jobs
 agent> and which one does LangGraph itself use?
   ...
 
-  [the job finishes — the next turn carries the synthesis and the report path]
+  [the job finishes — the next turn carries the answer, verbatim, and names the report file]
 ```
 
 Three things are on that notice on purpose, and they used to be on a y/N card:
