@@ -105,8 +105,9 @@ class JobStarted:
     of asked as a question (#83). Three guarantees hung on that card and all
     three survive here, as visibility rather than as a gate: the reformulated
     `query` (the engine never sees the thread, so a reader is what catches a
-    referent that has gone), the `sources` it may open (#60), and the document
-    it will write (#55). What the card could not carry is `job_id`, because at
+    referent that has gone), the `sources` it may open (#60) and the earlier
+    jobs it builds on (`from_jobs`, #104), and the document it will write
+    (#55). What the card could not carry is `job_id`, because at
     proposal time no job existed — and it is the load-bearing addition, since
     cancellation is now the undo the approval used to be the gate for.
 
@@ -124,6 +125,10 @@ class JobStarted:
     # front-end that collapsed them would print a filename for a file nobody
     # is going to write, which is the promise #55 exists to stop making.
     formats: list[str] | None = None
+    # The earlier jobs of this conversation it builds on (#74), each as
+    # `{"job_id", "query"}` — the start of that job's query, so the user
+    # recognises which one the model picked (#104). Empty when none.
+    from_jobs: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -169,6 +174,7 @@ class Proposal:
     document_name: str = ""
     document_title: str = ""
     formats: list[str] | None = None    # see `JobStarted.formats` (#84)
+    from_jobs: list[dict[str, str]] = field(default_factory=list)  # see `JobStarted`
 
 
 ChatEvent = Token | ToolStarted | ToolFinished | JobStarted | Message | Proposal
@@ -196,8 +202,19 @@ def _from_custom(payload: Any) -> ChatEvent | None:
             str(payload.get("document_name") or ""),
             str(payload.get("document_title") or ""),
             _formats(payload.get("formats")),
+            _job_references(payload.get("from_jobs")),
         )
     return None
+
+
+def _job_references(value: Any) -> list[dict[str, str]]:
+    """The jobs a payload says the run builds on, as plain `{job_id, query}`.
+
+    A list of fresh dicts of strings, whatever arrived: this crosses HTTP, and
+    both backings must answer with the same JSON (#50).
+    """
+    return [{"job_id": str(ref.get("job_id") or ""), "query": str(ref.get("query") or "")}
+            for ref in value or [] if isinstance(ref, dict)]
 
 
 def _formats(value: Any) -> list[str] | None:
@@ -313,6 +330,7 @@ class ChatRunner:
                 str(proposal.get("document_name") or ""),
                 str(proposal.get("document_title") or ""),
                 _formats(proposal.get("formats")),
+                _job_references(proposal.get("from_jobs")),
             )
         else:
             # The transcript, and the model's last message only when nothing

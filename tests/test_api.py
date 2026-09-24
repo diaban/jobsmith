@@ -69,7 +69,8 @@ async def test_chat_flow_proposal_approval_report(store, checkpointer, tmp_path)
                      # the model asked for a document and named no format:
                      # "default", resolved BEFORE the card to what will be
                      # written — the user approves names, never an alias (#96)
-                     "document_name": "", "document_title": "", "formats": ["markdown"]}
+                     "document_name": "", "document_title": "", "formats": ["markdown"],
+                     "from_jobs": []}
 
         r = (await client.post(f"/sessions/{sid}/approval", json={"approved": True})).json()
         assert r["type"] == "message" and "report coming" in r["content"]
