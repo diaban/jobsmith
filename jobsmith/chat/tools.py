@@ -90,6 +90,7 @@ it can still be fixed.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import sys
 from collections.abc import Callable, Iterable
@@ -115,7 +116,7 @@ from ..jobs.report import (
     document_title,
     ensure_formats_available,
 )
-from .runner import CUSTOM_ANSWER, CUSTOM_JOB_STARTED
+from .runner import CUSTOM_ANSWER, CUSTOM_JOB_PLANNED, CUSTOM_JOB_STARTED
 
 #: How much of a referenced job's query the notice carries (#104): enough to
 #: recognise which of the conversation's jobs it is, cut on a word — the
@@ -345,6 +346,41 @@ def stream_writer() -> Callable[[dict[str, Any]], None]:
         return get_stream_writer()
     except Exception:                       # pragma: no cover - no run context
         return lambda _payload: None
+
+
+async def announce_plan(manager: JobManager, job_id: str,
+                        events: asyncio.Queue,
+                        write: Callable[[dict[str, Any]], None]) -> None:
+    """Write the job's plan into the turn the moment it is decided (#86).
+
+    Driven by the manager's own event stream, which already says "this job
+    moved" when the plan lands (`PlanReady` persists a summary for exactly
+    that): an event for this job is a reason to re-read it, and the first
+    read that finds a plan announces it and ends the watch. An event says
+    *something changed*, never what (0048), so a dropped one costs a later
+    announcement and nothing else — the next step landing re-reads it.
+
+    `None` on the queue is the waiter's "the run is over and so is the turn's
+    waiting": the watch drains what was published before it, so a run that
+    finished before this caught up still has its plan said, in order, before
+    its answer. A job that ends with no plan (answered directly) says nothing.
+
+    A plan of one step is not announced: it tells the reader nothing the
+    `job_started` notice did not, and the line would only repeat its name.
+    """
+    while (event := await events.get()) is not None:
+        if event.get("job_id") != job_id:
+            continue
+        job = await manager.get_job(job_id)
+        if job is None:
+            return
+        if job.plan:
+            if len(steps := job.plan["steps"]) > 1:
+                write({"event": CUSTOM_JOB_PLANNED, "job_id": job_id, "steps": [
+                    {"capability": step["capability"],
+                     "depends_on": list(step.get("depends_on") or [])}
+                    for step in steps]})
+            return
 
 
 def _files_of(job: Job) -> str:
@@ -639,8 +675,31 @@ def make_job_tools(
         # "stop waiting", so nothing is cancelled and nothing is restarted:
         # the promoted run IS the run that was about to finish, and a turn
         # that dies (a UI cancelling its worker) does not take it with it.
-        task = manager.start_job(job.job_id)
-        done, _still_running = await asyncio.wait({task}, timeout=timeout)
+        #
+        # The plan is announced while it waits (#86), from the manager's own
+        # events — subscribed BEFORE the run starts, so the one that says the
+        # plan landed cannot be published to nobody. Only for as long as the
+        # turn waits: a promoted run's plan reaches the user the way the rest
+        # of its progress does (the progress notice, the jobs pane, `/job`),
+        # never as a message nobody asked for.
+        events = manager.subscribe()
+        watch = asyncio.create_task(announce_plan(manager, job.job_id, events, write))
+        # A courtesy, never a reason for the run's own turn to fail: whatever
+        # stopped the watch is retrieved here and goes no further.
+        watch.add_done_callback(lambda t: t.cancelled() or t.exception())
+        try:
+            task = manager.start_job(job.job_id)
+            done, _still_running = await asyncio.wait({task}, timeout=timeout)
+            if done:
+                # drain: what the run published before it ended is said
+                # before its answer, and then the watch is over (a queue too
+                # full to take the marker has shed events anyway)
+                with contextlib.suppress(asyncio.QueueFull):
+                    events.put_nowait(None)
+                    await asyncio.wait({watch})
+        finally:
+            watch.cancel()
+            manager.unsubscribe(events)
         if not done:
             return _promoted(job, timeout)
 

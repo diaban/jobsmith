@@ -21,6 +21,7 @@ import sys
 from collections.abc import AsyncIterator
 from typing import Any
 
+from ..core.state import plan_waves
 from ..core.usage import Usage
 from ..jobs.report import deliverable_filenames, format_step_usage, format_usage
 from ..service import TERMINAL_EVENTS, BinaryDeliverable, ChatStreamError, ServiceUnavailable
@@ -47,6 +48,18 @@ TOOL_ACTIVITY = {
 def tool_activity(name: str) -> str:
     """Readable prose for a tool name; an unmapped tool still says something."""
     return TOOL_ACTIVITY.get(name, f"running {name}")
+
+
+def plan_line(steps: list[dict]) -> str:
+    """A plan on one line (#86): waves in order, a wave's steps side by side.
+
+    `web_search → research → analysis → critique`, and `a + b → c` where two
+    steps run together. The columns are `plan_waves`, the drawings' own, so
+    this line and `/job`'s DAG agree on where a step belongs.
+    """
+    waves = plan_waves((str(s.get("capability") or ""), s.get("depends_on") or [])
+                       for s in steps)
+    return " → ".join(" + ".join(wave) for wave in waves)
 
 
 def job_lines(event: dict, indent: str = "    ") -> list[str]:
@@ -121,6 +134,12 @@ class TurnPrinter:
             self._note(f"✓ {tool_activity(event.get('name') or '')}")
         elif kind == "job_started":
             self._job_started(event)
+        elif kind == "job_planned":
+            # On stderr, with the activity it sharpens (#86): it is what the
+            # run is doing right now, decided by the engine rather than handed
+            # over by the user, and it is superseded by the answer. The record
+            # of the turn — what was handed, what came back — stays on stdout.
+            self._note(f"… plan: {plan_line(event.get('steps') or [])}")
 
     def _job_started(self, event: dict) -> None:
         """The notice that replaced the approval card (#83).
