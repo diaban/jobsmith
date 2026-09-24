@@ -2,9 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**This file holds the rules; `docs/decisions/` holds why.** A rule that came out of a decision ends with `→ NNNN`, meaning `docs/decisions/NNNN-*.md`: the measurements, the alternatives that lost and why. Read the record before changing the rule; the index is `docs/decisions/README.md`.
+**This file holds the rules; `docs/decisions/` holds why.** A rule that came out of a decision ends with `→ NNNN`, meaning `docs/decisions/NNNN-*.md`: the measurements, the alternatives that lost and why. Read the record before changing the rule; the index is `docs/decisions/README.md`. → 0102
 
-**Size budget: 40 000 characters** (≈ 10k tokens), enforced by `tests/test_claude_md_budget.py`. Every session carries this file through every turn; at 174k it was the largest fixed cost of a delegated task and went stale unowned. 40k — under a quarter — fits the code map and the rules, not narrative. When the test fails, move history into a record; do not raise the number.
+**Size budget: 40 000 characters** (≈ 10k tokens), enforced by `tests/test_claude_md_budget.py`. Every session carries this file through every turn; at 174k it was the largest fixed cost of a delegated task and went stale unowned. 40k — under a quarter — fits the code map and the rules, not narrative. When the test fails, move history into a record; do not raise the number. → 0102
 
 ## Project overview
 
@@ -42,9 +42,7 @@ jobsmith --agent banking chat | serve                       # any agent, same sh
 - `main` stays green. CI (`.github/workflows/ci.yml`) runs what `make check` runs — lint, **types**, the leakage gate, tests — on push and PR across Python 3.11 and 3.12, plus `uv lock --check` so the lockfile cannot silently drift from pyproject. CI installs **every** extra, so it is the stricter reading: the optional providers' imports resolve there and are type-checked, where a plain `make install` (`.[dev,api]`) leaves them unresolved.
 - **The type gate (`make types`, pyright)** is the only check that sees a signature that lies; pyright rather than mypy because Pylance is pyright, so `[tool.pyright]` configures editor and gate at once. → 0031
   - **`reportTypedDictNotRequiredAccess` is on**: `query` is `Required[str]` (guaranteed at entry); every other state key is guaranteed only by graph order and is read with `.get()` plus a default, next to a comment naming the node that guarantees it. **Never blanket-`# pyright: ignore` it** — a site where neither is honest is a finding about the graph. → 0031
-  - `reportMissingImports` is a **warning**, not an error: the optional extras are imported lazily behind `try/except ImportError`, and their absence under `.[dev,api]` is a fact about that environment, not a defect. A misspelled import stays visible and is loud at runtime anyway.
-  - Scope is `jobsmith/`. `tests/` and `evals/` are out, and `typeCheckingMode` is `basic`, not `strict` — the point is a gate that holds, not a maximal one.
-  - pyright is a Python wrapper around a bundled JS checker: it needs a `node` on `PATH`. GitHub runners have one; without one it silently downloads a node build on first run, which is why `make types` is fast here and may not be on a fresh machine.
+  - `reportMissingImports` is a **warning**, not an error (lazy optional extras); scope is `jobsmith/` only, `typeCheckingMode: basic`; pyright needs `node` on `PATH` (silently downloaded on first run if missing, which is why a fresh machine's first `make types` is slow). → 0031
 - **`main` is protected**: PR required, the three checks must pass, admins included, no force-push. **Status checks are strict** — a branch must contain the current `main` before it can merge, so CI validates the *post-merge* state rather than a stale snapshot. When several PRs are in flight, each merge invalidates the rest: bring them up to date with `gh pr update-branch <n>` (or a rebase) and let CI re-run. Green checks on a stale base do not mean the merge is green. → 0000
 - **`uv.lock` is committed**; regenerate it (`uv lock`) in the same commit as any dependency change — version drift has bitten this project three times. → 0000
 - **Parallel sessions use git worktrees**, one per issue — separate checkouts of the same repo, so two sessions never fight over the working tree or the current branch:
@@ -121,7 +119,7 @@ AgentDefinition(
 ### The composition root (`app/`)
 
 Wiring only, no content — everything here is domain-neutral:
-- `providers.py`: `pick_provider` (one `--llm=` flag / key auto-detect shared by both LLM stacks), `make_llm` (job engine, `clients.py` adapters), `make_chat_model` (LangChain), `load_dotenv`, and the keyless fakes — `KeywordLLM` plans by **parsing capability names out of the rendered planner prompt** (works with any registry), `KeywordChatModel` proposes a job on analysis-ish keywords.
+- `providers.py`: `pick_provider` (one `--llm=` flag / key auto-detect shared by both LLM stacks), `make_llm` (job engine, `clients.py` adapters), `make_chat_model` (LangChain), `load_dotenv`, and the keyless fakes — `KeywordLLM` plans by **parsing capability names out of the rendered planner prompt** (works with any registry), `KeywordChatModel` runs a job on analysis-ish keywords (since #83: synchronous by default, no proposal card unless `$JOBSMITH_APPROVE_JOBS` is set).
 - `agent.py`: `build_app(agent=..., **overrides) -> AgentApp` composes ONE agent on one `AsyncExitStack`. **`reports_dir` is resolved once, to an absolute path** (`pick_reports_dir`); `AgentContext(readable_roots=(reports_dir,))`; one `StoreJobRepository` serves both the manager and the `PriorJobSource`. → 0063
 - `persistence.py`: `pick_db()` (arg > `--db=` > `$JOBSMITH_DB` > `<data dir>/jobs.db`) + `open_persistence(spec, stack)` → `(checkpointer, store)`, teardown on the caller's `AsyncExitStack`.
   - **Default: a SQLite file under `data_dir()`** (`$XDG_DATA_HOME/jobsmith` if absolute, else the platform data dir, never the cwd); SQLite is a core dependency. **`memory` must be asked for by name**: tests, `evals/harness.py` and the demo pass `db="memory"`; `conftest.sandboxed_data_dir` fails the run if the suite wrote to the data dir. → 0063
