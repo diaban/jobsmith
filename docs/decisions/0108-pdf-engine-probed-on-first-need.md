@@ -1,6 +1,6 @@
 # 0108 — The PDF engine is probed on the first request that needs it, not to compose the app
 
-- **Issue:** #108 · **PR:** #PR
+- **Issue:** #108 · **PR:** #111
 - **Status:** accepted · partially supersedes [0034](0034-pdf-deliverable.md)
 - **Rule in `CLAUDE.md`:** "**The PDF is that page printed**; offered when installed (`find_spec`), engine probed on first need …" (Jobs layer)
 - **See also:** [0055](0055-document-name-title-format.md), [0090](0090-document-intent-node.md), [0009](0009-reporters-and-html.md)
@@ -108,8 +108,12 @@ Measured: `jobs --local` with `JOBSMITH_REPORT_FORMAT=pdf` is still 4.3 s.
 
 ## Measured
 
-WSL2, Python 3.12, every extra installed, pango present. Script kept in the
-PR description; `XDG_DATA_HOME` a temp dir, keys blank, `--db=memory`.
+WSL2, Python 3.12, every extra installed, pango present; `XDG_DATA_HOME` a
+temp dir, provider keys blank, `db="memory"`. `build_app` timed around
+`await build_app(db="memory", llm="fake")` in a fresh interpreter, reading
+`"weasyprint" in sys.modules` afterwards; the CLI timed with `/usr/bin/time`
+from a neutral cwd, "before" being `git archive b099393` on `PYTHONPATH`;
+3–5 runs each, ranges shown.
 
 | | before (b099393) | after |
 |---|---|---|
