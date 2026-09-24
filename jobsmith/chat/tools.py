@@ -560,7 +560,11 @@ def make_job_tools(
                 return (f"NOT launched: no unique job of this conversation matches "
                         f"{prefix!r}. Nothing ran. Check the id (list the session's "
                         "jobs if you need to) and propose a launch again.")
-            referenced.append(found)
+            # Once each, first-seen order: a full id and its prefix name the
+            # same run, and `prior_jobs` would otherwise load it twice and
+            # spend its budget twice — and the notice would list it twice.
+            if all(found.job_id != seen.job_id for seen in referenced):
+                referenced.append(found)
         if referenced:
             job_inputs[FROM_JOBS_INPUT_KEY] = [job.job_id for job in referenced]
 

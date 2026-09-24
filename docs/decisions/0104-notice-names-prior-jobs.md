@@ -31,6 +31,10 @@ and HTTP backings answer the same JSON.
   query the notice exists to show.
 - **The full id travels**; shortening is the renderer's job, as for
   `job_started.job_id`.
+- **Each job once, first-seen order**: a prefix and the full id of one job
+  are one reference. `launch_job` deduplicates the resolved ids, so the input
+  and the notice agree and `prior_jobs` never spends its 24 000-character
+  budget twice on the same run.
 - **The tool builds it** from the `Job` `_find` already returned: no second
   lookup, no front-end reaching into the job store to label a reference.
 - **Nothing is rendered when nothing is referenced** — unlike `writes`, where
@@ -69,6 +73,7 @@ below was applied on purpose and failed those tests:
 | TUI omits the line | 2 |
 | REPL prints a line when nothing is referenced | 1 |
 | REPL prints the full id | 1 |
+| `launch_job` does not deduplicate (`test_a_job_referenced_twice_is_handed_over_once`) | 1 |
 
 ## Consequences
 

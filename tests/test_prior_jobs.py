@@ -23,6 +23,7 @@ from jobsmith.agents.default.research import ResearchCapability
 from jobsmith.app import build_app
 from jobsmith.app.providers import KeywordChatModel, KeywordLLM
 from jobsmith.chat import ChatRunner, ChatSession
+from jobsmith.chat.runner import JobStarted
 from jobsmith.core.prior_jobs import PriorJob, PriorJobUnavailable, PriorStep
 from jobsmith.core.state import FROM_JOBS_INPUT_KEY
 from jobsmith.jobs.models import Job, JobStatus
@@ -265,6 +266,31 @@ async def test_a_reference_is_resolved_against_this_session_and_becomes_an_id(
     launched = next(j for j in await manager.list_jobs(session_id="s-mine")
                     if j.job_id != earlier.job_id)
     assert launched.inputs[FROM_JOBS_INPUT_KEY] == [earlier.job_id]
+
+
+async def test_a_job_referenced_twice_is_handed_over_once(store, checkpointer, tmp_path):
+    """A prefix and the full id of the same job are one reference: the run
+    loads it once (its 24 000-character budget is not spent twice on the same
+    material) and the notice names it once — the two must agree (#104)."""
+    manager = make_manager(store, checkpointer, tmp_path)
+    first = await manager.create_job("the first task", session_id="s-mine")
+    second = await manager.create_job("the second task", session_id="s-mine")
+
+    model = ScriptedChatModel(responses=[
+        launch_call("compare them", "builds on both",
+                    from_jobs=[second.job_id[:8], first.job_id, second.job_id]),
+        AIMessage(content="Done."),
+    ])
+    session = ChatSession(manager, model, session_id="s-mine", checkpointer=MemorySaver())
+    runner = ChatRunner(session.build())
+
+    events = [e async for e in runner.stream(session.session_id, "compare them")]
+
+    launched = next(j for j in await manager.list_jobs(session_id="s-mine")
+                    if j.job_id not in (first.job_id, second.job_id))
+    assert launched.inputs[FROM_JOBS_INPUT_KEY] == [second.job_id, first.job_id]
+    (notice,) = [e for e in events if isinstance(e, JobStarted)]
+    assert [ref["job_id"] for ref in notice.from_jobs] == [second.job_id, first.job_id]
 
 
 async def test_another_sessions_job_is_not_referenceable(store, checkpointer, tmp_path):
