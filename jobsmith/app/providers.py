@@ -28,6 +28,7 @@ from langchain_core.messages import (
 )
 from langchain_core.outputs import ChatGeneration, ChatResult
 
+from ..core.generation import FILES_HEADING
 from ..core.profile import NO_ANSWER_MARKER
 from ..core.usage import record_usage
 
@@ -195,8 +196,11 @@ class KeywordLLM:
             return "Refined: " + user.split("Context:")[-1].strip()[:300] + " [doc_0]"
         # generation-ish prompts: echo whatever context the pipeline produced
         ctx = user.split("Context:")[-1].strip()
+        # The request is what precedes the generator's list of delivered
+        # files (#77): that list says "attached" of its own accord.
+        request = user.split(FILES_HEADING)[0]
         if ctx == "(no context available)" or any(
-            w in user.lower() for w in self.MISSING_MATERIAL_WORDS
+            w in request.lower() for w in self.MISSING_MATERIAL_WORDS
         ):
             # Declared, not merely regretted in prose — which is the whole
             # point of #59, and was what this branch used to do.

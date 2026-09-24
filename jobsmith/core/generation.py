@@ -12,6 +12,9 @@ Six classes:
 """
 from __future__ import annotations
 
+from pathlib import Path
+
+from .artifacts import artifact_refs
 from .deps import Deps
 from .profile import NO_ANSWER_MARKER, AgentProfile
 from .registry import CapabilityRegistry
@@ -78,6 +81,74 @@ def split_declaration(reply: str) -> tuple[str, bool]:
     return rest.strip() or reason, False
 
 
+# How the list opens, in both of its forms. A constant because the keyless
+# fake (`KeywordLLM`) reads the request as what comes before it: the list
+# says "attached", and the fake's refusal words must not hear it as the user.
+FILES_HEADING = "Files this run delivers"
+
+# The last clause of the list the generator is handed (#77). Phrased as what
+# the answer must not do rather than as a fact about the run, because the fact
+# is the list itself and what went wrong was a sentence contradicting it.
+_NO_OTHER_FILE = (
+    "Name no other file: never write that a file, document, deck, attachment "
+    "or annex exists, is attached, or accompanies this answer unless it is "
+    "listed here."
+)
+
+
+def delivered_files(state: AgentState) -> list[str]:
+    """The files this run delivers, as far as generation time can know.
+
+    Two sources, and they are the whole truth: the document the request asked
+    for (`document_formats`, decided before the plan by `core/document.py` or
+    seeded from `Job.formats` — a list means a file in those formats, `[]` or
+    silence means none, #96), and the files a step declared through
+    `artifact_meta` (#35), read in PLAN order like `ContextMerger`. A declared
+    file that turns out missing is dropped later by the job layer and said in
+    `job.error`; naming it here is the smaller error, since the step did
+    produce it as far as the run can tell.
+    """
+    files: list[str] = []
+    formats = state.get("document_formats") or []
+    if formats:
+        files.append(f"this answer itself, written to a file as {', '.join(formats)}")
+    plan = state.get("plan")
+    results = state.get("results", {})
+    seen: set[str] = set()
+    for step in (plan["steps"] if plan else []):
+        result = results.get(step["capability"]) or {}
+        for ref in artifact_refs(result.get("meta")):
+            if ref.path in seen:
+                continue
+            seen.add(ref.path)
+            label = ref.title or Path(ref.path).name
+            files.append(f"{label} ({ref.file_format})")
+    return files
+
+
+def delivered_files_note(state: AgentState) -> str:
+    """What the generator is told about files (#77): the list, or that there is none.
+
+    The generator was told which files a run produced only when a step's own
+    material said so, and its prompt talked about such a file by example — so
+    a run that produced none left the model free to assert one, and on the
+    real model it did, in the prompt's own words. Stated always, the list
+    turns an invented file into a contradiction of something the model can
+    see, and "no file" is said as plainly as a list of two.
+    """
+    files = delivered_files(state)
+    if not files:
+        return (
+            f"{FILES_HEADING}: none. The answer is read as text, with "
+            "nothing attached to it or delivered alongside it. " + _NO_OTHER_FILE
+        )
+    listed = "\n".join(f"- {f}" for f in files)
+    return (
+        f"{FILES_HEADING} — the complete list:\n"
+        f"{listed}\n{_NO_OTHER_FILE}"
+    )
+
+
 class Generator:
     def __init__(self, deps: Deps, profile: AgentProfile):
         self.deps = deps
@@ -93,6 +164,7 @@ class Generator:
                         "role": "user",
                         "content": (
                             f"Query: {state['query']}\n\n"
+                            f"{delivered_files_note(state)}\n\n"
                             f"Context:\n{state.get('merged_context', '')}"
                         ),
                     },
@@ -185,6 +257,7 @@ class Refiner:
                         "content": (
                             f"Original query: {state['query']}\n\n"
                             f"Previous draft:\n{state.get('draft_answer', '')}\n\n"
+                            f"{delivered_files_note(state)}\n\n"
                             f"Context:\n{state.get('merged_context', '')}"
                         ),
                     },
