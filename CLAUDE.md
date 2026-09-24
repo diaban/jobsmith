@@ -212,7 +212,7 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 - **Tools** (`chat/tools.py`) wrap JobManager use-cases, scoped to the session's own jobs. `launch_job` **runs the task**: `create_job(session_id=...)` + `start_job`, then it *waits* on that task for `pick_sync_timeout()`.
 - **Synchronous by default, promoted by the clock**: `start_job` then `asyncio.wait` (never `wait_for`) for `$JOBSMITH_SYNC_TIMEOUT` (20 s; `0` = never); no classification; a job finished in the turn is `mark_announced`. → 0083
 - **The answer is written verbatim into the turn**, never returned through the model; a promoted answer uses the same channel up to `$JOBSMITH_INLINE_ANSWER_MAX` (2 000), or at any length when no file was written. → 0083, 0085
-- **The approval card is a notice** (`job_started`: query, sources, name/title/formats, job id); the gate survives behind `$JOBSMITH_APPROVE_JOBS`. → 0083
+- **The approval card is a notice** (`job_started`: query, sources, `from_jobs` as short id + start of query, name/title/formats, job id); the gate survives behind `$JOBSMITH_APPROVE_JOBS`. → 0083, 0104
 - **The engine never sees the thread**: a self-contained `query`, plus `recent_conversation()` as `inputs[CONVERSATION_INPUT_KEY]`. `source_files` and `from_jobs` (resolved against **this session's** jobs) are `launch_job` arguments. → 0004, 0060, 0074
 - **Notifications** (`JobNotificationMiddleware.awrap_model_call`) are transient `SystemMessage`s in the model *request*, never in state. → 0006
   - Completion (every terminal, `ANNOUNCEABLE`) and progress (only when `progress_signature()` moved) notices go **directly after the system prompt** (`_inject`), where Anthropic hoists them. → 0006

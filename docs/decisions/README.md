@@ -75,7 +75,7 @@ current and writes the records a merged PR forgot, marked as reconstructed.
 | 0063 | [An unconfigured jobsmith keeps its jobs](0063-persistent-by-default.md) | the default persistence is a SQLite file in the user data dir, and every writer takes the lock up front | accepted; partially supersedes 0010 |
 | 0064 | [A backing that went away is one exception](0064-service-unavailable.md) | the port throws `ServiceUnavailable` for a transport failure and nothing else; front-ends catch it by name | accepted |
 | 0073 | [A deliverable answers with the material it has](0073-deliverable-answers.md) | the generator gets an obligation, a refusal gets a high bar and a shape, and `critique` stopped feeding the generator | accepted; partially supersedes 0058; partially superseded by 0082 |
-| 0074 | [A follow-up job references the job, not the file it wrote](0074-prior-job-references.md) | a `PriorJobSource` port hands back an earlier run's answer and per-step material, scoped to the session in `chat/tools.py` | accepted; partially superseded by 0085 |
+| 0074 | [A follow-up job references the job, not the file it wrote](0074-prior-job-references.md) | a `PriorJobSource` port hands back an earlier run's answer and per-step material, scoped to the session in `chat/tools.py` | accepted; partially superseded by 0085; gap closed by 0104 |
 | 0075 | [web_search grounds on the page, not the snippet](0075-web-pages-not-snippets.md) | Tavily's `raw_content` over the snippet, `advanced` depth by default, 8 000 characters per document | accepted |
 | 0076 | [Nested lists nest in the HTML and PDF deliverables](0076-nested-lists.md) | one level every two spaces, depth clamped to the open-list stack, a nested list opened inside its item | accepted |
 | 0081 | [The grounding reaches the reasoning](0081-grounding-reaches-reasoning.md) | `research` reads every retrieval step's material (bounded), says so in `meta["grounded_on"]`, and an eval checks it | accepted |
@@ -84,6 +84,7 @@ current and writes the records a merged PR forgot, marked as reconstructed.
 | 0085 | [The answer comes back in the conversation, and the file stops being about the run](0085-answer-in-the-conversation.md) | a promoted answer uses the same verbatim channel below `$JOBSMITH_INLINE_ANSWER_MAX`; the report is title, answer, job reference | accepted; partially supersedes 0083; partially supersedes 0074; partially supersedes 0003 |
 | 0090 | [The engine reads the request for what document it asked for](0090-document-intent-node.md) | `document_intent` is a dedicated decision node before triage that fills silence, never overrides, cannot refuse | accepted |
 | 0096 | [A request that says nothing about a document gets none, on every door](0096-no-document-unless-asked.md) | `_deliverable_wanted` is `bool(job.formats)`; silence is recorded as `FormatsChosen(None)`; the answer checks leave the file gate | accepted; partially supersedes 0003; partially supersedes 0055 |
+| 0104 | [The job notice names the earlier jobs a run builds on](0104-notice-names-prior-jobs.md) | `job_started`/`proposal` carry `from_jobs` as `{job_id, query}` (query cut on a word at 60), rendered by the one renderer per front-end; nothing when none | accepted; closes the gap in 0074 |
 
 ### Issues cited without a record of their own
 
