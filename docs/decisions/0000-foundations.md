@@ -1,8 +1,9 @@
 # 0000 — Foundations: decisions older than the issue that would carry them
 
 - **Issue:** none — these predate the issue that would have carried them; a passage's origin commit is found with `git log -S '<phrase>' -- CLAUDE.md`
-- **Status:** accepted
+- **Status:** accepted · partially superseded by [0085](0085-answer-in-the-conversation.md) · partially superseded by [0096](0096-no-document-unless-asked.md)
 - **Source:** migrated verbatim from `CLAUDE.md` at `8326b98` (#102). The text is the original; only the headings (which section of `CLAUDE.md` it lived in) and the links were added.
+- **Note (scribe, 2026-09-24):** the "Commands" passage below says a promoted run ends in "a synthesis + report path on a later turn" — since [0085](0085-answer-in-the-conversation.md) (#85) the answer comes back verbatim, not synthesised, and since [0096](0096-no-document-unless-asked.md) (#96) there is a report path only if the request asked for one. Flagged, not fixed, in #103; marked here rather than rewritten.
 
 ## From “Commands”
 
@@ -14,7 +15,7 @@ This exists because green checks on a stale base do not mean the merge is green.
 
 **`uv.lock` is committed** and must be regenerated (`uv lock`) in the same commit as any dependency change. This project has already been bitten by version drift (`create_react_agent` deprecation, the removed `llm_input_messages` channel, checkpoint-sqlite's `isolation_level`), which is exactly what the lockfile prevents across sessions.
 
-`make coverage` reports per-module coverage (89% overall; `jobs/` and most of `core/` at 100%). The thin areas are still the interactive layers — `cli/main.py` 51%, `cli/repl.py` 72%, `chat/tools.py` 78% — so a change landing there needs its tests written *with* it, not after. `cli/repl.py` is only that high because #50's rendering arrived with its tests; the argparse entrypoint has none of that.
+`make coverage` reports per-module coverage (89% overall; `jobs/` and most of `core/` at 100%). The thin areas are still the interactive layers — `cli/main.py` 51%, `cli/repl.py` 72%, `chat/tools.py` 78% — so a change landing there needs its tests written *with* it, not after. `cli/repl.py` is only that high because #50's rendering arrived with its tests; the argparse entrypoint has none of that. **These figures are undated**: no commit records when they were measured, and the scribe has not re-run `make coverage` to refresh them (2026-09-24).
 
 ## From “CLI + daemon (`cli/`) — where jobs actually run”
 

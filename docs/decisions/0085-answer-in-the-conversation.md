@@ -1,7 +1,7 @@
 # 0085 — The answer comes back in the conversation, and the file stops being about the run
 
 - **Issue:** #85 · **PR:** #95
-- **Status:** accepted · partially supersedes [0083](0083-synchronous-by-default.md) · partially supersedes [0074](0074-prior-job-references.md) · partially supersedes [0003](0003-evals-harness.md)
+- **Status:** accepted · partially supersedes [0083](0083-synchronous-by-default.md) · partially supersedes [0074](0074-prior-job-references.md) · partially supersedes [0003](0003-evals-harness.md) · partially supersedes [0000](0000-foundations.md)
 - **Source:** migrated verbatim from `CLAUDE.md` at `8326b98` (#102). The text is the original; only the headings (which section of `CLAUDE.md` it lived in) and the links were added.
 - **See also:** [0096](0096-no-document-unless-asked.md), [0083](0083-synchronous-by-default.md)
 
