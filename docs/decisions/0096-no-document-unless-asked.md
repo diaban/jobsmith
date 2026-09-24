@@ -1,7 +1,7 @@
 # 0096 — A request that says nothing about a document gets none, on every door
 
 - **Issue:** #96 · **PR:** #97
-- **Status:** accepted · partially supersedes [0003](0003-evals-harness.md) · partially supersedes [0055](0055-document-name-title-format.md)
+- **Status:** accepted · partially supersedes [0003](0003-evals-harness.md) · partially supersedes [0055](0055-document-name-title-format.md) · partially supersedes [0000](0000-foundations.md)
 - **Source:** migrated verbatim from `CLAUDE.md` at `8326b98` (#102). The text is the original; only the headings (which section of `CLAUDE.md` it lived in) and the links were added.
 - **See also:** [0090](0090-document-intent-node.md), [0085](0085-answer-in-the-conversation.md)
 
