@@ -88,6 +88,7 @@ current and writes the records a merged PR forgot, marked as reconstructed.
 | 0102 | [Decisions are recorded in `docs/decisions/`, and `CLAUDE.md` keeps the rules](0102-decision-records.md) | `CLAUDE.md` holds only rules with a `→ NNNN` pointer; every decision gets its own record, written by the agent that took it; a scribe keeps the whole under budget | accepted (reconstructed) |
 | 0104 | [The job notice names the earlier jobs a run builds on](0104-notice-names-prior-jobs.md) | `job_started`/`proposal` carry `from_jobs` as `{job_id, query}` (query cut on a word at 60), rendered by the one renderer per front-end; nothing when none | accepted; closes the gap in 0074 |
 | 0108 | [The PDF engine is probed on the first request that needs it, not to compose the app](0108-pdf-engine-probed-on-first-need.md) | PDF is offered when installed (`find_spec`); the engine is loaded, cached, in `create_job` or when the document step chose it; eager only for a PDF deployment default; an unloadable engine is a `ValueError` refusal | accepted; partially supersedes 0034 |
+| 0109 | [Fewer themes, fewer hammer rounds, a `slow` marker](0109-faster-suite.md) | the colour test renders 7 representative themes, not 25; the SQLite hammer runs 10 rounds, not 150; `make test-fast` skips tests marked `slow` | accepted |
 
 ### Issues cited without a record of their own
 

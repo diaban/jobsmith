@@ -15,11 +15,12 @@ CLI/API surface, limits. Keep it in sync when a command or a limit changes.
 
 ## Commands
 
-A Makefile wraps the common ones: `make help` lists them (`install`, `install-all`, `test [T=kw]`, `lint`, `fix`, `types`, `check` = lint+types+leak-gate+tests, `eval`/`eval-llm` = score the prompts on the golden set, `serve`/`chat`/`ui`/`jobs` = the global agent, `chat-banking`/`api-banking`/`demo-banking` = the example, `clean`). Raw equivalents:
+A Makefile wraps the common ones: `make help` lists them (`install`, `install-all`, `test [T=kw]`, `test-fast` = skip what's marked `slow`, `lint`, `fix`, `types`, `check` = lint+types+leak-gate+tests, `eval`/`eval-llm` = score the prompts on the golden set, `serve`/`chat`/`ui`/`jobs` = the global agent, `chat-banking`/`api-banking`/`demo-banking` = the example, `clean`). Raw equivalents:
 
 ```bash
 uv venv --python 3.12 .venv && uv pip install -e ".[dev,api,anthropic]"  # setup
 .venv/bin/python -m pytest tests/ -q                        # all tests
+.venv/bin/python -m pytest tests/ -q -m "not slow"          # the inner loop (make test-fast)
 .venv/bin/python -m pytest tests/test_planner.py::test_cycle_rejected  # one test
 .venv/bin/ruff check .                                      # lint
 .venv/bin/pyright                                           # types (config: [tool.pyright])
@@ -38,6 +39,7 @@ jobsmith --agent banking chat | serve                       # any agent, same sh
 
 - **A PR writes its decision record** in `docs/decisions/` (`NNNN` = issue number, `TEMPLATE.md`, a line in the index) whenever it takes a decision a later reader could undo without knowing why — the agent that measured and chose writes it, in the same PR. **`CLAUDE.md` gains a line only when a rule is created or changed**: a short statement plus `→ NNNN`. Never narrative.
 - **Run the `scribe` agent** (`.claude/agents/scribe.md`) every ~3 merges, after a batch of parallel PRs lands, or when this file nears its budget: it writes missing records, keeps the index, fixes stale claims and writes a brief in `docs/briefs/` covering `main` since the last one.
+- **Falsify with the targeted test** (file or `-k`), not the whole suite: `make test-fast` (`-m "not slow"`) while iterating, the full suite once before the PR — a delegated task that re-runs everything per falsification pays the slow tests' cost every time. → 0109
 - **One short-lived branch per issue**, off `main`: `feat/<n>-<slug>`, `fix/<n>-<slug>`, `chore/<slug>` (`gh issue develop <n>` creates one already linked). Open a PR, let CI run, merge, delete. **No `develop` branch**: there are no releases yet, so it would only add a merge — the PR + CI is the integration point it used to provide. Releases, when they come, are tags.
 - `main` stays green. CI (`.github/workflows/ci.yml`) runs what `make check` runs — lint, **types**, the leakage gate, tests — on push and PR across Python 3.11 and 3.12, plus `uv lock --check` so the lockfile cannot silently drift from pyproject. CI installs **every** extra, so it is the stricter reading: the optional providers' imports resolve there and are type-checked, where a plain `make install` (`.[dev,api]`) leaves them unresolved.
 - **The type gate (`make types`, pyright)** is the only check that sees a signature that lies; pyright rather than mypy because Pylance is pyright, so `[tool.pyright]` configures editor and gate at once. → 0031

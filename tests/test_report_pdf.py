@@ -37,9 +37,16 @@ from jobsmith.jobs.report_html import HtmlReport, dag_svg
 from jobsmith.jobs.report_pdf import DAG_STYLE, PAGED_STYLE, PdfReport
 
 pdf_installed = importlib.util.find_spec("weasyprint") is not None
-requires_pdf = pytest.mark.skipif(
+_skip_without_pdf = pytest.mark.skipif(
     not pdf_installed, reason="the optional .[pdf] extra is not installed"
 )
+
+
+def requires_pdf(func):
+    """Every test this guards imports the real engine (measured, #109): the
+    first one in a process pays weasyprint's ~4s import, so `slow` travels
+    with the skip rather than being repeated at each call site."""
+    return pytest.mark.slow(_skip_without_pdf(func))
 
 
 @pytest.fixture(autouse=True)
