@@ -42,6 +42,14 @@ requires_pdf = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def unprobed(monkeypatch):
+    """Each test starts before the engine was probed: the outcome is cached
+    for the process (#108), and a test that simulates a broken engine must
+    neither see a real probe's success nor leave its failure behind."""
+    monkeypatch.setattr(report_pdf, "_probed", None)
+
+
 class StubPdf(FileReporter):
     """A binary Reporter with no engine behind it — the shape, not the render.
 
