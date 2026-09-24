@@ -3,7 +3,7 @@ that can show a job while it runs.
 
 It is not a second implementation of the REPL, it is a second *presentation*
 of the same flow: `cli/repl.py` and this both drive `stream` /
-`stream_approval` and both render the six events of `chat/runner.py`. What
+`stream_approval` and both render the seven events of `chat/runner.py`. What
 differs is what the two can do while waiting. `run_repl` blocks the loop on
 `input()`, so nothing repaints until the human types; Textual owns the event
 loop and treats a keystroke as an event, so a running job can be on screen at
@@ -553,6 +553,8 @@ class JobsmithApp(App[None]):
             self._activity(f"✓ {render.tool_activity(str(event.get('name') or ''))}")
         elif kind == "job_started":
             self._job_started(event)
+        elif kind == "job_planned":
+            self._activity(render.plan_activity(list(event.get("steps") or [])))
 
     def _job_started(self, event: dict[str, Any]) -> None:
         """A job began inside this turn: say what it will do, and how to stop it.

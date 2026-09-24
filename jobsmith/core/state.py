@@ -76,6 +76,22 @@ def plan_depths(steps: Iterable[tuple[str, Iterable[str]]]) -> dict[str, int]:
     return depth
 
 
+def plan_waves(steps: Iterable[tuple[str, Iterable[str]]]) -> list[list[str]]:
+    """The steps grouped by `plan_depths` column, each group in plan order.
+
+    What a one-line reading of a plan shows (#86): `a → b + c → d`. The same
+    columns as the two drawings, so the line and the DAG never disagree on
+    where a step belongs. A wave is what may run together, which is what `+`
+    says; an edge that skips a wave is drawn exactly only by the drawings.
+    """
+    rows = [(name, list(deps)) for name, deps in steps]
+    depth = plan_depths(rows)
+    waves: list[list[str]] = [[] for _ in range(max(depth.values(), default=-1) + 1)]
+    for name, _deps in rows:
+        waves[depth[name]].append(name)
+    return waves
+
+
 # ---------- Capability results ----------
 
 class CapabilityResult(TypedDict, total=False):

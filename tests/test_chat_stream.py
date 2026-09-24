@@ -308,6 +308,41 @@ def test_the_repl_names_the_jobs_a_run_builds_on():
                    for line in job_lines(notice | {"from_jobs": []}))
 
 
+async def test_the_repl_says_the_plan_as_activity_not_as_the_answer(
+    store, checkpointer, tmp_path, capsys
+):
+    """#86, through the real service: the plan is said on stderr, beside the
+    activity it sharpens, as the waves in order — two steps that run together
+    side by side. stdout, the record of the turn (the notice, the answer),
+    does not carry it."""
+    from test_service import planned_manager, planned_service
+
+    service = planned_service(planned_manager(store, checkpointer, tmp_path))
+    session_id = await service.new_session()
+    await render_turn(service.stream(session_id, "please analyse it"), TurnPrinter())
+    out, err = capsys.readouterr()
+
+    assert "  … plan: web_search + documents → research → analysis\n" in err
+    assert "plan:" not in out and "→" not in out
+    assert "running this as job" in out, "no job ran; this proves nothing"
+    # said after the task started and before it finished
+    assert err.index("… running the task") < err.index("… plan:") \
+        < err.index("✓ running the task")
+
+
+def test_a_plan_reads_as_its_waves():
+    """One line, the drawings' columns: a step is placed after the longest
+    chain of what it waits on, whatever order the plan lists it in."""
+    from jobsmith.cli.repl import plan_line
+
+    assert plan_line([
+        {"capability": "critique", "depends_on": ["analysis"]},
+        {"capability": "analysis", "depends_on": ["research"]},
+        {"capability": "research", "depends_on": []},
+        {"capability": "slide_deck", "depends_on": ["analysis"]},
+    ]) == "research → analysis → critique + slide_deck"
+
+
 async def test_the_repl_streams_a_turn_and_still_asks_for_approval(capsys, monkeypatch):
     """The human-in-the-loop round trip survives the turn becoming a flow:
     the proposal is still printed and answered, and the reply that follows is

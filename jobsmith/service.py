@@ -30,6 +30,7 @@ from typing import Any
 from .chat.runner import (
     ChatEvent,
     ChatRunner,
+    JobPlanned,
     JobStarted,
     Message,
     Proposal,
@@ -114,7 +115,7 @@ class ChatStreamError(RuntimeError):
     """
 
 
-# The six domain events of `chat/runner.py`, as the dicts the port carries.
+# The seven domain events of `chat/runner.py`, as the dicts the port carries.
 # Dicts because they cross HTTP: the two backings must be indistinguishable,
 # and a front-end deserializing a dataclass would be a third implementation.
 # The two terminal shapes are byte-for-byte what `send`/`approve` have always
@@ -124,6 +125,7 @@ _EVENT_TYPES: dict[type, str] = {
     ToolStarted: "tool_started",
     ToolFinished: "tool_finished",
     JobStarted: "job_started",
+    JobPlanned: "job_planned",
     Message: "message",
     Proposal: "proposal",
 }

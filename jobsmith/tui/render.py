@@ -30,7 +30,7 @@ from typing import Any
 
 from textual.markup import escape
 
-from ..core.state import plan_depths
+from ..core.state import plan_depths, plan_waves
 from ..core.usage import Usage
 from ..jobs.report import format_cost, format_usage
 
@@ -70,6 +70,21 @@ TOOL_ACTIVITY = {
 def tool_activity(name: str) -> str:
     """Readable prose for a tool name; an unmapped tool still says something."""
     return TOOL_ACTIVITY.get(name, f"running {name}")
+
+
+def plan_activity(steps: list[dict[str, Any]]) -> str:
+    """The activity line once the running task has a plan (#86), as markup.
+
+    Where `… running the task` was: the plan is what the run is doing right
+    now, so it goes where that is said and is overwritten when the task is
+    over. The conversation keeps the record (the notice card, the answer),
+    and the jobs pane keeps the exact DAG, live — this is the one line of it
+    a reader in the chat pane can see without leaving it.
+    """
+    waves = plan_waves((str(s.get("capability") or ""), s.get("depends_on") or [])
+                       for s in steps)
+    chain = " → ".join(" + ".join(escape(name) for name in wave) for wave in waves)
+    return f"… {tool_activity('launch_job')}: {chain}"
 
 
 def status_role(status: str) -> str:

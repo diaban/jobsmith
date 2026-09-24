@@ -8,12 +8,13 @@ emits for a chat agent — the `("messages", (chunk, metadata))` pairs, the
 below, so the service, the HTTP adapter and every UI are written against a
 vocabulary that does not move when LangChain reshapes its agent.
 
-Six events, and no more, because a turn only ever shows six things:
+Seven events, and no more, because a turn only ever shows seven things:
 
     Token          the answer being written
     ToolStarted    the model asked for a tool, by its real name
     ToolFinished   that tool answered
     JobStarted     a job began inside this turn, and here is what it will do
+    JobPlanned     that job's plan was decided, while the turn waits on it
     Message        the turn is over, here is the whole reply
     Proposal       the turn is over, it is waiting for an approval
 
@@ -63,6 +64,7 @@ _INTERRUPT = "__interrupt__"
 # and this translator has exactly one definition. Anything else on that
 # channel is ignored — a payload nobody here understands is not a turn event.
 CUSTOM_JOB_STARTED = "job_started"
+CUSTOM_JOB_PLANNED = "job_planned"
 CUSTOM_ANSWER = "answer"
 
 # All three are needed and none is redundant: `messages` carries the answer as
@@ -132,6 +134,25 @@ class JobStarted:
 
 
 @dataclass(frozen=True)
+class JobPlanned:
+    """The job started in this turn has a plan, and here it is (#86).
+
+    The plan is the first moment a run has a shape worth showing, and it is
+    decided seconds into a turn that may wait twenty. `steps` is the plan as
+    the planner left it — `{"capability", "depends_on"}` per step, in plan
+    order — and never a sentence: how a DAG reads on one line is each
+    front-end's wording, exactly as `ToolStarted` carries a name and not a
+    phrase. Not a `Token`: a plan is not the answer, and a token would put it
+    into `Message.content`, the reply a caller that waits is handed.
+
+    A notice, not a question: nothing waits on it, and nothing here can
+    amend the plan it shows (that is #5).
+    """
+    job_id: str
+    steps: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class Message:
     """Terminal: the turn ended with a reply — the whole of what it produced.
 
@@ -177,7 +198,8 @@ class Proposal:
     from_jobs: list[dict[str, str]] = field(default_factory=list)  # see `JobStarted`
 
 
-ChatEvent = Token | ToolStarted | ToolFinished | JobStarted | Message | Proposal
+ChatEvent = (Token | ToolStarted | ToolFinished | JobStarted | JobPlanned
+             | Message | Proposal)
 
 
 def _from_custom(payload: Any) -> ChatEvent | None:
@@ -204,7 +226,21 @@ def _from_custom(payload: Any) -> ChatEvent | None:
             _formats(payload.get("formats")),
             _job_references(payload.get("from_jobs")),
         )
+    if kind == CUSTOM_JOB_PLANNED:
+        return JobPlanned(str(payload.get("job_id") or ""),
+                          _plan_steps(payload.get("steps")))
     return None
+
+
+def _plan_steps(value: Any) -> list[dict[str, Any]]:
+    """A payload's plan steps as fresh `{capability, depends_on}` dicts.
+
+    Lists of strings whatever arrived, because this crosses HTTP and both
+    backings must answer with the same JSON (#50).
+    """
+    return [{"capability": str(step.get("capability") or ""),
+             "depends_on": [str(dep) for dep in step.get("depends_on") or []]}
+            for step in value or [] if isinstance(step, dict)]
 
 
 def _job_references(value: Any) -> list[dict[str, str]]:

@@ -536,6 +536,49 @@ async def test_the_card_names_the_jobs_a_run_builds_on(
         assert f"builds on job {second.job_id[:8]} — price the standing desk" in shown
 
 
+async def test_the_plan_is_on_the_activity_line_while_the_task_runs(
+    store, checkpointer, tmp_path
+):
+    """#86 in the TUI: while the turn waits on the run, the activity line says
+    the plan instead of `… running the task`, and says it before the run is
+    over (the first step is held until it has). The conversation — the notice
+    card, the answer — does not carry it: the jobs pane is where the DAG is
+    drawn exactly, and the activity line is where "right now" is said."""
+    from test_service import Gate, planned_manager
+
+    gate = Gate("web_search")
+    manager = planned_manager(store, checkpointer, tmp_path, gate=gate)
+    model = ScriptedChatModel(responses=[launch_call("analyse it", "several steps"),
+                                         AIMessage(content="Done.")])
+    saver = MemorySaver()
+    service = LocalAgentService(manager, lambda session_id=None: ChatSession(
+        manager, model, session_id=session_id, checkpointer=saver))
+    session_id = await service.new_session()
+
+    app = JobsmithApp(service, session_id)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press(*"analyse it")
+        await pilot.press("enter")
+        activity = app.query_one("#activity", Static)
+        for _ in range(500):
+            if "→" in str(activity.content):
+                break
+            await pilot.pause(0.01)
+        shown = str(activity.content)
+        assert shown == "… running the task: web_search + documents → research → analysis"
+        (job,) = await manager.list_jobs()
+        assert job.status is JobStatus.RUNNING, "the plan was shown only once it was over"
+
+        gate.open.set()
+        await settle(pilot)
+        assert app.query(JobNoticeCard), "no job ran; this proves nothing"
+        drawn = [str(w.content) for w in app.query(JobNoticeCard)] + [
+            b.text for b in app.query(Bubble)]
+        assert not any("→" in text for text in drawn), "the plan leaked into the conversation"
+        assert str(activity.content) == "", "the plan outlived the turn on the activity line"
+
+
 async def test_a_proposal_is_approved_through_the_ui(store, checkpointer, tmp_path):
     """The round trip: the interrupt becomes a card, `y` resumes the graph,
     and a job exists on the other side of it.
