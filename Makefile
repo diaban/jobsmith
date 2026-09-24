@@ -34,7 +34,7 @@ WT_DIR    := $(subst /,-,$(B))
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install install-all test snapshots coverage lint fix types check leak-check eval eval-llm \
+.PHONY: help install install-all test test-fast snapshots coverage lint fix types check leak-check eval eval-llm \
         worktree worktree-rm \
         serve chat ui jobs \
         chat-banking serve-banking demo-banking clean
@@ -53,6 +53,9 @@ install-all: $(VENV) ## Same + every provider and persistence backend
 
 test: ## Run the test suite (T=<keyword> to filter, e.g. make test T=router)
 	$(PY) -m pytest tests/ -q $(TEST_ARGS)
+
+test-fast: ## The inner loop: skip what's marked `slow` (#109) — full suite once before a PR
+	$(PY) -m pytest tests/ -q -m "not slow" $(TEST_ARGS)
 
 snapshots: ## Re-accept the TUI layout snapshots after an intentional layout change
 	$(PY) -m pytest tests/test_tui.py -q --snapshot-update

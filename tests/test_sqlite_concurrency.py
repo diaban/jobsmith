@@ -68,12 +68,14 @@ async def initialised(tmp_path) -> str:
     return db
 
 
+@pytest.mark.slow  # 5 real OS processes each
 @pytest.mark.parametrize("mode", ["store", "saver"])
 async def test_concurrent_processes_write_one_file_without_locking_out(tmp_path, mode):
     results = await hammer(await initialised(tmp_path), mode)
     assert results == [f"ok {ROUNDS}"] * PROCESSES, results
 
 
+@pytest.mark.slow  # 5 real OS processes
 async def test_processes_opening_a_fresh_file_together_all_get_it(tmp_path):
     results = await hammer(str(tmp_path / "fresh.db"), "setup", rounds=0)
     assert results == ["ok 0"] * PROCESSES, results

@@ -320,7 +320,12 @@ async def test_a_deliverable_declared_binary_is_refused_without_reading_it(tmp_p
         await service.get_report("j1")
 
 
-@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
+@pytest.mark.parametrize("over_http", [
+    pytest.param(False, id="local"),
+    # The only case in this file that actually starts a uvicorn server (see
+    # `_serving`) — marked so `make test-fast` need not bind a real socket.
+    pytest.param(True, id="http", marks=pytest.mark.slow),
+])
 async def test_progress_events_reach_either_backing(store, checkpointer, tmp_path, over_http):
     """A front-end must not have to ask which backing it holds to see a job move.
 

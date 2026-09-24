@@ -186,6 +186,7 @@ async def test_resume_works_after_a_cross_process_cancel(tmp_path):
         assert done.results["slow"]["data"]["echo"] == "slow#1"   # run by `other`
 
 
+@pytest.mark.slow  # waits out real lease timings
 async def test_a_slow_owner_is_never_reported_cancelled_early(tmp_path):
     """If the owner has not acted by the time the canceller stops waiting,
     the answer is what is TRUE — still running, request recorded — and the
@@ -299,6 +300,7 @@ async def test_a_queued_job_cancelled_elsewhere_never_runs(tmp_path):
         assert alpha.runs == slow.runs == 0
 
 
+@pytest.mark.slow  # waits out real lease timings
 async def test_an_owner_that_lost_its_lease_stops_without_writing(tmp_path):
     """A live owner stalled past its TTL may be judged dead and its job taken
     over by another process. When it wakes it must not overwrite that
@@ -393,6 +395,7 @@ async def settled_checkpoint(mgr: JobManager, job_id: str) -> None:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="pid probing is POSIX-only")
+@pytest.mark.slow  # a real OS process
 async def test_a_cancel_crosses_a_real_process_boundary_and_resumes(tmp_path):
     db = str(tmp_path / "agent.db")
     proc, job_id = await spawn_owner(db, tmp_path)
@@ -418,6 +421,7 @@ async def test_a_cancel_crosses_a_real_process_boundary_and_resumes(tmp_path):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="pid probing is POSIX-only")
+@pytest.mark.slow  # a real OS process, SIGKILLed
 async def test_a_killed_owner_is_recovered_at_once_and_resumes(tmp_path):
     """SIGKILL leaves a lease valid for another 30 s: the pid is what proves
     the owner gone, so the next startup settles it without waiting."""

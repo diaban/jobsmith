@@ -270,6 +270,7 @@ def test_the_jobs_screen_looks_like_this(snap_compare):
     assert snap_compare(canned_app(), terminal_size=(126, 38), run_before=before)
 
 
+@pytest.mark.slow  # a full turn through a streamed proposal, snapshotted
 def test_the_chat_screen_looks_like_this(snap_compare):
     """A streamed turn that ended on a proposal, waiting to be answered."""
     async def before(pilot):
@@ -284,8 +285,41 @@ def test_the_chat_screen_looks_like_this(snap_compare):
 # ------------------------------------------------------------------- colour
 
 
-async def test_every_registered_theme_resolves():
-    """Mount both panes under every registered theme and render them for real.
+async def test_every_theme_is_registered():
+    """The registration half of the colour test, and it costs almost nothing.
+
+    `test_every_registered_theme_resolves` below only renders a *sample* of
+    the picker, so this one checks the picker itself still holds all of it:
+    ours (`THEMES`) and Textual's full 21 — registration happens in
+    `on_mount`, so this still needs one mount, just no render loop after it.
+    """
+    app = canned_app()
+    async with app.run_test():
+        themes = list(app.available_themes)
+    assert set(THEMES) <= set(themes), "ours are not in the picker"
+    assert len(themes) >= 20, "the built-in themes went missing"
+
+
+# #109: rendering all 25 registered themes cost the same 12s regardless of how
+# many actually carry distinct risk, so this list keeps only those that do —
+# see docs/decisions/0109-faster-suite.md for the reasoning and the themes
+# ruled out (21 built-ins minus the two below, all sharing one variable set
+# with `textual-dark`, so a break in it breaks every one of them alike):
+#   * our four (`ember-*`, `tide-*`) — the only ones we author, so the only
+#     ones a typo in `themes.py` itself can break;
+#   * `ansi-dark`/`ansi-light` — the two built-ins with a reduced variable set
+#     (`ANSI_GAP` below), the one case the standard-roles-only rule has an
+#     exception for;
+#   * `textual-dark` — one built-in, standing in for the other 20: they all
+#     define the same variable set Textual ships, so one is what "a foreign
+#     theme parses and resolves" actually needs to prove.
+REPRESENTATIVE_THEMES = [*THEMES, "ansi-dark", "ansi-light", "textual-dark"]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("name", REPRESENTATIVE_THEMES)
+async def test_every_registered_theme_resolves(name):
+    """Mount both panes under one theme and render them for real.
 
     This is the test `themes.py` exists for, and it asks two questions that
     are not the same one.
@@ -293,7 +327,7 @@ async def test_every_registered_theme_resolves():
     *Does the app start?* A stylesheet naming a variable the theme does not
     define raises `UnresolvedVariableError` at parse time — measured: the app
     never composes. `export_screenshot()` is a full render of every widget on
-    screen, so it answers that for every theme Ctrl+P can reach.
+    screen, so it answers that for the theme.
 
     *Is the colour the one that was asked for?* A different question, because
     an undefined variable in **content markup** does not raise — it is
@@ -304,29 +338,24 @@ async def test_every_registered_theme_resolves():
     written down rather than papered over. Under those two, queued steps and
     rules lose their dimming and read as ordinary foreground — cosmetic, and
     the price the issue already accepted for standard roles.
+
+    Parametrized (rather than one loop over `REPRESENTATIVE_THEMES`) so a
+    failure names the theme in the test id, not just in the assertion text.
     """
-    app = canned_app()
+    app = canned_app(theme=name)
     async with app.run_test(size=(126, 38)) as pilot:
         await settle(pilot)
         await pilot.press(*"hello")
         await pilot.press("enter")           # a turn, so the proposal card is up
         await settle(pilot)
-        themes = list(app.available_themes)
-        assert set(THEMES) <= set(themes), "ours are not in the picker"
-        assert len(themes) >= 20, "the built-in themes went missing"
-        for name in themes:
-            app.theme = name
-            await pilot.pause()
-            unresolved = {role.lstrip("$") for role in MARKUP_ROLES} - set(
-                app.get_css_variables())
-            assert unresolved <= ANSI_GAP.get(name, set()), \
-                f"{name} does not define {sorted(unresolved)} — that markup renders unstyled"
-            assert app.export_screenshot(), f"{name} rendered nothing"
-            await pilot.press("f3")          # the other pane, same question
-            await settle(pilot)
-            assert app.export_screenshot(), f"{name} rendered nothing on the jobs pane"
-            await pilot.press("f2")
-            await pilot.pause()
+        unresolved = {role.lstrip("$") for role in MARKUP_ROLES} - set(
+            app.get_css_variables())
+        assert unresolved <= ANSI_GAP.get(name, set()), \
+            f"{name} does not define {sorted(unresolved)} — that markup renders unstyled"
+        assert app.export_screenshot(), f"{name} rendered nothing"
+        await pilot.press("f3")              # the other pane, same question
+        await settle(pilot)
+        assert app.export_screenshot(), f"{name} rendered nothing on the jobs pane"
 
 
 def test_pick_theme_follows_the_house_precedence(monkeypatch):
@@ -456,6 +485,7 @@ async def test_the_answer_is_drawn_as_it_arrives(store, checkpointer, tmp_path, 
         "the bubble did not grow by prefixes"
 
 
+@pytest.mark.slow  # drives a real job through the graph
 async def test_the_job_notice_says_what_will_run_and_how_to_stop_it(
     store, checkpointer, tmp_path
 ):
@@ -500,6 +530,7 @@ async def test_the_job_notice_says_what_will_run_and_how_to_stop_it(
         assert any(settled.final_answer in b.text for b in app.query(Bubble))
 
 
+@pytest.mark.slow  # drives a real job through the graph, twice over
 @pytest.mark.parametrize("approval", [False, True], ids=["notice", "proposal"])
 async def test_the_card_names_the_jobs_a_run_builds_on(
     store, checkpointer, tmp_path, approval
@@ -536,6 +567,7 @@ async def test_the_card_names_the_jobs_a_run_builds_on(
         assert f"builds on job {second.job_id[:8]} — price the standing desk" in shown
 
 
+@pytest.mark.slow  # drives a real job through the graph, gated mid-run
 async def test_the_plan_is_on_the_activity_line_while_the_task_runs(
     store, checkpointer, tmp_path
 ):
@@ -579,6 +611,7 @@ async def test_the_plan_is_on_the_activity_line_while_the_task_runs(
         assert str(activity.content) == "", "the plan outlived the turn on the activity line"
 
 
+@pytest.mark.slow  # drives a real job through the graph
 async def test_a_proposal_is_approved_through_the_ui(store, checkpointer, tmp_path):
     """The round trip: the interrupt becomes a card, `y` resumes the graph,
     and a job exists on the other side of it.
@@ -612,6 +645,7 @@ async def test_a_proposal_is_approved_through_the_ui(store, checkpointer, tmp_pa
     assert [job.query for job in jobs] == ["survey sixel support"]
 
 
+@pytest.mark.slow  # drives a real job through the graph
 async def test_declining_a_proposal_creates_nothing(store, checkpointer, tmp_path):
     service, manager = make_service(store, checkpointer, tmp_path, [
         launch_call("survey sixel support", "it needs the web"),
@@ -631,6 +665,7 @@ async def test_declining_a_proposal_creates_nothing(store, checkpointer, tmp_pat
     assert await manager.list_jobs() == []
 
 
+@pytest.mark.slow  # a full streamed turn, keystroke by keystroke
 async def test_a_second_message_cannot_cut_the_turn_being_written():
     """`@work(exclusive=True)` meant a second Enter cancelled the first turn
     mid-sentence: half an answer on screen with nothing saying it was cut,
@@ -664,6 +699,7 @@ async def test_a_second_message_cannot_cut_the_turn_being_written():
         assert answer in [b.text for b in app.query(Bubble)], "the turn did not finish"
 
 
+@pytest.mark.slow  # a full streamed turn, keystroke by keystroke
 async def test_a_message_during_a_proposal_is_not_read_as_a_refusal():
     """Everything that was not an approval used to decline the job AND lose
     the sentence. Only the refusals decline; a real message is refused with
@@ -735,6 +771,7 @@ async def until(pilot: Any, condition: Any, timeout: float = 5.0) -> bool:
     return False
 
 
+@pytest.mark.slow  # a real job with real (slowed) steps, followed live
 async def test_the_screen_follows_a_job_while_it_runs(store, checkpointer, tmp_path):
     """The claim of this whole step, and only a real run can make it.
 
