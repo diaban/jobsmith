@@ -473,8 +473,11 @@ sudo apt-get install -y libpango-1.0-0 libpangoft2-1.0-0   # Debian/Ubuntu
 
 (`ubuntu-latest` already has them — CI renders a PDF with no extra step. A
 container built `FROM python:3.12-slim` does not.) A format nothing can
-render refuses at startup rather than at the end of the first job that asked
-for one.
+render is refused when a job asks for it — before the job exists, with a
+message saying whether `pip install` or the system libraries are missing —
+never at the end of its run; with `JOBSMITH_REPORT_FORMAT=pdf` it is refused
+at startup. The engine (~4 s to import) is loaded only then, so commands that
+never ask for a PDF do not pay for it.
 
 **Or several at once.** The variable takes a comma-separated list —
 `JOBSMITH_REPORT_FORMAT=markdown,html` — and a run asked for a document then
@@ -663,7 +666,7 @@ handle per-provider tool formats), the job engine uses a dependency-light
 | `$JOBSMITH_REPORTS_DIR` | where deliverables and annexes are written (default: `reports/` in the data directory). Resolved to an absolute path at startup; it is also the directory `read_files` may read a report back from |
 | `$XDG_DATA_HOME` | relocates the data directory (`$XDG_DATA_HOME/jobsmith`), on every platform |
 | `$JOBSMITH_PRICES` | per-model prices for the cost estimate, as inline JSON or a path to a JSON file (USD per million tokens) |
-| `$JOBSMITH_REPORT_FORMAT` | `markdown` (default), `html` or `pdf` (extra `.[pdf]` + pango/cairo) — the format of a document **asked for without naming one** ("…as a report", `formats: ["default"]`). It never causes a file to be written: a request that says nothing about a document gets none (#96). A comma-separated list (`markdown,pdf`) writes one file per format, the first being the main one; a format nothing can render here is refused at startup |
+| `$JOBSMITH_REPORT_FORMAT` | `markdown` (default), `html` or `pdf` (extra `.[pdf]` + pango/cairo) — the format of a document **asked for without naming one** ("…as a report", `formats: ["default"]`). It never causes a file to be written: a request that says nothing about a document gets none (#96). A comma-separated list (`markdown,pdf`) writes one file per format, the first being the main one; a format nothing can render here is refused at startup (a PDF asked for by one request is checked when that job is created) |
 | `--url` / `--local` | point at another daemon / never use one |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | key auto-detection; Anthropic wins if both are set |
 | `ANTHROPIC_MODEL`, `OPENAI_MODEL`, `OPENAI_BASE_URL` | model override; the base URL points at Ollama, vLLM or a gateway |
