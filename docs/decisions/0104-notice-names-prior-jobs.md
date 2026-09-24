@@ -1,6 +1,6 @@
 # 0104 — The job notice names the earlier jobs a run builds on, by short id and the start of their query
 
-- **Issue:** #104 · **PR:** #PR
+- **Issue:** #104 · **PR:** #105
 - **Status:** accepted · closes the gap recorded in [0074](0074-prior-job-references.md)
 - **Rule in `CLAUDE.md`:** "The approval card is a notice (`job_started`: query, sources, from_jobs, …)" → 0083, 0104
 - **See also:** [0083](0083-synchronous-by-default.md), [0060](0060-requests-name-files.md), [0055](0055-document-name-title-format.md), [0050](0050-streamed-turn.md)
