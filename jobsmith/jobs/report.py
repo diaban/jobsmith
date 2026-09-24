@@ -332,7 +332,16 @@ def ensure_formats_available(
         else:
             expansion = [name]
         resolved.extend(n for n in expansion if n not in resolved)
-    compose_reporters(resolved, registry)
+    try:
+        compose_reporters(resolved, registry)
+    except RuntimeError as unavailable:
+        # An engine that cannot load (`report_pdf.engine`) is a refusal like
+        # an unknown name, and every door says refusals as `ValueError` — the
+        # chat tool's "NOT launched", the API's 400, `DaemonClient`'s mapping
+        # back. Raised as `RuntimeError` it was a crashed tool and a 500; it
+        # went unseen while the probe ran at startup, and is the path now
+        # that the first PDF request is where it runs (#108).
+        raise ValueError(str(unavailable)) from unavailable
     return resolved
 
 

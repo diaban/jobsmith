@@ -189,9 +189,9 @@ def test_a_pdf_that_cannot_be_written_still_records_the_markdown(tmp_path):
 
 def test_the_engine_is_probed_when_the_reporter_is_composed(monkeypatch):
     """A format nothing can render must not be composed — the same rule the
-    registry applies to a capability nothing can serve. Failing here means a
-    daemon says so at startup instead of at the end of the first job that
-    asked for a PDF."""
+    registry applies to a capability nothing can serve. Composition happens
+    in `create_job` for a job that asks for one (at startup only for a PDF
+    default, #108), so it is refused before any work, never at a job's end."""
     def no_engine():
         raise RuntimeError("boom")
 
