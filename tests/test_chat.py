@@ -17,7 +17,16 @@ from conftest import FakeLLM, ScriptedChatModel, plan_json
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
-from support import CFG, CountingEcho, launch_call, make_manager, make_session
+from support import (
+    CFG,
+    CountingEcho,
+    cancelled_midway,
+    launch_call,
+    make_manager,
+    make_session,
+    until,
+    wait_settled,
+)
 
 from jobsmith.chat import ChatRunner, ChatSession, JobStarted, Token, ToolFinished
 from jobsmith.chat.session import (
@@ -195,7 +204,7 @@ async def test_a_slow_task_is_promoted_and_the_turn_says_so(store, checkpointer,
     assert job.status in (JobStatus.QUEUED, JobStatus.RUNNING)
     # ...and it was NOT cancelled by the turn ending: it runs to the end and
     # the completion notice is what brings it back.
-    settled = await poll_until_settled(session.manager, job.job_id)
+    settled = await wait_settled(session.manager, job.job_id)
     assert settled.status is JobStatus.DONE
     assert settled.announced is False, "a promoted job must still be announced later"
 
@@ -226,18 +235,14 @@ async def test_a_turn_that_dies_mid_wait_does_not_take_the_job_with_it(
 
     turn = asyncio.create_task(
         agent.ainvoke({"messages": [HumanMessage("do the long one")]}, CFG))
-    for _ in range(500):                       # wait until the step is really running
-        await asyncio.sleep(0.01)
-        if slow.runs:
-            break
-    assert slow.runs == 1, "the job never started, so nothing is being tested"
+    await until(lambda: slow.runs, what="the job's step starting")
 
     turn.cancel()                              # the UI's worker, the client hanging up
     with pytest.raises(asyncio.CancelledError):
         await turn
 
     (job,) = await manager.list_jobs(session_id=session.session_id)
-    settled = await poll_until_settled(manager, job.job_id)
+    settled = await wait_settled(manager, job.job_id)
     assert settled.status is JobStatus.DONE, "the turn's death killed the job"
     assert settled.announced is False, "nobody heard the answer: it must still be news"
 
@@ -363,11 +368,7 @@ async def test_the_kept_gate_still_interrupts_and_runs_on_approval(
 
     (job,) = await session.manager.list_jobs(session_id=session.session_id)
     assert job.query == "analyse the alpha data"
-    for _ in range(200):  # the approved run still settles
-        await asyncio.sleep(0.01)
-        job = await session.manager.get_job(job.job_id)
-        if job.status is JobStatus.DONE:
-            break
+    job = await wait_settled(session.manager, job.job_id)     # the approved run settles
     assert job.status is JobStatus.DONE
     assert job.report_path is not None
 
@@ -447,60 +448,41 @@ async def test_a_job_whose_report_failed_is_announced_honestly(
     assert "ALREADY been shown" in notice.content
 
 
-def test_the_notice_names_files_written_before_the_failure():
-    """A partial write leaves real files behind even with the main one
-    missing: `report_path` is None, but those paths are still worth having."""
-    job = Job(job_id="abcdef0123", status=JobStatus.DONE, query="q",
-              final_answer="The answer.",
-              error="the html deliverable could not be written: OSError: nope",
-              outputs=[JobOutput(path="/tmp/abcdef0123.md", role="alternate")])
-    notice = JobNotificationMiddleware._notice_for(job, delivered=True)
-
-    assert "None" not in notice
-    assert "/tmp/abcdef0123.md" in notice
-    assert "html deliverable could not be written" in notice
-    assert "The answer." not in notice and "ALREADY been shown" in notice
+ANNEX = JobOutput(path="/tmp/abcdef0123/chart.svg", format="svg", role="annex",
+                  produced_by="chart")
 
 
-def test_a_failed_job_announces_the_files_its_steps_left_behind():
-    """A job that stopped can still have produced files (#41). Announcing the
-    failure and saying nothing about them recreates, in the conversation, the
-    defect the DONE branch above was fixed for: a file nobody can find."""
-    job = Job(job_id="abcdef0123", status=JobStatus.FAILED, query="q",
-              error="the model refused",
-              outputs=[JobOutput(path="/tmp/abcdef0123/chart.svg", format="svg",
-                                 role="annex", produced_by="chart")])
-    notice = JobNotificationMiddleware._notice_for(job, delivered=False)
-
-    assert "FAILED: the model refused" in notice          # why, first
-    assert "/tmp/abcdef0123/chart.svg" in notice
-    assert "not as a report" in notice                    # what they are not
-    assert "Report file" not in notice
-
-
-def test_a_failed_job_with_no_files_is_announced_exactly_as_before():
-    job = Job(job_id="abcdef0123", status=JobStatus.FAILED, query="q",
-              error="the model refused")
-    notice = JobNotificationMiddleware._notice_for(job, delivered=False)
-    assert notice == "Job abcdef01 ('q') FAILED: the model refused"
-
-
-def test_a_cancelled_job_is_announced_as_cancelled_not_failed():
-    """`cancel_job` is one of the model's own tools, so the same actor stops a
-    job and reports on it. Calling that stop a failure would put an untruth in
-    the conversation; saying nothing about the files would hide them."""
-    job = Job(job_id="abcdef0123", status=JobStatus.CANCELLED, query="q",
-              error="1 file(s) a step reported producing are missing: chart → gone.svg",
-              outputs=[JobOutput(path="/tmp/abcdef0123/chart.svg", format="svg",
-                                 role="annex", produced_by="chart")])
-    notice = JobNotificationMiddleware._notice_for(job, delivered=False)
-
-    assert "was CANCELLED before it finished" in notice
-    assert "FAILED" not in notice
-    assert "/tmp/abcdef0123/chart.svg" in notice
-    assert "not as a report" in notice
-    # a cancelled job has no failure message, but it can have a delivery one
-    assert "gone.svg" in notice
+@pytest.mark.parametrize(("job", "delivered", "says", "never"), ids=[
+    "done-with-path", "done-partial-write", "failed-with-annex", "failed-bare", "cancelled",
+], argvalues=[
+    (Job(job_id="abcdef0123", status=JobStatus.DONE, query="q", final_answer="The answer.",
+         outputs=[JobOutput(path="/tmp/abcdef0123.md")]),
+     False, ["Report file: /tmp/abcdef0123.md"], ["No report file"]),
+    # the main file failed, a sibling was written: its path, the cause, no null
+    (Job(job_id="abcdef0123", status=JobStatus.DONE, query="q", final_answer="The answer.",
+         error="the html deliverable could not be written: OSError: nope",
+         outputs=[JobOutput(path="/tmp/abcdef0123.md", role="alternate")]),
+     True, ["/tmp/abcdef0123.md", "html deliverable could not be written",
+            "ALREADY been shown"], ["None", "The answer."]),
+    # a stopped job's files are announced, and not as a report (→ 0041)
+    (Job(job_id="abcdef0123", status=JobStatus.FAILED, query="q",
+         error="the model refused", outputs=[ANNEX]),
+     False, ["FAILED: the model refused", ANNEX.path, "not as a report"], ["Report file"]),
+    (Job(job_id="abcdef0123", status=JobStatus.FAILED, query="q", error="the model refused"),
+     False, ["Job abcdef01 ('q') FAILED: the model refused"], ["\n"]),
+    # the model's own tool stopped it: not a failure; the delivery error still said
+    (Job(job_id="abcdef0123", status=JobStatus.CANCELLED, query="q",
+         error="1 file(s) a step reported producing are missing: chart → gone.svg",
+         outputs=[ANNEX]),
+     False, ["was CANCELLED before it finished", ANNEX.path, "not as a report", "gone.svg"],
+     ["FAILED"]),
+])
+def test_the_notice_says_what_the_job_left_and_why(job, delivered, says, never):
+    notice = JobNotificationMiddleware._notice_for(job, delivered=delivered)
+    for text in says:
+        assert text in notice
+    for text in never:
+        assert text not in notice
 
 
 async def test_a_cancelled_job_reaches_the_conversation(store, checkpointer, tmp_path):
@@ -520,52 +502,27 @@ async def test_a_cancelled_job_reaches_the_conversation(store, checkpointer, tmp
 
 
 async def test_a_resumed_job_is_news_again(store, checkpointer, tmp_path):
-    """The trap in making a cancellation announceable: `announced` is set when
-    the STOP is announced, so a job resumed to DONE afterwards would be
-    filtered out of `list_finished_unannounced` and its answer would never
-    reach the conversation that asked for it. `_begin_resume` unmarks it, for
-    the same reason it clears `job.error`: a resumed job is news again."""
-
-    alpha, slow = CountingEcho("alpha"), CountingEcho("slow", delay=30.0)
-    llm = FakeLLM(
-        {"planner": plan_json("alpha", "slow", deps={"slow": ["alpha"]})},
-        default="A sufficiently long final answer for the job test.",
-    )
-    manager = make_manager(store, checkpointer, tmp_path, caps=[alpha, slow], llm=llm)
+    """Announcing the stop sets `announced`; resuming must clear it, or the
+    answer never reaches the conversation that asked (→ 0005)."""
+    manager, job, _alpha, slow = await cancelled_midway(
+        store, checkpointer, tmp_path, session_id="s-resume", formats=["default"])
     model = ScriptedChatModel(responses=[AIMessage(content="I stopped it."),
                                          AIMessage(content="Here it is at last.")])
-    session = ChatSession(manager, model, checkpointer=MemorySaver())
-    job = await manager.create_job("a job worth resuming", session_id=session.session_id, formats=["default"])
-    manager.start_job(job.job_id)
-    for _ in range(500):                       # wait until `slow` is really running
-        await asyncio.sleep(0.01)
-        if slow.runs:
-            break
-    await manager.cancel_job(job.job_id)
-    agent = session.build()
+    agent = ChatSession(manager, model, session_id="s-resume",
+                        checkpointer=MemorySaver()).build()
 
     await agent.ainvoke({"messages": [HumanMessage("stop that")]}, CFG)
     (stop_notice,) = notices(model.calls[0], NOTICE_MARKER)
     assert "CANCELLED" in stop_notice.content
     assert (await manager.get_job(job.job_id)).announced is True
 
-    slow.delay = 0.0                           # let the interrupted step finish
+    slow.delay = 0.0
     done = await manager.resume_job(job.job_id)
     assert done.status is JobStatus.DONE and done.announced is False
 
     await agent.ainvoke({"messages": [HumanMessage("and now?")]}, CFG)
     (end_notice,) = notices(model.calls[-1], NOTICE_MARKER)
-    assert "is DONE" in end_notice.content
-    assert done.report_path in end_notice.content      # the answer finally lands
-
-
-def test_the_notice_still_gives_the_path_when_there_is_one():
-    job = Job(job_id="abcdef0123", status=JobStatus.DONE, query="q",
-              final_answer="The answer.",
-              outputs=[JobOutput(path="/tmp/abcdef0123.md")])
-    notice = JobNotificationMiddleware._notice_for(job, delivered=False)
-    assert "Report file: /tmp/abcdef0123.md" in notice
-    assert "No report file" not in notice
+    assert "is DONE" in end_notice.content and done.report_path in end_notice.content
 
 
 async def test_job_tools_are_session_scoped(store, checkpointer, tmp_path):
@@ -586,14 +543,6 @@ async def test_job_tools_are_session_scoped(store, checkpointer, tmp_path):
 
 
 # ---------------- Carrying the conversation's referent into the job ----------
-
-async def poll_until_settled(manager, job_id):
-    for _ in range(200):
-        await asyncio.sleep(0.01)
-        job = await manager.get_job(job_id)
-        if job.status in (JobStatus.DONE, JobStatus.FAILED):
-            return job
-    raise AssertionError("job never settled")
 
 
 async def test_launch_carries_referent_from_an_earlier_turn(store, checkpointer, tmp_path):
@@ -637,7 +586,7 @@ async def test_planner_prompt_receives_the_conversation(store, checkpointer, tmp
     await agent.ainvoke({"messages": [HumanMessage("analyse it")]}, CFG)
 
     (job,) = await session.manager.list_jobs(session_id=session.session_id)
-    await poll_until_settled(session.manager, job.job_id)
+    await wait_settled(session.manager, job.job_id)
 
     planner_call = next(
         c for c in llm.calls
@@ -711,6 +660,7 @@ def test_excerpt_is_char_bounded_per_turn_and_overall():
 def test_excerpt_drops_machinery_not_prose():
     messages = [
         SystemMessage("[job update] background jobs finished: job 1234"),
+        SystemMessage(f"[job progress] {PROGRESS_MARKER}: 1a2b3c4d 1/3 steps done"),
         HumanMessage("the alpha cohort churn"),
         launch_call("previous task", "why"),
         ToolMessage(content="Job abcd1234 launched in the background", tool_call_id="call_1"),
@@ -941,15 +891,6 @@ async def test_no_jobs_means_no_injection_at_all(store, checkpointer, tmp_path):
     assert len(model.calls[0]) == 2      # the system prompt and the user turn, nothing else
 
 
-async def test_progress_notice_is_dropped_from_a_launch_excerpt(store, checkpointer, tmp_path):
-    """Machinery must not travel into the job engine as conversation."""
-    excerpt = recent_conversation([
-        SystemMessage(f"[job progress] {PROGRESS_MARKER}: 1a2b3c4d 1/3 steps done"),
-        HumanMessage("the alpha cohort"),
-    ])
-    assert excerpt == "user: the alpha cohort"
-
-
 # ---------------- Progress rendering, derived from persisted job data -------
 
 
@@ -1002,7 +943,7 @@ async def _promote_and_settle(session, runner):
     """Drive one turn that promotes, then wait for the run to finish."""
     [e async for e in runner.stream(session.session_id, "do the long one")]
     (summary,) = await session.manager.list_jobs(session_id=session.session_id)
-    settled = await poll_until_settled(session.manager, summary.job_id)
+    settled = await wait_settled(session.manager, summary.job_id)
     assert settled.announced is False, "nothing was promoted: there is no news left"
     return settled
 

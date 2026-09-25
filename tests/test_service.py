@@ -1,16 +1,9 @@
 """The inbound port: one interface, two backings, no second implementation.
 
-The property worth protecting is that a front-end cannot tell where the work
-happens. So the same sequence is driven through the local service and through
-HTTP, and the answers must match — not merely "both work".
-
-There is a **second** property, and this suite used to be blind to it: a
-caller that waits (`send`) and a caller that renders (`stream`) must be told
-the same thing about one turn. Comparing the two backings cannot see that —
-both are the same code, so both are wrong together and the comparison passes.
-`test_a_turn_answers_the_same_whether_it_is_waited_for_or_watched` is the one
-that looks, and #83 is why it had to be written: the tokens and the terminal
-stopped coming from the same message the moment a tool could write into a turn.
+A front-end cannot tell where the work happens: the same calls through the
+local service and through HTTP give the same answers (the `through` fixture
+runs each test on both). And a caller that waits (`send`) is told what a
+caller that watches (`stream`) was shown. → 0048, 0050, 0064, 0083
 """
 from __future__ import annotations
 
@@ -21,9 +14,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from conftest import ScriptedChatModel
 from langchain_core.messages import AIMessage
-from langgraph.checkpoint.memory import MemorySaver
 from support import (
     PLANNED_STEPS,
     Gate,
@@ -31,8 +22,12 @@ from support import (
     daemon_client_over,
     launch_call,
     make_manager,
+    mock_client,
     planned_manager,
     planned_service,
+    service_over,
+    sse_client,
+    until,
     wait_done,
 )
 
@@ -54,8 +49,7 @@ def test_both_backings_fully_implement_the_port():
 
 
 def test_the_api_adds_no_use_case_of_its_own():
-    """Every route is serialization + one service call; the API module must
-    not grow its own chat or job logic again."""
+    """Every route is serialization + one service call."""
     import jobsmith.api.app as api_module
 
     source = inspect.getsource(api_module)
@@ -63,256 +57,126 @@ def test_the_api_adds_no_use_case_of_its_own():
         assert leaked not in source, f"{leaked} belongs in the service, not the API adapter"
 
 
-def _service_over(store, checkpointer, tmp_path, *, approval=True, sync_timeout=None):
-    """A service whose model always launches the same job.
+@pytest.fixture(params=["local", "http"])
+async def through(request):
+    """`through(service)` is that service, or a DaemonClient over its API."""
+    opened: list[AgentService] = []
 
-    `approval=True` by default because most of what is asserted below is the
-    *proposal* terminal — the richest dict the port carries, and the one a
-    front-end is most likely to render differently on two backings. Since #83
-    that path is the exception (`$JOBSMITH_APPROVE_JOBS`), so the nominal one
-    gets its own parity test rather than being folded into these.
-    """
-    manager = make_manager(store, checkpointer, tmp_path)
-    saver = MemorySaver()
-    responses = [launch_call("analyse it", "multi-step", document_name="chair_notes",
-                             document_title="Comparatif", formats=["markdown"]),
-                 AIMessage(content="launched!")]
+    def over(service: LocalAgentService) -> AgentService:
+        client = daemon_client_over(create_api(service)) if request.param == "http" else service
+        opened.append(client)
+        return client
 
-    def session_factory(session_id=None):
-        from jobsmith.chat import ChatSession
-        return ChatSession(manager, ScriptedChatModel(responses=list(responses)),
-                           session_id=session_id, checkpointer=saver,
-                           approval_required=approval, sync_timeout=sync_timeout)
-
-    return LocalAgentService(manager, session_factory)
-
-
-@asynccontextmanager
-async def _no_server():
-    """The local backing needs no server — it is the service itself."""
-    yield ""
-
-
-@asynccontextmanager
-async def _serving(app):
-    """The same API on a real socket, for the one thing ASGI cannot carry.
-
-    httpx's `ASGITransport` buffers the whole response body before handing it
-    back, so a request to `/events` — a body that never ends — returns
-    nothing and the test hangs. Every other HTTP test in this repo uses that
-    transport and should; this one cannot, and the next person to "simplify"
-    it back will get a hang, not a failure.
-    """
-    import uvicorn
-
-    server = uvicorn.Server(uvicorn.Config(
-        app, host="127.0.0.1", port=0, log_level="warning",
-        lifespan="off", timeout_graceful_shutdown=2,
-    ))
-    serving = asyncio.create_task(server.serve())
-    try:
-        while not server.started:                      # bound by the test timeout
-            await asyncio.sleep(0.01)
-        yield f"http://127.0.0.1:{server.servers[0].sockets[0].getsockname()[1]}"
-    finally:
-        server.should_exit = True
-        await serving
-
-
-async def _await_subscription(service) -> None:
-    """Both backings subscribe, but only one of them does it locally.
-
-    `LocalAgentService.subscribe` registers the queue before it returns; the
-    daemon-backed one hands back a queue and connects in the background, so
-    the events published before that connection lands are events nobody
-    asked for yet. The test drives the service directly, so it can simply
-    wait for the subscriber to show up rather than race it.
-    """
-    for _ in range(500):
-        if service.manager.events._subscribers:
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError("the event stream never reached the service")
-
-
-def _scripted_client(*lines: str) -> DaemonClient:
-    """A DaemonClient whose /events answers with exactly these SSE lines."""
-    body = "".join(f"{line}\n" for line in lines)
-    transport = httpx.MockTransport(lambda request: httpx.Response(200, text=body))
-    return DaemonClient("http://test", httpx.AsyncClient(
-        transport=transport, base_url="http://test", timeout=None))
-
-
-@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
-async def test_identical_answers_through_either_backing(
-    store, checkpointer, tmp_path, over_http
-):
-    service = _service_over(store, checkpointer, tmp_path)
-    client = daemon_client_over(create_api(service)) if over_http else service
-    try:
-        session_id = await client.new_session()
-        assert isinstance(session_id, str) and session_id
-
-        reply = await client.send(session_id, "please analyse it")
-        # what the document will be called, titled and written as rides on the
-        # terminal with the query (#55): approving is approving all of it, and
-        # a name shown only to the embedded backing would be no guarantee.
-        assert reply == {"type": "proposal", "query": "analyse it",
-                         "rationale": "multi-step", "sources": [],
-                         "document_name": "chair_notes",
-                         "document_title": "Comparatif", "formats": ["markdown"],
-                         "from_jobs": []}
-
-        approved = await client.approve(session_id, True)
-        assert approved["type"] == "message"
-
-        (job,) = await client.list_jobs(session_id=session_id)
-        finished = await wait_done(client, job["job_id"])
-        assert finished["status"] == "done"
-        assert finished["session_id"] == session_id
-        assert set(finished["results"]) == {"alpha"}
-
-        # a short prefix resolves the same way on both sides
-        by_prefix = await client.resolve_job(job["job_id"][:8])
-        assert by_prefix["job_id"] == job["job_id"]
-
-        report = await client.get_report(job["job_id"])
-        assert report.startswith("# ")
-        assert await client.get_report("nope") is None
-        assert await client.get_job("nope") is None
-
-        # a refusal must read the same on both sides: the HTTP status code is
-        # translated back into the port's dict, never leaked as an exception
-        refused = await client.resume_job(job["job_id"])
-        assert refused["status"] == "done"
-        assert "expected cancelled or failed" in refused["error"]
-        assert (await client.resume_job("nope")) == {
-            "job_id": "nope", "status": "unknown", "error": "unknown job: nope"}
-
-        # what the job produced: the same list, and the same locator for one
-        outputs = await client.list_outputs(job["job_id"])
-        assert [(o["role"], o["format"]) for o in outputs] == [("main", "markdown")]
-        assert outputs[0]["path"] == finished["report_path"]
-        assert await client.find_output(job["job_id"], outputs[0]["name"]) == outputs[0]["path"]
-        assert await client.find_output(job["job_id"], "nothing.md") is None
-        assert await client.list_outputs("nope") is None
-
-        # ...and the promise is about the FILE, not the record: a deliverable
-        # deleted since the job finished is None on both sides, which is why
-        # the remote backing asks the daemon instead of reading its own copy
-        # of `outputs`.
-        Path(outputs[0]["path"]).unlink()
-        assert await client.find_output(job["job_id"], outputs[0]["name"]) is None
-    finally:
+    yield over
+    for client in opened:
         await client.aclose()
 
 
-@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
+# The model launches one job, asking for a named document in the deployment's
+# format — resolved to names before anything is shown (→ 0096).
+PROPOSED = {"type": "proposal", "query": "analyse it", "rationale": "multi-step",
+            "sources": [], "document_name": "chair_notes", "document_title": "Comparatif",
+            "formats": ["markdown"], "from_jobs": []}
+
+
+def chair_service(store, checkpointer, tmp_path, *, approval=True, sync_timeout=None):
+    """`approval=True` by default: the proposal is the richest terminal the port carries."""
+    return service_over(make_manager(store, checkpointer, tmp_path), [
+        launch_call("analyse it", "multi-step", document_name="chair_notes",
+                    document_title="Comparatif", formats=["default"]),
+        AIMessage(content="launched!"),
+    ], approval=approval, sync_timeout=sync_timeout)
+
+
+# ------------------------------------------------------------ jobs and outputs
+
+async def test_identical_answers_through_either_backing(store, checkpointer, tmp_path, through):
+    client = through(chair_service(store, checkpointer, tmp_path))
+    session_id = await client.new_session()
+    assert await client.send(session_id, "please analyse it") == PROPOSED
+    assert (await client.approve(session_id, True))["type"] == "message"
+
+    (job,) = await client.list_jobs(session_id=session_id)
+    finished = await wait_done(client, job["job_id"])
+    assert (finished["status"], finished["session_id"]) == ("done", session_id)
+    assert set(finished["results"]) == {"alpha"}
+    assert (await client.resolve_job(job["job_id"][:8]))["job_id"] == job["job_id"]
+
+    assert (await client.get_report(job["job_id"])).startswith("# ")
+    assert await client.get_report("nope") is None
+    assert await client.get_job("nope") is None
+
+    # a refusal is the port's dict on both sides, never an HTTP exception
+    refused = await client.resume_job(job["job_id"])
+    assert refused["status"] == "done" and "expected cancelled or failed" in refused["error"]
+    assert await client.resume_job("nope") == {
+        "job_id": "nope", "status": "unknown", "error": "unknown job: nope"}
+
+    outputs = await client.list_outputs(job["job_id"])
+    assert [(o["role"], o["format"]) for o in outputs] == [("main", "markdown")]
+    assert outputs[0]["path"] == finished["report_path"]
+    assert await client.find_output(job["job_id"], outputs[0]["name"]) == outputs[0]["path"]
+    assert await client.find_output(job["job_id"], "nothing.md") is None
+    assert await client.list_outputs("nope") is None
+    # the promise is about the FILE: deleted since, it is None on both sides
+    Path(outputs[0]["path"]).unlink()
+    assert await client.find_output(job["job_id"], outputs[0]["name"]) is None
+
+
 async def test_a_document_that_cannot_be_produced_is_refused_by_both_backings(
-    store, checkpointer, tmp_path, over_http
+    store, checkpointer, tmp_path, through
 ):
-    """A direct launch takes the same document decisions as the chat's (#55),
-    and the same refusals: a format nothing renders here, a name that is not a
-    filename. The embedded backing raises `ValueError` out of `create_job`;
-    over HTTP that is a 400 the client turns back into the same exception, so
-    a front-end never has to ask which backing it holds — and nothing is
-    launched either way.
-    """
-    service = _service_over(store, checkpointer, tmp_path)
-    client = daemon_client_over(create_api(service)) if over_http else service
-    try:
-        with pytest.raises(ValueError, match="unknown report format"):
-            await client.launch_job("compare them", formats=["docx"])
-        with pytest.raises(ValueError, match="document name"):
-            await client.launch_job("compare them", document_name="../escape")
-        assert await client.list_jobs() == []
+    """`ValueError` locally, a 400 turned back into it over HTTP. → 0055"""
+    client = through(chair_service(store, checkpointer, tmp_path))
+    with pytest.raises(ValueError, match="unknown report format"):
+        await client.launch_job("compare them", formats=["docx"])
+    with pytest.raises(ValueError, match="document name"):
+        await client.launch_job("compare them", document_name="../escape")
+    assert await client.list_jobs() == []
 
-        named = await client.launch_job(
-            "compare them", document_name="chair_notes",
-            document_title="Comparatif", formats=["markdown"])
-        finished = await wait_done(client, named["job_id"])
-        assert finished["document_name"] == "chair_notes"
-        assert finished["report_path"].endswith("chair_notes.md")
-    finally:
-        await client.aclose()
+    named = await client.launch_job("compare them", document_name="chair_notes",
+                                    document_title="Comparatif", formats=["markdown"])
+    finished = await wait_done(client, named["job_id"])
+    assert finished["document_name"] == "chair_notes"
+    assert finished["report_path"].endswith("chair_notes.md")
 
 
-@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
-async def test_a_job_that_wanted_no_document_reads_the_same_on_both_backings(
-    store, checkpointer, tmp_path, over_http
+@pytest.mark.parametrize("formats", [[], None], ids=["no-file", "silent"])
+async def test_no_document_reads_the_same_on_both_backings(
+    store, checkpointer, tmp_path, through, formats
 ):
-    """`formats=[]` is an ask the port has to carry, and the *absence* it
-    produces is one a front-end has to be able to name (#84).
+    """`[]` and `null` each cross HTTP as themselves, and both end with no file. → 0096"""
+    client = through(chair_service(store, checkpointer, tmp_path))
+    job = await wait_done(client, (await client.launch_job("just answer me",
+                                                           formats=formats))["job_id"])
 
-    Both halves cross HTTP here. The ask must survive as `[]` and not as
-    `null` — a JSON client that collapses them turns "no document" into "you
-    decide", and the job silently gets a file. And the answer must be the
-    same three facts on both sides: no report (None, not an exception — there
-    genuinely is none), no error, and `deliverable_expected` False saying
-    which absence it is. A caller that has to ask which backing it holds
-    before it can say why there is no file is a caller written against two
-    ports.
-    """
-    service = _service_over(store, checkpointer, tmp_path)
-    client = daemon_client_over(create_api(service)) if over_http else service
-    try:
-        launched = await client.launch_job("just answer me", formats=[])
-        job = await wait_done(client, launched["job_id"])
-
-        assert job["formats"] == []
-        assert job["deliverable_expected"] is False
-        assert job["report_path"] is None and job["error"] is None
-        assert job["final_answer"]                  # the answer is not the casualty
-        assert await client.get_report(job["job_id"]) is None
-        assert await client.list_outputs(job["job_id"]) == []
-
-        # ...and saying nothing ends the same way since #96 — no file — while
-        # staying a different fact on the record, on both backings: `null`
-        # must cross HTTP as `null`, or the engine's document step could
-        # never fill it from the sentence
-        silent = await wait_done(client, (await client.launch_job("compare them"))["job_id"])
-        assert silent["formats"] is None and silent["deliverable_expected"] is False
-        assert silent["report_path"] is None and silent["error"] is None
-        assert await client.get_report(silent["job_id"]) is None
-    finally:
-        await client.aclose()
+    assert job["formats"] == formats and job["deliverable_expected"] is False
+    assert job["report_path"] is None and job["error"] is None and job["final_answer"]
+    assert await client.get_report(job["job_id"]) is None
+    assert await client.list_outputs(job["job_id"]) == []
 
 
-@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
 async def test_a_binary_deliverable_is_refused_the_same_way_by_both_backings(
-    store, checkpointer, tmp_path, over_http
+    store, checkpointer, tmp_path, through
 ):
-    """`get_report` promises a string. A PDF has no reading as one, and both
-    of the silent answers would be false — `None` says the job has no report,
-    and decoding it says nothing intelligible. So the port refuses and names
-    the download, and it must refuse in the same words whether the job ran in
-    this process or behind a daemon: over HTTP that is a 415 the client turns
-    back into the same exception.
-    """
-    service = _service_over(store, checkpointer, tmp_path)
+    """`get_report` promises a string: a PDF is refused, naming its download. → 0034"""
+    service = chair_service(store, checkpointer, tmp_path)
     service.manager.reporter = StubPdf()
-    client = daemon_client_over(create_api(service)) if over_http else service
-    try:
-        launched = await client.launch_job("print it", formats=["default"])
-        job = await wait_done(client, launched["job_id"])
-        job_id = job["job_id"]
-        assert [(o["role"], o["format"]) for o in job["outputs"]] == [("main", "pdf")]
+    client = through(service)
+    job = await wait_done(client, (await client.launch_job("print it",
+                                                           formats=["default"]))["job_id"])
+    job_id = job["job_id"]
+    assert [(o["role"], o["format"]) for o in job["outputs"]] == [("main", "pdf")]
 
-        with pytest.raises(BinaryDeliverable) as refused:
-            await client.get_report(job_id)
-        assert str(refused.value) == (
-            f"the main deliverable of job {job_id} is pdf, which is not text "
-            f"\u2014 download it from /jobs/{job_id}/outputs/{job_id}.pdf"
-        )
-    finally:
-        await client.aclose()
+    with pytest.raises(BinaryDeliverable) as refused:
+        await client.get_report(job_id)
+    assert str(refused.value) == (
+        f"the main deliverable of job {job_id} is pdf, which is not text "
+        f"— download it from /jobs/{job_id}/outputs/{job_id}.pdf")
 
 
 async def test_a_deliverable_declared_binary_is_refused_without_reading_it(tmp_path):
-    """The declared format is believed on its own — the refusal must not hang
-    on the bytes happening to fail a decode. A PDF whose first kilobyte is
-    valid UTF-8 would otherwise be printed to a terminal, and the job's own
-    word for what it wrote is the cheaper and the earlier answer."""
+    """The declared format is believed; bytes that happen to decode change nothing."""
     path = tmp_path / "j1.pdf"
     path.write_text("this decodes perfectly well", encoding="utf-8")
     job = Job(job_id="j1", status=JobStatus.DONE, query="q",
@@ -322,35 +186,54 @@ async def test_a_deliverable_declared_binary_is_refused_without_reading_it(tmp_p
         async def get_job(self, job_id):
             return job if job_id == "j1" else None
 
-    service = LocalAgentService(OneJob(), None)
     with pytest.raises(BinaryDeliverable, match=r"outputs/j1\.pdf"):
-        await service.get_report("j1")
+        await LocalAgentService(OneJob(), None).get_report("j1")
+
+
+# ------------------------------------------------------------ live progress
+
+@asynccontextmanager
+async def _no_server():
+    yield ""
+
+
+@asynccontextmanager
+async def _serving(app):
+    """A real socket: `ASGITransport` buffers the whole body, so `/events` hangs on it."""
+    import uvicorn
+
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning",
+                                           lifespan="off", timeout_graceful_shutdown=2))
+    serving = asyncio.create_task(server.serve())
+    try:
+        while not server.started:
+            await asyncio.sleep(0.01)
+        yield f"http://127.0.0.1:{server.servers[0].sockets[0].getsockname()[1]}"
+    finally:
+        server.should_exit = True
+        await serving
+
+
+async def _await_subscription(service) -> None:
+    """The daemon-backed subscription connects in the background: wait for it."""
+    await until(lambda: service.manager.events._subscribers,
+                what="the event stream reaching the service")
 
 
 @pytest.mark.parametrize("over_http", [
     pytest.param(False, id="local"),
-    # The only case in this file that actually starts a uvicorn server (see
-    # `_serving`) — marked so `make test-fast` need not bind a real socket.
-    pytest.param(True, id="http", marks=pytest.mark.slow),
+    pytest.param(True, id="http", marks=pytest.mark.slow),   # binds a real socket
 ])
 async def test_progress_events_reach_either_backing(store, checkpointer, tmp_path, over_http):
-    """A front-end must not have to ask which backing it holds to see a job move.
-
-    `subscribe` was in-process only until #48: the daemon published to
-    `/events` and nothing consumed it, so live progress worked embedded and
-    not at all against a daemon. Both now hand back a queue of the same
-    dicts, in the same order, ending on the same terminal event.
-    """
-    service = _service_over(store, checkpointer, tmp_path)
+    """Same dicts, same order, same terminal event — the plan before any step lands."""
+    service = chair_service(store, checkpointer, tmp_path)
     async with (_serving(create_api(service)) if over_http else _no_server()) as url:
         client = (DaemonClient(url, httpx.AsyncClient(base_url=url, timeout=None))
                   if over_http else service)
         try:
             queue = client.subscribe()
             await _await_subscription(service)
-
-            launched = await client.launch_job("watch it", formats=["default"])
-            job_id = launched["job_id"]
+            job_id = (await client.launch_job("watch it", formats=["default"]))["job_id"]
             seen = []
             while not seen or seen[-1]["status"] not in ("done", "failed"):
                 seen.append(await asyncio.wait_for(queue.get(), timeout=10))
@@ -358,224 +241,110 @@ async def test_progress_events_reach_either_backing(store, checkpointer, tmp_pat
             assert [e["status"] for e in seen] == [
                 "queued", "running", "running", "running", "done"]
             assert all(e["job_id"] == job_id for e in seen)
-            # Four events before a step lands, and the third is the plan: a
-            # watcher drawing the DAG sees it as soon as it exists, rather
-            # than waiting out the first step for a picture it already has.
             assert [e["steps_done"] for e in seen] == [[], [], [], ["alpha"], ["alpha"]]
             assert seen[-1]["report_path"].endswith(f"{job_id}.md")
-
             client.unsubscribe(queue)
         finally:
             await client.aclose()
 
 
-@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
-async def test_a_turn_is_the_same_flow_through_either_backing(
-    store, checkpointer, tmp_path, over_http
+# ------------------------------------------------------------ a turn
+
+async def test_a_proposed_turn_is_the_same_flow_through_either_backing(
+    store, checkpointer, tmp_path, through
 ):
-    """A turn is a flow, and both backings emit the same one.
+    """The gate path: one terminal, then an approval that is a turn like any other."""
+    client = through(chair_service(store, checkpointer, tmp_path))
+    session_id = await client.new_session()
 
-    Not "both work": the same events, in the same order, ending on the same
-    terminal — because a front-end that rendered a daemon-backed turn
-    differently from an embedded one would be written against two ports. The
-    approval round trip is streamed too: a post-approval reply is a turn like
-    any other.
-    """
-    service = _service_over(store, checkpointer, tmp_path)
-    client = daemon_client_over(create_api(service)) if over_http else service
-    try:
-        session_id = await client.new_session()
+    proposing = [e async for e in client.stream(session_id, "please analyse it")]
+    assert {"type": "tool_started", "name": "launch_job"} in proposing
+    assert proposing[-1] == PROPOSED                     # a list on both sides, never a tuple
+    assert [e["type"] for e in proposing].count("proposal") == 1
 
-        proposing = [e async for e in client.stream(session_id, "please analyse it")]
-        assert {"type": "tool_started", "name": "launch_job"} in proposing
-        # `sources` rides on the terminal and must survive the HTTP round
-        # trip as the same JSON — a list on both sides, never a tuple.
-        assert proposing[-1] == {"type": "proposal", "query": "analyse it",
-                                 "rationale": "multi-step", "sources": [],
-                                 "document_name": "chair_notes",
-                                 "document_title": "Comparatif",
-                                 "formats": ["markdown"], "from_jobs": []}
-
-        answering = [e async for e in client.stream_approval(session_id, True)]
-        assert {"type": "tool_finished", "name": "launch_job"} in answering
-        tokens = [e["text"] for e in answering if e["type"] == "token"]
-        assert len(tokens) > 1, "the answer arrived in one piece on this backing"
-        # The gate decides WHETHER the task runs, never how: an approved run
-        # is the same synchronous run as an un-gated one, so the turn carries
-        # the job's answer and then the model's own sentence — and the
-        # terminal carries both, which is what `test_a_turn_answers_the_same_
-        # whether_it_is_waited_for_or_watched` is about.
-        assert "".join(tokens).endswith("launched!")
-        assert answering[-1] == {"type": "message", "content": "".join(tokens)}
-
-        # ...and `send` is that same flow drained, on either backing
-        assert await client.send(session_id, "anything else?") == {
-            "type": "message", "content": "launched!"}
-    finally:
-        await client.aclose()
+    answering = [e async for e in client.stream_approval(session_id, True)]
+    assert {"type": "tool_finished", "name": "launch_job"} in answering
+    tokens = [e["text"] for e in answering if e["type"] == "token"]
+    assert len(tokens) > 1, "the answer arrived in one piece on this backing"
+    streamed = "".join(tokens)
+    # the run's answer, then the model's sentence — never what the tool told the model
+    assert streamed.endswith("launched!") and len(streamed) > len("launched!")
+    assert "ALREADY been shown" not in streamed
+    assert answering[-1] == {"type": "message", "content": streamed}
 
 
-@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
-async def test_a_turn_answers_the_same_whether_it_is_waited_for_or_watched(
-    store, checkpointer, tmp_path, over_http
+async def test_a_task_runs_in_the_turn_and_send_is_told_what_stream_showed(
+    store, checkpointer, tmp_path, through
 ):
-    """#50's invariant, on the turn where it can now break.
+    """The nominal path: the notice, then the job's answer as tokens; and the
+    terminal of `send` is that same text, not the model's last message. → 0083"""
+    client = through(chair_service(store, checkpointer, tmp_path, approval=False))
+    watched = await client.new_session()
+    events = [e async for e in client.stream(watched, "please analyse it")]
 
-    `send` is `terminal_of(self.stream(...))`, so a turn is driven in one
-    place — but that only guarantees the two callers see the same *flow*, not
-    that the terminal says what the flow delivered. The terminal used to be
-    the model's own last message, which was the same string while the tokens
-    came from that message too. #83 broke the tie: the job's answer is
-    written into the turn by the tool and the model's reply is one sentence,
-    so a terminal built from the model hands a caller that waits an answer
-    with the result cut out of it — `POST /sessions/{id}/messages`, which is
-    the surface a web UI will use (#8).
+    (started,) = [e for e in events if e["type"] == "job_started"]
+    (job,) = await client.list_jobs(session_id=watched)
+    expected = {k: v for k, v in PROPOSED.items() if k != "type"}
+    assert started == {"type": "job_started", "job_id": job["job_id"], **expected}
 
-    Two sessions of the same scripted model, one drained by `stream` and one
-    by `send`, and the texts must be identical. The parity tests above cannot
-    catch this: they compare the two backings, and both would be wrong in the
-    same way.
-    """
-    service = _service_over(store, checkpointer, tmp_path, approval=False)
-    client = daemon_client_over(create_api(service)) if over_http else service
-    try:
-        watched_id = await client.new_session()
-        events = [e async for e in client.stream(watched_id, "please analyse it")]
-        rendered = "".join(e["text"] for e in events if e["type"] == "token")
+    answer = (await client.get_job(job["job_id"]))["final_answer"]
+    streamed = "".join(e["text"] for e in events if e["type"] == "token")
+    assert answer and answer in streamed and streamed.endswith("launched!")
+    assert events[-1] == {"type": "message", "content": streamed}
 
-        waited_id = await client.new_session()
-        terminal = await client.send(waited_id, "please analyse it")
-
-        assert terminal["type"] == "message"
-        assert terminal["content"] == rendered
-        # ...and it is a turn that really ran a job, or this proves nothing
-        (job,) = await client.list_jobs(session_id=waited_id)
-        answer = (await client.get_job(job["job_id"]))["final_answer"]
-        assert answer and answer in terminal["content"], \
-            "a caller that waits was not given the answer the run produced"
-        assert terminal["content"].endswith("launched!"), \
-            "...nor the model's own sentence, in the order it was written"
-    finally:
-        await client.aclose()
+    # a second session, drained by `send`: the same text, the job's answer included
+    waited = await client.new_session()
+    assert await client.send(waited, "please analyse it") == {
+        "type": "message", "content": streamed}
 
 
-@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
-async def test_a_task_runs_inside_the_turn_on_either_backing(
-    store, checkpointer, tmp_path, over_http
-):
-    """The nominal path of #83, and it must cross HTTP identically.
-
-    Two things are new on the wire and both are part of the port now: the
-    `job_started` notice (which carries the three guarantees the approval
-    card used to, plus the job id), and the job's answer arriving as tokens
-    of the turn — verbatim, because the model never sees it. A daemon-backed
-    front-end that got either of those differently would be written against
-    two ports.
-    """
-    service = _service_over(store, checkpointer, tmp_path, approval=False)
-    client = daemon_client_over(create_api(service)) if over_http else service
-    try:
-        session_id = await client.new_session()
-        events = [e async for e in client.stream(session_id, "please analyse it")]
-
-        (started,) = [e for e in events if e["type"] == "job_started"]
-        (job,) = await client.list_jobs(session_id=session_id)
-        assert started == {"type": "job_started", "job_id": job["job_id"],
-                           "query": "analyse it", "rationale": "multi-step",
-                           "sources": [], "document_name": "chair_notes",
-                           "document_title": "Comparatif", "formats": ["markdown"],
-                           "from_jobs": []}
-
-        finished = await client.get_job(job["job_id"])
-        assert finished["status"] == "done"
-        answer = finished["final_answer"]
-        assert answer, "the job did not answer, so there is nothing to deliver"
-        streamed = "".join(e["text"] for e in events if e["type"] == "token")
-        assert answer in streamed
-        assert events[-1] == {"type": "message", "content": streamed}
-    finally:
-        await client.aclose()
-
-
-LONG_QUERY = ("compare the two ergonomic chairs on price, lumbar support, "
-              "warranty and delivery time")
+LONG_QUERY = "compare the two ergonomic chairs on price, lumbar support, warranty and delivery time"
 
 
 @pytest.mark.parametrize("approval", [False, True], ids=["notice", "proposal"])
-@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
 async def test_the_jobs_a_run_builds_on_cross_either_backing(
-    store, checkpointer, tmp_path, over_http, approval
+    store, checkpointer, tmp_path, through, approval
 ):
-    """#104: the earlier jobs a run is handed are shown like the files it may
-    open — on the notice and on the proposal, and identically on both
-    backings: a list of plain `{job_id, query}` dicts, never a tuple, with
-    each query cut on a word so the user recognises the job without the
-    notice restating it."""
+    """Plain `{job_id, query}` dicts, the query cut on a word. → 0104"""
     manager = make_manager(store, checkpointer, tmp_path)
     first = await manager.create_job(LONG_QUERY, session_id="s-builds")
     second = await manager.create_job("price the standing desk", session_id="s-builds")
-    responses = [launch_call("a one-pager out of both", "builds on them",
-                             from_jobs=[first.job_id[:8], second.job_id[:8]]),
-                 AIMessage(content="launched!")]
-    saver = MemorySaver()
+    client = through(service_over(manager, [
+        launch_call("a one-pager out of both", "builds on them",
+                    from_jobs=[first.job_id[:8], second.job_id[:8]]),
+        AIMessage(content="launched!"),
+    ], approval=approval))
 
-    def session_factory(session_id=None):
-        from jobsmith.chat import ChatSession
-        return ChatSession(manager, ScriptedChatModel(responses=list(responses)),
-                           session_id=session_id, checkpointer=saver,
-                           approval_required=approval)
-
-    service = LocalAgentService(manager, session_factory)
-    client = daemon_client_over(create_api(service)) if over_http else service
-    try:
-        session_id = await client.new_session("s-builds")
-        events = [e async for e in client.stream(session_id, "one-pager out of both")]
-        (shown,) = [e for e in events if e["type"] in ("job_started", "proposal")]
-        assert shown["type"] == ("proposal" if approval else "job_started")
-        assert shown["from_jobs"] == [
-            {"job_id": first.job_id,
-             "query": "compare the two ergonomic chairs on price, lumbar support…"},
-            {"job_id": second.job_id, "query": "price the standing desk"},
-        ]
-    finally:
-        await client.aclose()
+    session_id = await client.new_session("s-builds")
+    events = [e async for e in client.stream(session_id, "one-pager out of both")]
+    (shown,) = [e for e in events if e["type"] in ("job_started", "proposal")]
+    assert shown["type"] == ("proposal" if approval else "job_started")
+    assert shown["from_jobs"] == [
+        {"job_id": first.job_id,
+         "query": "compare the two ergonomic chairs on price, lumbar support…"},
+        {"job_id": second.job_id, "query": "price the standing desk"},
+    ]
 
 
-# A plan worth announcing (#86): two steps that run together, then a chain.
+# ------------------------------------------------------------ the plan, in the turn → 0086
 
-
-@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
 async def test_the_plan_crosses_either_backing_between_the_notice_and_the_answer(
-    store, checkpointer, tmp_path, over_http
+    store, checkpointer, tmp_path, through
 ):
-    """#86: `job_planned` carries the plan as the planner left it — steps in
-    plan order, each with its dependencies, as plain lists — identically on
-    both backings, after the notice that names the job and before the answer
-    the job produced. It is not a token, so the reply a caller that waits is
-    handed does not contain it."""
-    manager = planned_manager(store, checkpointer, tmp_path)
-    service = planned_service(manager)
-    client = daemon_client_over(create_api(service)) if over_http else service
-    try:
-        session_id = await client.new_session()
-        events = [e async for e in client.stream(session_id, "please analyse it")]
-        (job,) = await client.list_jobs(session_id=session_id)
+    client = through(planned_service(planned_manager(store, checkpointer, tmp_path)))
+    session_id = await client.new_session()
+    events = [e async for e in client.stream(session_id, "please analyse it")]
+    (job,) = await client.list_jobs(session_id=session_id)
 
-        (planned,) = [e for e in events if e["type"] == "job_planned"]
-        assert planned == {"type": "job_planned", "job_id": job["job_id"],
-                           "steps": PLANNED_STEPS}
-        kinds = [e["type"] for e in events]
-        assert kinds.index("job_started") < kinds.index("job_planned") < kinds.index("token")
-        assert "analysis" not in events[-1]["content"], "the plan leaked into the reply"
-    finally:
-        await client.aclose()
+    (planned,) = [e for e in events if e["type"] == "job_planned"]
+    assert planned == {"type": "job_planned", "job_id": job["job_id"], "steps": PLANNED_STEPS}
+    kinds = [e["type"] for e in events]
+    assert kinds.index("job_started") < kinds.index("job_planned") < kinds.index("token")
+    assert "analysis" not in events[-1]["content"], "the plan leaked into the reply"
 
 
 async def test_the_plan_is_shown_while_the_run_is_still_going(store, checkpointer, tmp_path):
-    """The point of #86, observed: the plan reaches the turn while the first
-    step is still held — not discovered once the run is over. The gate only
-    opens when the turn has shown the plan, so a plan that travelled late
-    would hang here (bounded by the timeout) rather than pass."""
+    """The first step is held until the plan is shown: a late plan hangs, not passes."""
     gate = Gate("web_search")
     manager = planned_manager(store, checkpointer, tmp_path, gate=gate)
     service = planned_service(manager)
@@ -599,10 +368,6 @@ async def test_the_plan_is_shown_while_the_run_is_still_going(store, checkpointe
 async def test_a_run_faster_than_its_watch_still_has_its_plan_said_first(
     store, checkpointer, tmp_path, monkeypatch
 ):
-    """The watch reads the manager's events at its own pace; a run can end
-    before it has caught up (a busy daemon, a slow store). What the run
-    published before it ended is still said — and in order, before its
-    answer — because the waiter drains the watch instead of dropping it."""
     manager = planned_manager(store, checkpointer, tmp_path)
 
     class Lagging(asyncio.Queue):
@@ -618,8 +383,7 @@ async def test_a_run_faster_than_its_watch_still_has_its_plan_said_first(
     monkeypatch.setattr(manager, "subscribe", lagging_subscribe)
     service = planned_service(manager)
     session_id = await service.new_session()
-    events = [e async for e in service.stream(session_id, "please analyse it")]
-    kinds = [e["type"] for e in events]
+    kinds = [e["type"] async for e in service.stream(session_id, "please analyse it")]
     assert "job_planned" in kinds, "the plan was lost to a watch that fell behind"
     assert kinds.index("job_planned") < kinds.index("token")
 
@@ -627,107 +391,71 @@ async def test_a_run_faster_than_its_watch_still_has_its_plan_said_first(
 async def test_a_one_step_plan_and_a_direct_answer_announce_nothing(
     store, checkpointer, tmp_path
 ):
-    """A plan of one step tells nothing the notice did not, and a reply that
-    ran no job has no plan: neither turn carries `job_planned`."""
-    one_step = _service_over(store, checkpointer, tmp_path, approval=False)
+    one_step = chair_service(store, checkpointer, tmp_path, approval=False)
     session_id = await one_step.new_session()
-    events = [e async for e in one_step.stream(session_id, "please analyse it")]
-    assert "job_started" in [e["type"] for e in events], "no job ran; this proves nothing"
-    assert "job_planned" not in [e["type"] for e in events]
+    kinds = [e["type"] async for e in one_step.stream(session_id, "please analyse it")]
+    assert "job_started" in kinds and "job_planned" not in kinds
 
     direct = planned_service(planned_manager(store, checkpointer, tmp_path),
                              responses=[AIMessage(content="Paris.")])
     session_id = await direct.new_session()
-    events = [e async for e in direct.stream(session_id, "capital of France?")]
-    assert [e["type"] for e in events] == ["token"] * (len(events) - 1) + ["message"]
+    kinds = [e["type"] async for e in direct.stream(session_id, "capital of France?")]
+    assert kinds == ["token"] * (len(kinds) - 1) + ["message"]
 
 
 async def test_a_promoted_run_says_nothing_of_its_plan_once_the_turn_is_over(
     store, checkpointer, tmp_path
 ):
-    """#86, the promoted case: the plan travels only while the turn waits.
-    With no wait at all (`0`), the turn ends before the planner answers and
-    nothing about the plan is written — not into that turn, and the watch
-    does not outlive it (no subscriber left on the manager). The plan is
-    still on the record, where the progress notice, the jobs pane and `/job`
-    read it."""
+    """The plan travels only while the turn waits; it stays on the record."""
     gate = Gate("web_search")
     manager = planned_manager(store, checkpointer, tmp_path, gate=gate)
     service = planned_service(manager, sync_timeout=0)
     session_id = await service.new_session()
-    events = [e async for e in service.stream(session_id, "please analyse it")]
-    assert "job_started" in [e["type"] for e in events]
-    assert "job_planned" not in [e["type"] for e in events]
+    kinds = [e["type"] async for e in service.stream(session_id, "please analyse it")]
+    assert "job_started" in kinds and "job_planned" not in kinds
     assert not manager.events._subscribers, "the watch outlived the turn"
 
     (job,) = await service.list_jobs(session_id=session_id)
-    for _ in range(500):                       # the run goes on, unwatched
-        if (await service.get_job(job["job_id"]))["plan"]:
-            break
-        await asyncio.sleep(0.01)
+    async def planned():                       # the run goes on, unwatched
+        return (await service.get_job(job["job_id"]))["plan"]
+
+    await until(planned, what="the plan reaching the record")
     gate.open.set()
     finished = await wait_done(service, job["job_id"])
     assert [s["capability"] for s in finished["plan"]["steps"]] == [
         s["capability"] for s in PLANNED_STEPS]
 
 
-async def test_the_event_reader_survives_a_line_it_cannot_read():
-    """One unreadable line must not end the stream.
+# ------------------------------------------------------------ the event reader → 0048
 
-    Scripted through `httpx.MockTransport` rather than a server because the
-    point is a body a well-behaved daemon does not send: an SSE comment, and
-    a `data:` that is not JSON. Dropping the connection there would cost the
-    caller every event after it, which is a worse answer than skipping the
-    line nobody can interpret.
-    """
-    client = _scripted_client(
-        ": keep-alive", "",
-        "data: {not json at all}", "",
-        'data: {"job_id": "a", "status": "running"}', "",
-        'data: {"job_id": "a", "status": "done"}', "",
-    )
+async def test_the_event_reader_survives_a_line_it_cannot_read():
+    """A comment or a non-JSON `data:` is skipped, not the end of the stream."""
+    client = sse_client(": keep-alive", "", "data: {not json at all}", "",
+                        'data: {"job_id": "a", "status": "running"}', "",
+                        'data: {"job_id": "a", "status": "done"}', "")
     try:
         queue = client.subscribe()
         await asyncio.wait_for(asyncio.shield(client._readers[queue]), timeout=5)
         assert [queue.get_nowait() for _ in range(queue.qsize())] == [
-            {"job_id": "a", "status": "running"},
-            {"job_id": "a", "status": "done"},
-            None,                       # ... and then the stream ended
-        ]
+            {"job_id": "a", "status": "running"}, {"job_id": "a", "status": "done"}, None]
     finally:
         await client.aclose()
 
 
-async def test_a_slow_consumer_loses_events_rather_than_stalling_the_reader():
-    """`InProcessEvents`' policy, one step further out.
-
-    A consumer that stopped draining must not block the reader: that would
-    stop reading the socket, which back-pressures the daemon's own stream —
-    so a UI that froze would slow the jobs it is watching. Events are dropped
-    instead, exactly as they are for an in-process subscriber.
-
-    The end-of-stream marker is the one thing that is not dropped, and the
-    drop rule is why: an event is droppable because the next one supersedes
-    it, and nothing supersedes "there will be no next one". So it takes the
-    place of the oldest tick still waiting.
-    """
-    client = _scripted_client(*[
-        line for i in range(5) for line in (f'data: {{"job_id": "{i}"}}', "")
-    ])
+async def test_a_slow_consumer_loses_events_but_never_the_end_of_the_stream():
+    """Events are dropped rather than stalling the reader; `None` takes the
+    oldest tick's place, since nothing supersedes "there is no next one"."""
+    client = sse_client(*[line for i in range(5) for line in (f'data: {{"job_id": "{i}"}}', "")])
     try:
-        queue = client.subscribe(max_queue=2)          # a consumer that never drains
+        queue = client.subscribe(max_queue=2)
         await asyncio.wait_for(asyncio.shield(client._readers[queue]), timeout=5)
-        assert queue.qsize() == 2                      # three events were dropped
         assert [queue.get_nowait() for _ in range(2)] == [{"job_id": "1"}, None]
     finally:
         await client.aclose()
 
 
 async def test_unsubscribing_releases_the_stream_the_subscription_held():
-    """A subscription is a live HTTP stream, so dropping the reference is not
-    enough — `unsubscribe` cancels the reader, and `aclose` awaits the unwind
-    (which is the difference between a sync port method and a closing one)."""
-    client = _scripted_client('data: {"job_id": "a"}', "")
+    client = sse_client('data: {"job_id": "a"}', "")
     queue = client.subscribe()
     reader = client._readers[queue]
     client.unsubscribe(queue)
@@ -737,44 +465,22 @@ async def test_unsubscribing_releases_the_stream_the_subscription_held():
 
 
 async def test_a_stream_that_ends_is_announced_rather_than_going_quiet(capsys):
-    """A stream that ends looks exactly like a stream with nothing to say.
-
-    A daemon shutting down closes `/events` without an error, and whoever is
-    awaiting the queue would wait on a connection that no longer exists. The
-    note goes to stderr, where every diagnostic in this layer goes: the queue
-    carries events, so saying it there would mean inventing one.
-    """
-    client = _scripted_client('data: {"job_id": "a"}', "")
+    """On stderr for a human, and `None` on the queue for a front-end that owns the terminal."""
+    client = sse_client('data: {"job_id": "a"}', "")
     try:
         queue = client.subscribe()
         await asyncio.wait_for(asyncio.shield(client._readers[queue]), timeout=5)
         assert queue.get_nowait() == {"job_id": "a"}
         assert "closed by the daemon" in capsys.readouterr().err
-        # And on the queue as well, because stderr is the wrong place to say
-        # it to a front-end: `jobsmith ui` owns the terminal, so the note
-        # above goes nowhere it can show. `None` is the port's marker for
-        # "nothing more will arrive here", and it is the last thing carried.
-        assert queue.get_nowait() is None
-        assert queue.empty()
+        assert queue.get_nowait() is None and queue.empty()
     finally:
         await client.aclose()
 
 
-# ------------------------------------- a backing that is not there at all
-
-
-def _unreachable_client() -> DaemonClient:
-    """A DaemonClient whose every request fails to reach anything."""
-    def refused(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("connection refused", request=request)
-
-    return DaemonClient("http://test", httpx.AsyncClient(
-        transport=httpx.MockTransport(refused), base_url="http://test", timeout=None))
-
+# ------------------------------------------------------------ a backing that is not there → 0064
 
 def _port_calls(client: AgentService) -> dict:
-    """Every use case a front-end can drive, as callables. One per method, so
-    a method added to the port without a translation is a missing key here."""
+    """One per use case: a method added without a translation is a missing key."""
     return {
         "new_session": lambda: client.new_session(),
         "launch_job": lambda: client.launch_job("q"),
@@ -791,17 +497,10 @@ def _port_calls(client: AgentService) -> dict:
 
 
 async def test_a_backing_that_cannot_be_reached_is_refused_by_the_port():
-    """Every call, one exception, and it is the port's own.
+    def refused(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
 
-    Without this the remote backing answers with `httpx.ConnectError` — a fact
-    about the transport, not about the use case — so a front-end would have to
-    know which backing it holds to catch it, or wrap every call in a broad
-    `except` that swallows its own bugs along with the daemon's absence. It is
-    asked of *every* method rather than of one, because a translation that
-    covers nine calls and misses the tenth is exactly the crash the tenth
-    caller gets.
-    """
-    client = _unreachable_client()
+    client = mock_client(refused)
     try:
         for name, call in _port_calls(client).items():
             with pytest.raises(ServiceUnavailable) as gone:
@@ -812,19 +511,11 @@ async def test_a_backing_that_cannot_be_reached_is_refused_by_the_port():
 
 
 async def test_a_daemon_that_answers_badly_is_not_called_unreachable():
-    """The narrowing must stay narrow: only *not reaching* the daemon is
-    translated. A 500 means the daemon is there and something in it broke —
-    a defect somebody should see as one, not a reconnect message. Anything
-    else caught here would be the broad `except` this exists to avoid."""
-    client = DaemonClient("http://test", httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda r: httpx.Response(500, text="boom")),
-        base_url="http://test", timeout=None))
+    """A 500 is a defect, on the plain and on the streamed path."""
+    client = mock_client(lambda r: httpx.Response(500, text="boom"))
     try:
         with pytest.raises(httpx.HTTPStatusError):
             await client.list_jobs()
-        # ...and on the streamed path too, which is where a tuple one class
-        # too wide would actually swallow it: `raise_for_status` is called
-        # inside the `async with`, so the translation sees it.
         with pytest.raises(httpx.HTTPStatusError):
             await client.send("s", "hello")
     finally:
@@ -832,18 +523,9 @@ async def test_a_daemon_that_answers_badly_is_not_called_unreachable():
 
 
 async def test_the_local_backing_never_dresses_a_bug_as_an_absent_backing():
-    """The other half of the same rule, on the other backing.
-
-    A process cannot lose contact with itself, so `LocalAgentService` raises
-    `ServiceUnavailable` never — and a `KeyError` from our own code stays a
-    `KeyError`. Translating it would put a reconnect message where a stack
-    trace belongs, which is the failure mode the issue that asked for this
-    named first.
-    """
     class Broken:
         async def list_jobs(self, **kwargs):
             raise KeyError("a defect in this process")
 
-    service = LocalAgentService(Broken(), None)
     with pytest.raises(KeyError):
-        await service.list_jobs()
+        await LocalAgentService(Broken(), None).list_jobs()
