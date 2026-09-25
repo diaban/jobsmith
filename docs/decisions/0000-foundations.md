@@ -2,8 +2,9 @@
 
 - **Issue:** none — these predate the issue that would have carried them; a passage's origin commit is found with `git log -S '<phrase>' -- CLAUDE.md`
 - **Status:** accepted · partially superseded by [0085](0085-answer-in-the-conversation.md) · partially superseded by [0096](0096-no-document-unless-asked.md)
-- **Source:** migrated verbatim from `CLAUDE.md` at `8326b98` (#102). The text is the original; only the headings (which section of `CLAUDE.md` it lived in) and the links were added.
+- **Source:** migrated verbatim from `CLAUDE.md` at `8326b98` (#102). The text is the original; only the headings (which section of `CLAUDE.md` it lived in) and the links were added. The scribe moved the `providers.py` bullet here verbatim from `CLAUDE.md` on 2026-09-25 (from "The composition root (`app/`)"), to hold the budget (→ `tests/test_claude_md_budget.py`); `CLAUDE.md` keeps a one-line rule for it with `→ 0000`.
 - **Note (scribe, 2026-09-24):** the "Commands" passage below says a promoted run ends in "a synthesis + report path on a later turn" — since [0085](0085-answer-in-the-conversation.md) (#85) the answer comes back verbatim, not synthesised, and since [0096](0096-no-document-unless-asked.md) (#96) there is a report path only if the request asked for one. Flagged, not fixed, in #103; marked here rather than rewritten.
+- **Note (scribe, 2026-09-25):** the scribe moved the `cli/client.py` bullet here verbatim from `CLAUDE.md` (from "CLI + daemon"), to hold the budget (→ `tests/test_claude_md_budget.py`); `CLAUDE.md` keeps a one-line rule for it with `→ 0000`.
 
 ## From “Commands”
 
@@ -18,6 +19,8 @@ This exists because green checks on a stale base do not mean the merge is green.
 `make coverage` reports per-module coverage (89% overall; `jobs/` and most of `core/` at 100%). The thin areas are still the interactive layers — `cli/main.py` 51%, `cli/repl.py` 72%, `chat/tools.py` 78% — so a change landing there needs its tests written *with* it, not after. `cli/repl.py` is only that high because #50's rendering arrived with its tests; the argparse entrypoint has none of that. **These figures are undated**: no commit records when they were measured, and the scribe has not re-run `make coverage` to refresh them (2026-09-24).
 
 ## From “CLI + daemon (`cli/`) — where jobs actually run”
+
+- `cli/client.py` — two backings for that one port: `DaemonClient` (HTTP, `persistent=True`) and `EmbeddedClient` (`persistent=False`), the latter being *nothing but* `LocalAgentService` owning the app it composed. `open_client()` probes `GET /health` and falls back to embedded, **printing the trade-off on stderr**. `AgentClient` remains as the CLI's alias for `AgentService`.
 
 **All diagnostics go to stderr** (provider/persistence/daemon banners) — stdout stays pipeable (`jobsmith jobs | cut -d' ' -f1`). The REPL's streamed turn splits the same way: the answer's tokens go to stdout as they arrive, tool activity (`… sizing up a background job`) to stderr, because "what it is doing right now" is over the moment it is read. Both are flushed per write — a line still being written has no newline to trigger one, and an unflushed answer is the silence this replaced.
 
@@ -36,6 +39,8 @@ This exists because green checks on a stale base do not mean the merge is green.
 `agents/banking/`: the domain example — capabilities, its **own ports** (`deps.py`: `SearchEngine`/`VisionClient`/`S3Client` Protocols), **its own adapters** (`fakes.py`, assembled in `open_banking_resources`), and a French profile. The ports live next to the capabilities that consume them, never in a central `ports/` package: that is what keeps them scaling with their consumers, and a port is shaped by the *need*, not by the vendor's API. `demo.py` runs the whole product with richer fakes injected through `build_app(resources=...)`. `vision` is registered **only when the composed LLM actually satisfies `VisionClient`** — the framework's `LLMClient` promises `chat` and nothing more, and the same rule the default agent applies to `documents` applies here: a capability nothing can serve stays out of the registry rather than becoming a planned step that raises `AttributeError` halfway through a job.
 
 ## From “The composition root (`app/`)”
+
+- `providers.py`: `pick_provider` (one `--llm=` flag / key auto-detect shared by both LLM stacks), `make_llm` (job engine, `clients.py` adapters), `make_chat_model` (LangChain), `load_dotenv`, and the keyless fakes — `KeywordLLM` plans by **parsing capability names out of the rendered planner prompt** (works with any registry), `KeywordChatModel` runs a job on analysis-ish keywords (since #83: synchronous by default, no proposal card unless `$JOBSMITH_APPROVE_JOBS` is set).
 
 **Why `build_app` is async**: real backends must be opened in the event loop that will use them. `python -m jobsmith api` therefore serves with `await uvicorn.Server(config).serve()` inside that same loop — `uvicorn.run()` would start its own loop and strand the pool. **SQLite gotcha** (cost an hour): the *store* needs `isolation_level=None` (it drives its own `BEGIN`/`COMMIT`; under implicit transactions its first write leaves one open and the next `BEGIN` raises "cannot start a transaction within a transaction"), the *saver* keeps the default; never run a stray `PRAGMA` on those live connections (it opens a transaction and deadlocks the other connection) — WAL is set once on a throwaway connection, and the busy timeout via `connect(timeout=...)`.
 
