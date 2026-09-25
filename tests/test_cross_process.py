@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 from conftest import FakeLLM, plan_json
-from support import CountingEcho
+from support import CountingEcho, until
 
 from jobsmith.app.persistence import open_persistence
 from jobsmith.core.builder import build_agent
@@ -51,19 +51,11 @@ async def process(db: str, tmp_path, *, slow_delay: float = 30.0,
         yield mgr
 
 
-async def until(predicate, *, timeout: float = 10.0, every: float = 0.02):
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
-        value = await predicate()
-        if value:
-            return value
-        await asyncio.sleep(every)
-    raise AssertionError("condition never held")
-
-
 async def running_in_slow(mgr: JobManager, job_id: str) -> Job | None:
-    """The job is RUNNING and inside its second step (alpha is stored)."""
+    """The job is RUNNING and past its first step (alpha is stored) — what the
+    RECORD can say, which is not yet "inside `slow`": a checkpoint write and a
+    dispatch lie between (#113). A test that needs the step started waits on
+    the step itself (`start_slow_job`)."""
     job = await mgr.get_job(job_id)
     if job and job.status is JobStatus.RUNNING and "alpha" in job.results:
         return job
@@ -71,9 +63,15 @@ async def running_in_slow(mgr: JobManager, job_id: str) -> Job | None:
 
 
 async def start_slow_job(owner: JobManager) -> tuple[Job, asyncio.Task]:
+    """Start a job and return once it is inside `slow`, its second step."""
     job = await owner.create_job("a job worth stopping")
     task = owner.start_job(job.job_id)
-    await until(lambda: running_in_slow(owner, job.job_id))
+    _alpha, slow = owner.caps                  # type: ignore[attr-defined]
+
+    async def inside_slow() -> Job | None:
+        return await running_in_slow(owner, job.job_id) if slow.runs else None
+
+    await until(inside_slow, what="the second step starting", seconds=10)
     return job, task
 
 
@@ -310,11 +308,23 @@ async def test_an_owner_that_lost_its_lease_stops_without_writing(tmp_path):
     async with process(db, tmp_path, policy=owner_policy) as owner, \
             process(db, tmp_path) as other:
         job, task = await start_slow_job(owner)
+        # The stall made a fact, not a bet on the clock: the owner's next
+        # heartbeat read waits until the settlement is written — left to its
+        # tick, it could read the fence before `_settle` and see RUNNING (#113).
+        settled = asyncio.Event()
+        load_control = owner.repo.load_control
+
+        async def stalled_until_settled(job_id):
+            await settled.wait()
+            return await load_control(job_id)
+
+        owner.repo.load_control = stalled_until_settled   # type: ignore[method-assign]
         # what `recover_interrupted` does to a job whose lease it saw expire
         judged = await other.get_job(job.job_id)
         control = await other.repo.load_control(job.job_id)
         (taken,) = await other._take_over([(judged, control)])
         await other._settle(taken, JobStatus.FAILED, "interrupted: judged dead")
+        settled.set()                                    # ...and now the owner wakes
 
         returned = await asyncio.wait_for(task, 5)
         assert returned.status is JobStatus.FAILED
@@ -390,7 +400,7 @@ async def settled_checkpoint(mgr: JobManager, job_id: str) -> None:
     this waits for the frontier to be written and to stay written.
     """
     for _ in range(2):
-        await until(lambda: mgr.runner.pending(job_id), timeout=10)
+        await until(lambda: mgr.runner.pending(job_id), what="a pending step", seconds=10)
         await asyncio.sleep(0.5)
 
 
@@ -401,7 +411,8 @@ async def test_a_cancel_crosses_a_real_process_boundary_and_resumes(tmp_path):
     proc, job_id = await spawn_owner(db, tmp_path)
     try:
         async with process(db, tmp_path, slow_delay=0.0) as here:
-            await until(lambda: running_in_slow(here, job_id), timeout=30)
+            await until(lambda: running_in_slow(here, job_id), what="the job past its first step",
+                        seconds=30)
             await settled_checkpoint(here, job_id)
 
             stopped = await here.cancel_job(job_id)
@@ -430,7 +441,8 @@ async def test_a_killed_owner_is_recovered_at_once_and_resumes(tmp_path):
     try:
         async with process(db, tmp_path, slow_delay=0.0,
                            policy=LeasePolicy()) as here:     # production TTL
-            await until(lambda: running_in_slow(here, job_id), timeout=30)
+            await until(lambda: running_in_slow(here, job_id), what="the job past its first step",
+                        seconds=30)
             await settled_checkpoint(here, job_id)
             proc.kill()
             await proc.wait()
