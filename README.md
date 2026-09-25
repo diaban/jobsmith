@@ -361,7 +361,7 @@ It is a **capability, not a report format**, and the difference is the point.
 A report is prose and a Reporter only serializes it; a deck is a different
 document — sections, one idea per slide, bullets, speaker notes — so the deck
 is *designed* by the model as its own step, which is why its tokens are booked
-to it like every other step's. The written report is still delivered:
+to it like every other step's. The written answer is still delivered:
 the deck is one more thing the job produced, never a substitute for the
 answer. Like the two above, the step is registered only when something can
 render it (`python-pptx`, pure Python, no system libraries).
