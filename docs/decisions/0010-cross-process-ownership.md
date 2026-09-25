@@ -2,7 +2,7 @@
 
 - **Issue:** #10 · **PR:** #101
 - **Status:** accepted · partially superseded by [0063](0063-persistent-by-default.md)
-- **Source:** migrated verbatim from `CLAUDE.md` at `8326b98` (#102). The text is the original; only the headings (which section of `CLAUDE.md` it lived in) and the links were added.
+- **Source:** migrated verbatim from `CLAUDE.md` at `8326b98` (#102). The text is the original; only the headings (which section of `CLAUDE.md` it lived in) and the links were added. The scribe moved the "Interrupted jobs" bullet here verbatim from `CLAUDE.md` on 2026-09-25 (from "The composition root (`app/`)"), to hold the budget (→ `tests/test_claude_md_budget.py`); `CLAUDE.md` keeps a one-line rule for it with `→ 0010`.
 - **See also:** [0063](0063-persistent-by-default.md), [0005](0005-resume.md)
 
 ## From “Jobs layer (`jobs/`)”
@@ -30,3 +30,7 @@
 - **Tested across a real process boundary**, because in-process doubles are how this stayed invisible — a pid that is ours is always alive and a task we hold is always cancellable. `tests/test_cross_process.py` drives two managers over one SQLite file for most properties, and runs `tests/owner_process.py` as a subprocess for two: a cancel from the test process stops the subprocess's run (whose `await run_job` returns CANCELLED and exits 0) and the job then resumes here; a SIGKILLed owner is recovered at once from its missing pid, with the production 30 s TTL still valid.
 
 **Events are still in-process, and that is a decision** (#100). #10's control channel is per *known* job — the owner reads two keys it already knows. A cross-process event feed asks "what changed anywhere since I last looked", which `BaseStore` cannot answer without reading the whole index each tick (no ordering, no range filter across backends): O(jobs) per subscriber, forever. So it is another `JobEvents` — Postgres `LISTEN/NOTIFY`; for SQLite `PRAGMA data_version` on a dedicated read-only connection, re-reading only when it moved — and not a manager change. Everything that reads the store (the chat's notices, `jobsmith jobs`, the TUI on F5) already sees other processes' jobs.
+
+## From "The composition root (`app/`)"
+
+- **Interrupted jobs**: `JobManager.recover_interrupted()` runs in `build_app` — RUNNING records whose owner is provably gone (on a shared store: lease expired or pid dead, see the jobs layer and #10; on memory: any with no task here) are leftovers from a dead process, marked FAILED (checkpoint retained for a future resume); a job another live process runs is left to it; QUEUED jobs stay runnable.
