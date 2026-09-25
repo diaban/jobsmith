@@ -12,15 +12,14 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
+from support import done_job, make_document
 
 from jobsmith.app import build_app
 from jobsmith.app.agent import pick_report_formats
 from jobsmith.app.providers import KeywordChatModel, KeywordLLM
-from jobsmith.core.usage import Usage
 from jobsmith.jobs import report as report_module
 from jobsmith.jobs.models import Job, JobOutput, JobStatus
 from jobsmith.jobs.report import (
-    JobDocument,
     MarkdownReport,
     MultiReporter,
     PlanRow,
@@ -29,40 +28,6 @@ from jobsmith.jobs.report import (
     make_reporter,
 )
 from jobsmith.jobs.report_html import HtmlReport, dag_svg, markdown_to_html
-
-
-def make_document(**over) -> JobDocument:
-    """The archive-shaped document: `provenance=True` unless a test says
-    otherwise.
-
-    Since #85 a deliverable shows one line about its run and nothing else, so
-    most of what this file asserts — the plan table, the DAG, the *About this
-    job* list — is the `with_provenance` rendering. The default is what
-    `test_the_page_a_reader_opens_carries_one_line_about_the_run` covers.
-    """
-    doc = JobDocument(
-        provenance=True,
-        title="compare A and B",
-        request="compare A and B",
-        job_id="j1",
-        created_at="2026-09-01T00:00:00Z",
-        finished_at="2026-09-01T00:03:00Z",
-        answer="## Verdict\n\nA beats B.",
-        plan_rationale="chain of three",
-        plan=[
-            PlanRow("research", [], "ok", "t1",
-                    Usage(input_tokens=12_000, output_tokens=3_000, calls=2,
-                          cost_usd=0.135, models=("claude-opus-5",))),
-            PlanRow("analysis", ["research"], "ok", "t2"),
-            PlanRow("critique", ["analysis"], "failed (boom)", "t3"),
-            PlanRow("aside", [], "not run", "—"),
-        ],
-        usage=Usage(input_tokens=20_000, output_tokens=5_000, calls=6,
-                    cost_usd=0.225, models=("claude-opus-5",)),
-    )
-    for key, value in over.items():
-        setattr(doc, key, value)
-    return doc
 
 
 def tags_of(html: str) -> list[str]:
@@ -430,11 +395,6 @@ def test_both_reporters_read_the_same_document(tmp_path):
 
 
 # ------------------------------------------------- several formats at once
-
-
-def done_job(job_id: str = "j10") -> Job:
-    return Job(job_id=job_id, status=JobStatus.DONE, query="compare A and B",
-               created_at="2026-09-01T00:00:00Z", final_answer="A beats B.")
 
 
 def test_one_format_still_composes_to_that_one_reporter():

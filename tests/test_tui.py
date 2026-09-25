@@ -32,8 +32,7 @@ import pytest
 from conftest import FakeLLM, ScriptedChatModel, plan_json
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
-from test_chat import launch_call
-from test_jobs import SlowEcho, make_manager
+from support import Gate, SlowEcho, launch_call, make_manager, planned_manager
 from textual.content import Content
 from textual.widgets import Input, ListView, Static
 
@@ -576,7 +575,6 @@ async def test_the_plan_is_on_the_activity_line_while_the_task_runs(
     over (the first step is held until it has). The conversation — the notice
     card, the answer — does not carry it: the jobs pane is where the DAG is
     drawn exactly, and the activity line is where "right now" is said."""
-    from test_service import Gate, planned_manager
 
     gate = Gate("web_search")
     manager = planned_manager(store, checkpointer, tmp_path, gate=gate)
@@ -1176,7 +1174,6 @@ async def test_took_measures_a_real_step_not_the_end_of_the_run(
     The canned jobs above cannot catch that — they are written by hand.
     """
     from conftest import FakeLLM, plan_json
-    from test_jobs import SlowEcho
 
     delay = 0.2
     caps = [SlowEcho(n, delay=delay) for n in ("alpha", "beta", "gamma")]

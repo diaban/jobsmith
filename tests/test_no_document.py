@@ -29,7 +29,16 @@ from __future__ import annotations
 import pytest
 from conftest import FakeLLM, plan_json
 from langgraph.constants import END
-from test_jobs import SlowEcho, make_manager
+from support import (
+    CFG,
+    SlowEcho,
+    client_for,
+    launch_call,
+    make_app,
+    make_manager,
+    make_session,
+    wait_done,
+)
 
 from jobsmith.core.artifacts import ArtifactRef, artifact_meta
 from jobsmith.core.capability import Capability, CapabilityBaseState, CapabilitySpec
@@ -287,7 +296,6 @@ async def test_the_chat_can_ask_for_no_file_and_the_model_is_told_so(
     true, and both are read by the user as the product misbehaving.
     """
     from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-    from test_chat import CFG, launch_call, make_session
 
     session, model = make_session(store, checkpointer, tmp_path, [
         launch_call("compare the chairs", "multi-step", formats=[]),
@@ -309,7 +317,6 @@ async def test_the_api_404_says_which_absence_it_is(store, checkpointer, tmp_pat
     """A 404 is the right code — there is no such resource — and "not DONE
     yet?" is the wrong reason for a run that finished, answered, and was asked
     for no file. The machine-readable half of the same fact is on the job."""
-    from test_api import client_for, make_app, wait_done
 
     app, _ = make_app(store, checkpointer, tmp_path, [])
     async with client_for(app) as client:
@@ -333,8 +340,6 @@ async def test_a_silent_run_that_failed_reads_as_failed_not_as_unwanted(
     second — "none was asked for (the answer is in jobsmith job …)" points
     the reader at an answer that does not exist."""
     from types import SimpleNamespace
-
-    from test_api import client_for, make_app, wait_done
 
     from jobsmith.cli.main import cmd_report
     from jobsmith.service import LocalAgentService

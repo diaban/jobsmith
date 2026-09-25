@@ -6,12 +6,16 @@ ASGI transport — no socket, but the same HTTP contract the daemon serves.
 from __future__ import annotations
 
 from conftest import ScriptedChatModel, registered_capabilities
-from httpx import ASGITransport, AsyncClient
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
-from test_chat import launch_call
-from test_jobs import make_manager
-from test_report_pdf import StubPdf
+from support import (
+    StubPdf,
+    cancelled_midway,
+    daemon_client_over,
+    launch_call,
+    make_manager,
+    wait_done,
+)
 
 from jobsmith.api import create_api
 from jobsmith.app.providers import KeywordChatModel, KeywordLLM
@@ -25,26 +29,11 @@ CLIENT_OPS = ("new_session", "send", "approve", "list_jobs", "get_job",
               "list_outputs", "find_output", "subscribe", "unsubscribe")
 
 
-def daemon_client_over(app) -> DaemonClient:
-    http = AsyncClient(transport=ASGITransport(app=app), base_url="http://test", timeout=None)
-    return DaemonClient("http://test", http)
-
-
 async def embedded(tmp_path) -> EmbeddedClient:
     return await EmbeddedClient.create(
         llm=KeywordLLM(), chat_model=KeywordChatModel(),
         db="memory", reports_dir=str(tmp_path / "artifacts"),
     )
-
-
-async def wait_done(client, job_id):
-    import asyncio
-    for _ in range(300):
-        job = await client.get_job(job_id)
-        if job and job["status"] in ("done", "failed"):
-            return job
-        await asyncio.sleep(0.01)
-    raise AssertionError("job never finished")
 
 
 async def test_daemon_client_full_chat_flow(store, checkpointer, tmp_path):
@@ -167,8 +156,6 @@ async def test_resume_command_restarts_a_stopped_job(store, checkpointer, tmp_pa
     """`jobsmith resume <prefix>` finishes a cancelled job, and refuses one
     that has nothing left to run with a non-zero exit code."""
     from types import SimpleNamespace
-
-    from test_jobs import cancelled_midway
 
     from jobsmith.cli.main import cmd_resume
 

@@ -16,17 +16,14 @@ properties of the framework, and they hold on a machine that cannot render.
 """
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 
 import pytest
-from test_report_html import done_job, make_document
+from support import StubPdf, done_job, make_document, requires_pdf
 
 from jobsmith.jobs import report_pdf
 from jobsmith.jobs.report import (
-    FileReporter,
-    JobDocument,
     MultiReporter,
     ReportWriteError,
     compose_reporters,
@@ -36,18 +33,6 @@ from jobsmith.jobs.report import (
 from jobsmith.jobs.report_html import HtmlReport, dag_svg
 from jobsmith.jobs.report_pdf import DAG_STYLE, PAGED_STYLE, PdfReport
 
-pdf_installed = importlib.util.find_spec("weasyprint") is not None
-_skip_without_pdf = pytest.mark.skipif(
-    not pdf_installed, reason="the optional .[pdf] extra is not installed"
-)
-
-
-def requires_pdf(func):
-    """Every test this guards imports the real engine (measured, #109): the
-    first one in a process pays weasyprint's ~4s import, so `slow` travels
-    with the skip rather than being repeated at each call site."""
-    return pytest.mark.slow(_skip_without_pdf(func))
-
 
 @pytest.fixture(autouse=True)
 def unprobed(monkeypatch):
@@ -55,23 +40,6 @@ def unprobed(monkeypatch):
     for the process (#108), and a test that simulates a broken engine must
     neither see a real probe's success nor leave its failure behind."""
     monkeypatch.setattr(report_pdf, "_probed", None)
-
-
-class StubPdf(FileReporter):
-    """A binary Reporter with no engine behind it — the shape, not the render.
-
-    Everything about a binary deliverable that the framework must handle is
-    here: bytes on disk, a format that declares itself binary. Used where the
-    property under test belongs to the port or the manager rather than to
-    WeasyPrint, so those tests hold on a machine with no engine at all.
-    """
-
-    format = "pdf"
-    extension = "pdf"
-    binary = True
-
-    def serialize(self, document: JobDocument, path: Path) -> None:
-        path.write_bytes(b"%PDF-1.7\n\xe2\xe3\xcf\xd3 not text\n%%EOF\n")
 
 
 # ------------------------------------------------------------------ the engine

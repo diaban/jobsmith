@@ -19,8 +19,7 @@ from __future__ import annotations
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from test_chat import launch_call, make_session
-from test_jobs import make_manager
+from support import launch_call, make_manager, make_session
 
 from jobsmith.chat import ChatRunner, JobStarted
 from jobsmith.core.paths import PathRefused

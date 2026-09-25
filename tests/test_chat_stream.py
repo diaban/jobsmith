@@ -21,8 +21,7 @@ import pytest
 from conftest import ScriptedChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langgraph.checkpoint.memory import MemorySaver
-from test_chat import launch_call
-from test_jobs import make_manager
+from support import launch_call, make_manager, planned_manager, planned_service
 
 from jobsmith.chat import (
     ChatRunner,
@@ -315,7 +314,6 @@ async def test_the_repl_says_the_plan_as_activity_not_as_the_answer(
     activity it sharpens, as the waves in order — two steps that run together
     side by side. stdout, the record of the turn (the notice, the answer),
     does not carry it."""
-    from test_service import planned_manager, planned_service
 
     service = planned_service(planned_manager(store, checkpointer, tmp_path))
     session_id = await service.new_session()

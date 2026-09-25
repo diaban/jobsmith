@@ -30,9 +30,7 @@ from pathlib import Path
 import pytest
 from conftest import FakeLLM
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from test_chat import launch_call, make_session
-from test_jobs import make_manager
-from test_report_pdf import requires_pdf
+from support import launch_call, make_manager, make_session, requires_pdf
 
 from jobsmith.core.deps import Deps
 from jobsmith.core.document import DocumentIntent

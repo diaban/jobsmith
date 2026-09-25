@@ -24,7 +24,7 @@ import json
 
 import pytest
 from conftest import FakeLLM, plan_json
-from test_jobs import SlowEcho
+from support import SlowEcho
 
 from jobsmith.core.builder import build_agent
 from jobsmith.core.deps import Deps

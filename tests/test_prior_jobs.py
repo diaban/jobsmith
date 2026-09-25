@@ -13,9 +13,7 @@ import pytest
 from conftest import FakeLLM, ScriptedChatModel
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
-from test_chat import launch_call
-from test_default_pack import PACK_SCRIPT, notes_call
-from test_jobs import make_manager
+from support import PACK_SCRIPT, launch_call, make_manager, notes_call
 
 import jobsmith.agents.default.prior_jobs as prior_jobs_module
 from jobsmith.agents.default.prior_jobs import PriorJobsCapability, referenced_jobs

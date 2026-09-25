@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 from conftest import FakeLLM, plan_json
-from test_jobs import CountingEcho
+from support import CountingEcho
 
 from jobsmith.app.persistence import open_persistence
 from jobsmith.core.builder import build_agent
