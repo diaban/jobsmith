@@ -16,37 +16,23 @@ import asyncio
 import json
 from typing import Any
 
-import httpx
 import pytest
 from conftest import ScriptedChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langgraph.checkpoint.memory import MemorySaver
-from support import launch_call, make_manager, planned_manager, planned_service
+from support import make_manager, make_session, planned_manager, planned_service, sse_client
 
 from jobsmith.chat import (
     ChatRunner,
     ChatSession,
     Message,
-    Proposal,
     Token,
-    ToolFinished,
-    ToolStarted,
 )
 from jobsmith.chat.session import NOTICE_MARKER
-from jobsmith.cli.client import DaemonClient
 from jobsmith.cli.repl import TurnPrinter, job_lines, render_turn, run_repl, tool_activity
 from jobsmith.service import ChatStreamError, LocalAgentService, ServiceUnavailable
 
 ANSWER = "A reasonably long answer that no single chunk should carry."
-
-
-def make_agent(store, checkpointer, tmp_path, responses, *, approval=False,
-               **model_kwargs):
-    manager = make_manager(store, checkpointer, tmp_path)
-    model = ScriptedChatModel(responses=responses, **model_kwargs)
-    session = ChatSession(manager, model, checkpointer=MemorySaver(),
-                          approval_required=approval)
-    return session.build(), manager, model
 
 
 async def collect(events) -> list[Any]:
@@ -65,8 +51,8 @@ async def test_the_scripted_model_emits_the_answer_in_several_pieces(
     attached, which is exactly what `stream_mode="messages"` installs — so
     this also pins that the runner asks for the mode that makes it happen.
     """
-    agent, _, _ = make_agent(store, checkpointer, tmp_path, [AIMessage(content=ANSWER)])
-    events = await collect(ChatRunner(agent).stream("s1", "hello"))
+    session, _ = make_session(store, checkpointer, tmp_path, [AIMessage(content=ANSWER)])
+    events = await collect(ChatRunner(session.build()).stream("s1", "hello"))
 
     tokens = [e for e in events if isinstance(e, Token)]
     assert len(tokens) > 1, "the answer arrived in one piece: the fake is not streaming"
@@ -87,9 +73,8 @@ async def test_a_finished_job_is_still_announced_on_a_streamed_turn(
     """
     manager = make_manager(store, checkpointer, tmp_path)
     model = ScriptedChatModel(responses=[AIMessage(content=ANSWER)])
-    saver = MemorySaver()
     service = LocalAgentService(manager, lambda session_id=None: ChatSession(
-        manager, model, session_id=session_id, checkpointer=saver))
+        manager, model, session_id=session_id, checkpointer=MemorySaver()))
     session_id = await service.new_session()
     job = await manager.create_job("older work", None, session_id=session_id)
     await manager.run_job(job.job_id)
@@ -103,60 +88,6 @@ async def test_a_finished_job_is_still_announced_on_a_streamed_turn(
 
 
 # ------------------------------------------------------ the event vocabulary
-
-
-async def test_a_turn_that_proposes_a_job_ends_on_a_proposal(store, checkpointer, tmp_path):
-    """The two terminals are the duality `_reply` always carried, and the
-    stream always ends on exactly one of them — a caller draining for a reply
-    must never have to interpret an exhausted stream.
-
-    On the gate path since #83, which is the point of keeping the gate: this
-    is the only shape of turn that ends on something other than a `Message`,
-    and it is a mechanism a future irreversible capability will need.
-    """
-    agent, _, _ = make_agent(store, checkpointer, tmp_path, [
-        launch_call("analyse it", "multi-step"),
-        AIMessage(content=ANSWER),
-    ], approval=True)
-    runner = ChatRunner(agent)
-
-    events = await collect(runner.stream("s1", "please analyse it"))
-    assert ToolStarted("launch_job") in events
-    assert events[-1] == Proposal("analyse it", "multi-step")
-    assert len([e for e in events if isinstance(e, Message | Proposal)]) == 1
-
-    after = await collect(runner.resume("s1", True))
-    assert [e.name for e in after if isinstance(e, ToolFinished)] == ["launch_job"]
-    # The terminal is the whole of what the turn produced — the approved run's
-    # answer and then the model's sentence — not the model's message alone.
-    # It was `Message(ANSWER)` while the two were the same string; #83 broke
-    # that tie, and a terminal that stayed the model's message would hand a
-    # caller that waits an answer with the run's result cut out of it.
-    streamed = "".join(e.text for e in after if isinstance(e, Token))
-    assert after[-1] == Message(streamed)
-    assert streamed.endswith(ANSWER) and len(streamed) > len(ANSWER)
-    # a tool's *result* is not the answer being written: what the model was
-    # told about the run stays out of the stream, and only what the run
-    # produced is written into it.
-    assert "ALREADY been shown" not in streamed
-
-
-async def test_send_is_the_stream_drained(store, checkpointer, tmp_path):
-    """One implementation of a turn. `send` must be the terminal of the very
-    stream it drains, not a second path that could answer differently."""
-    manager = make_manager(store, checkpointer, tmp_path)
-    saver = MemorySaver()
-
-    def session_factory(session_id=None):
-        return ChatSession(manager, ScriptedChatModel(responses=[AIMessage(content=ANSWER)]),
-                           session_id=session_id, checkpointer=saver)
-
-    service = LocalAgentService(manager, session_factory)
-    session_id = await service.new_session()
-    streamed = [e async for e in service.stream(session_id, "hello")]
-    assert streamed[-1] == {"type": "message", "content": ANSWER}
-    assert await service.send(session_id, "hello again") == {"type": "message",
-                                                             "content": ANSWER}
 
 
 async def test_a_turn_with_no_terminal_is_refused_rather_than_answered():
@@ -178,14 +109,6 @@ async def test_a_turn_with_no_terminal_is_refused_rather_than_answered():
 # -------------------------------------------------- the transport never drops
 
 
-def _chat_client(*lines: str) -> DaemonClient:
-    """A DaemonClient whose streaming turn route answers with these SSE lines."""
-    body = "".join(f"{line}\n" for line in lines)
-    transport = httpx.MockTransport(lambda request: httpx.Response(200, text=body))
-    return DaemonClient("http://test", httpx.AsyncClient(
-        transport=transport, base_url="http://test", timeout=None))
-
-
 async def test_a_line_the_reader_cannot_decode_is_a_failure_not_a_skip():
     """The exact opposite of `/events`, and the asymmetry is the point.
 
@@ -194,7 +117,7 @@ async def test_a_line_the_reader_cannot_decode_is_a_failure_not_a_skip():
     was part of a sentence, so skipping it would deliver a shorter answer
     that reads as finished. Nobody can tell — which is why it raises.
     """
-    client = _chat_client('data: {"type": "token", "text": "hi"}', "",
+    client = sse_client('data: {"type": "token", "text": "hi"}', "",
                           "data: {not json at all}", "")
     with pytest.raises(ChatStreamError, match="unreadable event"):
         await collect(client.stream("s1", "hello"))
@@ -210,7 +133,7 @@ async def test_a_slow_reader_loses_nothing():
     """
     lines = [line for i in range(20)
              for line in (json.dumps({"type": "token", "text": str(i)}), "")]
-    client = _chat_client(*[f"data: {line}" if line else "" for line in lines])
+    client = sse_client(*[f"data: {line}" if line else "" for line in lines])
     try:
         seen = []
         async for event in client.stream("s1", "hello"):

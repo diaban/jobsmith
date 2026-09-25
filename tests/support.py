@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import inspect
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +81,22 @@ class Gate(SlowEcho):
         return await super().work(state)
 
 
+# ------------------------------------------------------------ waiting
+
+async def until(check, *, what: str, seconds: float = 5.0):
+    """Poll `check` (sync or async) until it returns something truthy, and
+    return that; fail naming `what` never happened. Wait on the state a test
+    is about, never on a fixed sleep."""
+    for _ in range(int(seconds / 0.01)):
+        value = check()
+        if inspect.isawaitable(value):
+            value = await value
+        if value:
+            return value
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"{what} never happened")
+
+
 # ------------------------------------------------------------ the engine
 
 def make_manager(
@@ -120,11 +137,7 @@ async def cancelled_midway(store, checkpointer, tmp_path, *, session_id=None, fo
     mgr = make_manager(store, checkpointer, tmp_path, caps=[alpha, slow], llm=llm)
     job = await mgr.create_job("a job worth resuming", session_id=session_id, formats=formats)
     mgr.start_job(job.job_id)
-    for _ in range(500):                       # wait until `slow` is actually running
-        await asyncio.sleep(0.01)
-        if slow.runs:
-            break
-    assert slow.runs == 1, "the second step never started"
+    await until(lambda: slow.runs, what="the second step starting")
     stopped = await mgr.cancel_job(job.job_id)
     assert stopped.status is JobStatus.CANCELLED
     assert set(stopped.results) == {"alpha"}   # the finished step was persisted
@@ -216,16 +229,42 @@ def daemon_client_over(app):
 
 
 async def wait_done(client: Any, job_id: str) -> dict:
-    """Poll until the job settles — over raw HTTP or through the port."""
-    for _ in range(300):
+    """The job's dict once DONE or FAILED — over raw HTTP or through the port."""
+    async def settled():
         if isinstance(client, AsyncClient):
             job = (await client.get(f"/jobs/{job_id}")).json()
         else:
             job = await client.get_job(job_id)
-        if job and job["status"] in ("done", "failed"):
-            return job
-        await asyncio.sleep(0.01)
-    raise AssertionError("job never finished")
+        return job if job and job["status"] in ("done", "failed") else None
+
+    return await until(settled, what=f"job {job_id} settling")
+
+
+def mock_client(handler):
+    """A DaemonClient over `httpx.MockTransport(handler)` — no app behind it."""
+    import httpx
+
+    from jobsmith.cli.client import DaemonClient
+
+    return DaemonClient("http://test", httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test", timeout=None))
+
+
+def sse_client(*lines: str):
+    """A DaemonClient whose every streamed route answers exactly these lines."""
+    import httpx
+
+    body = "".join(f"{line}\n" for line in lines)
+    return mock_client(lambda request: httpx.Response(200, text=body))
+
+
+async def wait_settled(manager, job_id: str):
+    """The `Job` (not a dict) once DONE or FAILED."""
+    async def settled():
+        job = await manager.get_job(job_id)
+        return job if job and job.status in (JobStatus.DONE, JobStatus.FAILED) else None
+
+    return await until(settled, what=f"job {job_id} settling")
 
 
 # ------------------------------------------------------------ reports

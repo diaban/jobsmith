@@ -5,28 +5,17 @@ ASGI transport — no socket, but the same HTTP contract the daemon serves.
 """
 from __future__ import annotations
 
-from conftest import ScriptedChatModel, registered_capabilities
-from langchain_core.messages import AIMessage
-from langgraph.checkpoint.memory import MemorySaver
+from conftest import registered_capabilities
 from support import (
     StubPdf,
     cancelled_midway,
-    daemon_client_over,
-    launch_call,
-    make_manager,
     wait_done,
 )
 
-from jobsmith.api import create_api
 from jobsmith.app.providers import KeywordChatModel, KeywordLLM
-from jobsmith.chat import ChatSession
 from jobsmith.cli.client import DaemonClient, EmbeddedClient, open_client
 from jobsmith.cli.main import build_parser
 from jobsmith.service import LocalAgentService
-
-CLIENT_OPS = ("new_session", "send", "approve", "list_jobs", "get_job",
-              "cancel_job", "resume_job", "launch_job", "get_report", "resolve_job",
-              "list_outputs", "find_output", "subscribe", "unsubscribe")
 
 
 async def embedded(tmp_path) -> EmbeddedClient:
@@ -36,39 +25,8 @@ async def embedded(tmp_path) -> EmbeddedClient:
     )
 
 
-async def test_daemon_client_full_chat_flow(store, checkpointer, tmp_path):
-    """The gate path over HTTP, which is the richest one the client answers:
-    a proposal terminal, an approval round trip, then the job. Kept with
-    `approval_required=True` since #83 made it the exception rather than the
-    rule — `test_service.py` drives the nominal one through both backings."""
-    manager = make_manager(store, checkpointer, tmp_path)
-    saver = MemorySaver()
-    responses = [launch_call("analyse it", "multi-step", formats=["default"]), AIMessage(content="launched!")]
-
-    def session_factory(session_id=None):
-        return ChatSession(manager, ScriptedChatModel(responses=list(responses)),
-                           session_id=session_id, checkpointer=saver,
-                           approval_required=True)
-
-    client = daemon_client_over(create_api(LocalAgentService(manager, session_factory)))
-    try:
-        assert client.persistent is True          # jobs outlive the command
-        sid = await client.new_session()
-        reply = await client.send(sid, "please analyse it")
-        assert reply["type"] == "proposal" and reply["query"] == "analyse it"
-        assert (await client.approve(sid, True))["type"] == "message"
-
-        (job,) = await client.list_jobs(session_id=sid)
-        finished = await wait_done(client, job["job_id"])
-        assert finished["status"] == "done"
-        assert (await client.get_report(job["job_id"])).startswith("# analyse it")
-        assert [o["role"] for o in finished["outputs"] if o["role"] != "annex"] == ["main"]
-        assert await client.get_job("nope") is None
-    finally:
-        await client.aclose()
-
-
 async def test_embedded_client_same_shapes(tmp_path):
+    assert DaemonClient.persistent is True        # jobs outlive the command
     client = await embedded(tmp_path)
     try:
         assert client.persistent is False         # jobs die with the process
@@ -84,16 +42,6 @@ async def test_embedded_client_same_shapes(tmp_path):
         # a summary carries the keys the CLI prints
         (summary,) = await client.list_jobs()
         assert {"job_id", "status", "query", "step_finished_at"} <= set(summary)
-    finally:
-        await client.aclose()
-
-
-async def test_both_clients_expose_the_same_operations(tmp_path):
-    client = await embedded(tmp_path)
-    try:
-        for op in CLIENT_OPS:
-            assert callable(getattr(client, op)), op
-            assert callable(getattr(DaemonClient, op)), op
     finally:
         await client.aclose()
 

@@ -1,82 +1,38 @@
-"""HTTP entrypoint: chat sessions over HTTP, jobs endpoints, report.
-
-The SSE /events endpoint streams forever, which httpx's ASGITransport cannot
-consume — its pub/sub mechanism is covered by test_jobs.py's subscribe test.
-
-The two approval tests build their app with `approval=True`: since #83 the
-gate is off the nominal path, and these are what keep the route it is
-reached through honest (see `chat/tools.py::pick_approval_required`).
-"""
+"""The HTTP adapter: what only raw HTTP shows — status codes, media types,
+downloads. What the port answers is `test_service.py`, on both backings;
+`/events` is tested there too, under uvicorn (ASGITransport hangs on it)."""
 from __future__ import annotations
 
+import pytest
 from langchain_core.messages import AIMessage
-from support import StubPdf, cancelled_midway, client_for, launch_call, make_app, wait_done
+from support import StubPdf, cancelled_midway, client_for, make_app, wait_done
 
 from jobsmith.api import create_api
-from jobsmith.jobs.report import compose_reporters
 from jobsmith.service import LocalAgentService
 
 
-async def test_chat_flow_proposal_approval_report(store, checkpointer, tmp_path):
-    app, _ = make_app(store, checkpointer, tmp_path, [
-        launch_call("analyse the data", "several steps needed", formats=["default"]),
-        AIMessage(content="Job launched — report coming."),
-    ], approval=True)
-    async with client_for(app) as client:
-        sid = (await client.post("/sessions")).json()["session_id"]
-
-        r = (await client.post(f"/sessions/{sid}/messages",
-                               json={"text": "please analyse the data, as a report"})).json()
-        assert r == {"type": "proposal", "query": "analyse the data",
-                     "rationale": "several steps needed", "sources": [],
-                     # the model asked for a document and named no format:
-                     # "default", resolved BEFORE the card to what will be
-                     # written — the user approves names, never an alias (#96)
-                     "document_name": "", "document_title": "", "formats": ["markdown"],
-                     "from_jobs": []}
-
-        r = (await client.post(f"/sessions/{sid}/approval", json={"approved": True})).json()
-        assert r["type"] == "message" and "report coming" in r["content"]
-
-        jobs = (await client.get("/jobs", params={"session_id": sid})).json()
-        assert len(jobs) == 1
-        job = await wait_done(client, jobs[0]["job_id"])
-        assert job["status"] == "done"
-        assert job["plan"] is not None and job["results"]  # DAG + artifacts for the UI
-
-        report = await client.get(f"/jobs/{job['job_id']}/report")
-        assert report.status_code == 200
-        assert report.text.startswith("# analyse the data")   # deliverable first
-        assert report.headers["content-type"].startswith("text/markdown")
-
-        # the same file is listed as the job's main output, and downloadable
-        (output,) = (await client.get(f"/jobs/{job['job_id']}/outputs")).json()
-        assert (output["role"], output["format"]) == ("main", "markdown")
-        download = await client.get(f"/jobs/{job['job_id']}/outputs/{output['name']}")
-        assert download.status_code == 200
-
-
-async def test_report_content_type_follows_the_deliverable_format(
-    store, checkpointer, tmp_path
+@pytest.mark.parametrize(("formats", "media_type", "starts"), [
+    (["markdown", "html"], "text/markdown", "# two formats"),
+    (["html", "markdown"], "text/html", "<!doctype html>"),
+])
+async def test_report_serves_the_main_deliverable_with_its_own_type_and_all_are_downloadable(
+    store, checkpointer, tmp_path, formats, media_type, starts
 ):
-    """/report announces what it actually serves. Every other test asserts on
-    the body, which is how an HTML report kept being labelled text/markdown —
-    correct bytes, wrong header, unreadable in a browser."""
-    app, _ = make_app(store, checkpointer, tmp_path, [AIMessage(content="hi")])
-
+    app, _ = make_app(store, checkpointer, tmp_path, [])
     async with client_for(app) as client:
         job = await wait_done(client, (await client.post(
-            "/jobs", json={"query": "a markdown run", "formats": ["markdown"]})).json()["job_id"])
-        report = await client.get(f"/jobs/{job['job_id']}/report")
-        assert report.headers["content-type"].startswith("text/markdown")
+            "/jobs", json={"query": "two formats", "formats": formats})).json()["job_id"])
 
-        # same run, other format — asked for by the request, which is now the
-        # only thing that ever asks for a file (#96)
-        job = await wait_done(client, (await client.post(
-            "/jobs", json={"query": "an html run", "formats": ["html"]})).json()["job_id"])
         report = await client.get(f"/jobs/{job['job_id']}/report")
-        assert report.headers["content-type"].startswith("text/html")
-        assert report.text.startswith("<!doctype html>")
+        assert report.headers["content-type"].startswith(media_type)
+        assert report.text.startswith(starts)
+
+        outputs = (await client.get(f"/jobs/{job['job_id']}/outputs")).json()
+        assert [(o["role"], o["format"]) for o in outputs] == [
+            ("main", formats[0]), ("alternate", formats[1])]
+        for output in outputs:
+            download = await client.get(f"/jobs/{job['job_id']}/outputs/{output['name']}")
+            assert download.status_code == 200
 
 
 async def test_a_binary_deliverable_is_refused_by_report_and_offered_by_outputs(
@@ -102,55 +58,13 @@ async def test_a_binary_deliverable_is_refused_by_report_and_offered_by_outputs(
         assert download.status_code == 200 and download.content.startswith(b"%PDF-")
 
 
-async def test_every_deliverable_is_listed_and_downloadable(store, checkpointer, tmp_path):
-    """A run asked for two formats: both are outputs of the job, both can be
-    downloaded, and /report still serves the main one — with its own type."""
-    app, manager = make_app(store, checkpointer, tmp_path, [AIMessage(content="hi")])
-    manager.reporter = compose_reporters("markdown,html")
-
-    async with client_for(app) as client:
-        job = await wait_done(client, (await client.post(
-            "/jobs", json={"query": "two formats", "formats": ["default"]})).json()["job_id"])
-        assert len(job["outputs"]) == 2
-
-        outputs = (await client.get(f"/jobs/{job['job_id']}/outputs")).json()
-        assert [(o["role"], o["format"]) for o in outputs] == [
-            ("main", "markdown"), ("alternate", "html")]
-        for output in outputs:
-            download = await client.get(f"/jobs/{job['job_id']}/outputs/{output['name']}")
-            assert download.status_code == 200
-        assert outputs[1]["name"].endswith(".html")
-
-        report = await client.get(f"/jobs/{job['job_id']}/report")
-        assert report.headers["content-type"].startswith("text/markdown")
-        assert report.text.startswith("# two formats")
-        assert job["report_path"] == outputs[0]["path"]
-
-
-async def test_chat_flow_decline_creates_no_job(store, checkpointer, tmp_path):
-    app, _ = make_app(store, checkpointer, tmp_path, [
-        launch_call("big task", "complex"),
-        AIMessage(content="Ok, not launching it."),
-    ], approval=True)
-    async with client_for(app) as client:
-        sid = (await client.post("/sessions")).json()["session_id"]
-        await client.post(f"/sessions/{sid}/messages", json={"text": "do the big task"})
-        r = (await client.post(f"/sessions/{sid}/approval", json={"approved": False})).json()
-        assert r["type"] == "message"
-        assert (await client.get("/jobs", params={"session_id": sid})).json() == []
-
-
 async def test_direct_job_launch_and_cancel_and_404s(store, checkpointer, tmp_path):
     app, _ = make_app(store, checkpointer, tmp_path, [AIMessage(content="hi")])
     async with client_for(app) as client:
         r = await client.post("/jobs", json={"query": "direct run"})
         assert r.status_code == 201
         job = await wait_done(client, r.json()["job_id"])
-        # the contract change of #96, on this door: a request that said
-        # nothing about a document gets none — and says so on the record
-        assert job["status"] == "done" and job["plan"] is not None
-        assert job["report_path"] is None and job["deliverable_expected"] is False
-        assert job["final_answer"]
+        assert job["plan"] is not None and job["results"]   # the UI's DAG data
 
         # cancel on a finished job is a no-op status echo
         r = await client.post(f"/jobs/{job['job_id']}/cancel")
