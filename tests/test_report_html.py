@@ -406,30 +406,19 @@ def test_one_format_still_composes_to_that_one_reporter():
     assert compose_reporters("html", "reg", with_annexes=True).registry == "reg"
 
 
-def test_two_formats_write_two_files_and_exactly_one_is_main(tmp_path):
+@pytest.mark.parametrize("formats", [["markdown", "html"], ["html", "markdown"]])
+def test_every_format_is_written_and_the_first_asked_for_is_main(tmp_path, formats):
+    """Order is the decision — and `format` is what /report announces. → 0028"""
+    reporter = compose_reporters(",".join(formats))
+    assert reporter.format == formats[0]
+
     job = done_job()
-    outputs = compose_reporters("markdown,html").write(job, tmp_path)
-
-    assert [(o.format, o.role) for o in outputs] == [
-        ("markdown", "main"), ("html", "alternate")]
-    assert [Path(o.path).suffix for o in outputs] == [".md", ".html"]
-    for output in outputs:                       # both really landed on disk
-        assert "A beats B." in Path(output.path).read_text(encoding="utf-8")
-
-    job.outputs = outputs
-    assert job.report_path == outputs[0].path    # the main one, unambiguously
-
-
-def test_the_first_format_asked_for_is_the_main_deliverable(tmp_path):
-    """Order is the decision — and `format` is what /report announces."""
-    reporter = compose_reporters("html,markdown")
-    assert reporter.format == "html" and reporter.extension == "html"
-
-    job = done_job("j11")
     job.outputs = reporter.write(job, tmp_path)
     assert [(o.format, o.role) for o in job.outputs] == [
-        ("html", "main"), ("markdown", "alternate")]
-    assert job.report_path.endswith(".html")
+        (formats[0], "main"), (formats[1], "alternate")]
+    for output in job.outputs:                   # both really landed on disk
+        assert "A beats B." in Path(output.path).read_text(encoding="utf-8")
+    assert job.report_path == job.outputs[0].path
 
 
 def test_aliases_of_one_format_do_not_write_the_same_file_twice(tmp_path):

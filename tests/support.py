@@ -4,6 +4,7 @@ another test file."""
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 from pathlib import Path
 from typing import Any
 
@@ -275,14 +276,19 @@ def done_job(job_id: str = "j10") -> Job:
 
 # ------------------------------------------------------------ markers
 
+PDF_MARKS = [
+    pytest.mark.slow,
+    pytest.mark.skipif(importlib.util.find_spec("weasyprint") is None,
+                       reason="the optional .[pdf] extra is not installed"),
+]
+
+
 def requires_pdf(func):
     """Needs the real engine: skipped without `.[pdf]`, and `slow` — the first
-    import in a process costs ~4 s (→ 0109)."""
-    import importlib.util
-
-    installed = importlib.util.find_spec("weasyprint") is not None
-    skip = pytest.mark.skipif(not installed, reason="the optional .[pdf] extra is not installed")
-    return pytest.mark.slow(skip(func))
+    import in a process costs ~4 s (→ 0109). `PDF_MARKS` for a `pytest.param`."""
+    for mark in PDF_MARKS:
+        func = mark(func)
+    return func
 
 
 # ------------------------------------------------------------ the default pack
@@ -301,3 +307,36 @@ def notes_call(llm: FakeLLM) -> dict:
 
     return next(c for c in llm.calls if c["messages"][0]["content"].startswith(
         (ResearchCapability.NOTES_SYSTEM, ResearchCapability.GROUNDED_NOTES_SYSTEM)))
+
+
+# ------------------------------------------------------------ a broken PDF engine
+
+def no_distribution(monkeypatch) -> None:
+    """`import weasyprint` halts with ImportError: the extra is not installed."""
+    import sys
+
+    monkeypatch.delitem(sys.modules, "weasyprint", raising=False)
+    monkeypatch.setitem(sys.modules, "weasyprint", None)
+
+
+def no_libraries(monkeypatch) -> None:
+    """The distribution is found and its import raises OSError, as cffi does
+    when it cannot dlopen pango: PDF is offered and cannot be rendered."""
+    import importlib.util
+    import sys
+
+    from jobsmith.jobs import report_pdf
+
+    real_find_spec = importlib.util.find_spec
+
+    class NoLibraries:
+        def find_spec(self, name, path=None, target=None):
+            if name == "weasyprint":
+                raise OSError("cannot load library 'libpango-1.0.so.0'")
+            return None
+
+    monkeypatch.delitem(sys.modules, "weasyprint", raising=False)
+    monkeypatch.setattr(sys, "meta_path", [NoLibraries(), *sys.meta_path])
+    monkeypatch.setattr(report_pdf.importlib.util, "find_spec",
+                        lambda name, *a: object() if name == "weasyprint"
+                        else real_find_spec(name, *a))

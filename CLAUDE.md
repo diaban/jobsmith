@@ -248,6 +248,8 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 
 ## Testing conventions
 
+- **Tests are organised by purpose, never by issue**: a file per component or rule (`test_deliverable.py`, not `test_<issue>.py`); a change extends the file of the rule it touches. A docstring states the property in a sentence, `→ NNNN` for the why — history lives in the record. Cases that differ only in data are one parametrized test. → 0110
+- **Shared builders live in `tests/support.py`** (`make_manager`, `make_session`, `service_over`, `make_app`, `wait_done`, stub capabilities, `StubPdf`); **a test file never imports from another test file**. → 0110
 - `tests/conftest.py` — `FakeLLM` scripts responses by **substring of the system prompt** (`{"planner": ..., "ONLY the provided": ...}`); `plan_json()` builds planner responses. Fixtures: `checkpointer` (MemorySaver), `store` (InMemoryStore).
 - `tests/test_banking_example.py` is the behavior-parity suite for the pre-refactor agent (French rejection messages, citation rule, vision-dropped-without-image).
 - Tests import capabilities/stubs directly and assert on the final state dict (`terminal_kind`, `results`, `completed_capabilities`).
