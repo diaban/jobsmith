@@ -14,7 +14,7 @@ fresh AgentBuilder with a new registry; compilation costs milliseconds.
 """
 from __future__ import annotations
 
-from collections.abc import Hashable
+from collections.abc import Callable, Hashable, Sequence
 from typing import Any
 
 from langgraph.constants import END
@@ -56,6 +56,7 @@ class AgentBuilder:
         checkpointer: Any = None,
         document_formats: tuple[str, ...] | list[str] = (),
         default_document_formats: tuple[str, ...] | list[str] = (),
+        confirm_document_formats: Callable[[Sequence[str]], Sequence[str]] | None = None,
     ):
         self.deps = deps
         self.registry = registry
@@ -70,6 +71,10 @@ class AgentBuilder:
         # without naming a format (#96) — the deployment's, never guessed
         # here. Empty leaves that answer silent too, i.e. no file.
         self.default_document_formats = tuple(default_document_formats)
+        # ...and the proof the first list does not carry: it is what is
+        # installed, and which of a choice really renders is asked only when
+        # a request chose it (#108, `DocumentIntent.confirm`).
+        self.confirm_document_formats = confirm_document_formats
 
         # --- Step instances ---
         self.input_validator  = InputValidator(self.profile)
@@ -78,6 +83,7 @@ class AgentBuilder:
         self.document_intent  = DocumentIntent(
             deps, self.document_formats,
             default_formats=self.default_document_formats,
+            confirm=self.confirm_document_formats,
             prompt_template=self.profile.document_intent_prompt_template)
         self.planner          = Planner(deps, registry,
                                         prompt_template=self.profile.planner_prompt_template)
@@ -241,7 +247,9 @@ def build_agent(
     checkpointer: Any = None,
     document_formats: tuple[str, ...] | list[str] = (),
     default_document_formats: tuple[str, ...] | list[str] = (),
+    confirm_document_formats: Callable[[Sequence[str]], Sequence[str]] | None = None,
 ):
     return AgentBuilder(deps, registry, profile=profile, checkpointer=checkpointer,
                         document_formats=document_formats,
-                        default_document_formats=default_document_formats).build()
+                        default_document_formats=default_document_formats,
+                        confirm_document_formats=confirm_document_formats).build()

@@ -35,7 +35,13 @@ from jobsmith.app.persistence import open_persistence
 
 TESTS = Path(__file__).parent
 PROCESSES = 5
-ROUNDS = 150
+# #109: measured at 1/2/3/5/10/150 rounds, 10 runs each, on this worktree with
+# `_ImmediateBegin`'s effect removed (BEGIN left DEFERRED): every count failed
+# 10/10 — the race is decided by the first batch each process runs at the
+# synchronized `start_at`, not by how many follow, so more rounds buy no more
+# reliability. 10 keeps a real loop (round count is not degenerately 1) while
+# passing 10/10 with the fix restored; see docs/decisions/0109-faster-suite.md.
+ROUNDS = 10
 
 
 async def hammer(db: str, mode: str, *, rounds: int = ROUNDS) -> list[str]:
@@ -62,12 +68,14 @@ async def initialised(tmp_path) -> str:
     return db
 
 
+@pytest.mark.slow  # 5 real OS processes each
 @pytest.mark.parametrize("mode", ["store", "saver"])
 async def test_concurrent_processes_write_one_file_without_locking_out(tmp_path, mode):
     results = await hammer(await initialised(tmp_path), mode)
     assert results == [f"ok {ROUNDS}"] * PROCESSES, results
 
 
+@pytest.mark.slow  # 5 real OS processes
 async def test_processes_opening_a_fresh_file_together_all_get_it(tmp_path):
     results = await hammer(str(tmp_path / "fresh.db"), "setup", rounds=0)
     assert results == ["ok 0"] * PROCESSES, results

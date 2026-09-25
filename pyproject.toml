@@ -101,6 +101,12 @@ packages = ["jobsmith"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# #109: `slow` marks a test whose cost is inherent (real subprocesses, a real
+# uvicorn server, a rendered theme sweep) rather than something to optimise
+# away. `make test-fast` (`-m "not slow"`) skips them for the inner loop;
+# `make check`/CI run everything, unfiltered, and stay the gate.
+markers = ["slow: inherently slow (processes, uvicorn, a full render sweep) — excluded from `make test-fast`"]
+addopts = "--strict-markers"
 
 [tool.ruff]
 line-length = 100

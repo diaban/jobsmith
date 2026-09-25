@@ -21,6 +21,7 @@ import sys
 from collections.abc import AsyncIterator
 from typing import Any
 
+from ..core.state import plan_waves
 from ..core.usage import Usage
 from ..jobs.report import deliverable_filenames, format_step_usage, format_usage
 from ..service import TERMINAL_EVENTS, BinaryDeliverable, ChatStreamError, ServiceUnavailable
@@ -49,14 +50,26 @@ def tool_activity(name: str) -> str:
     return TOOL_ACTIVITY.get(name, f"running {name}")
 
 
+def plan_line(steps: list[dict]) -> str:
+    """A plan on one line (#86): waves in order, a wave's steps side by side.
+
+    `web_search → research → analysis → critique`, and `a + b → c` where two
+    steps run together. The columns are `plan_waves`, the drawings' own, so
+    this line and `/job`'s DAG agree on where a step belongs.
+    """
+    waves = plan_waves((str(s.get("capability") or ""), s.get("depends_on") or [])
+                       for s in steps)
+    return " → ".join(" + ".join(wave) for wave in waves)
+
+
 def job_lines(event: dict, indent: str = "    ") -> list[str]:
     """What a run is about to do, as lines — the three guarantees of #83.
 
     One renderer for both shapes, because a notice and a proposal must show
     the user the same things: the reformulated query (the engine never sees
     the thread, and a reader is what catches a referent that has gone), the
-    files it may open (#60), and what the document will be called, titled and
-    written as (#55). A front-end that showed one and not the other would be
+    files it may open (#60), the earlier jobs it builds on (#104), and what
+    the document will be called, titled and written as (#55). A front-end that showed one and not the other would be
     the "second silent decision" each of those issues is about.
 
     `writes` prefers real filenames and falls back to the bare format names:
@@ -74,6 +87,12 @@ def job_lines(event: dict, indent: str = "    ") -> list[str]:
         lines.append(f"{indent}approach : {rationale}")
     if sources := event.get("sources"):
         lines.append(f"{indent}reads    : {', '.join(sources)}")
+    # the earlier jobs it builds on (#104), one per line: the short id is
+    # what `/job` and `/cancel` take, the query is what the user recognises
+    for n, ref in enumerate(event.get("from_jobs") or []):
+        label = "builds on" if n == 0 else ""
+        lines.append(f"{indent}{label:<9}: job {str(ref.get('job_id') or '')[:8]}"
+                     f" — {ref.get('query') or ''}")
     if title := event.get("document_title"):
         lines.append(f"{indent}titled   : {title}")
     formats = event.get("formats")
@@ -115,6 +134,12 @@ class TurnPrinter:
             self._note(f"✓ {tool_activity(event.get('name') or '')}")
         elif kind == "job_started":
             self._job_started(event)
+        elif kind == "job_planned":
+            # On stderr, with the activity it sharpens (#86): it is what the
+            # run is doing right now, decided by the engine rather than handed
+            # over by the user, and it is superseded by the answer. The record
+            # of the turn — what was handed, what came back — stays on stdout.
+            self._note(f"… plan: {plan_line(event.get('steps') or [])}")
 
     def _job_started(self, event: dict) -> None:
         """The notice that replaced the approval card (#83).
@@ -127,10 +152,12 @@ class TurnPrinter:
         """
         self.end()
         short = str(event.get("job_id") or "")[:8]
+        # flushed, like every write here: the plan that follows goes to
+        # stderr, and a notice still in stdout's buffer would land after it
         print(f"\n{self.indent}running this as job {short}:")
         for line in job_lines(event, self.indent + "  "):
             print(line)
-        print(f"{self.indent}  stop it  : /cancel {short}\n")
+        print(f"{self.indent}  stop it  : /cancel {short}\n", flush=True)
 
     def end(self) -> None:
         """Close the answer's line. The terminal event restates the reply the

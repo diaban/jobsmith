@@ -57,6 +57,7 @@ def html_structural_run():
     return asyncio.run(go())
 
 
+@pytest.mark.slow  # #108: the structural (fake) run resolves at least one case onto pdf, and the document step proves that choice by really loading weasyprint
 def test_structural_tier_is_perfect(structural_run):
     """The fakes are deterministic: anything under 100% is a real regression."""
     _, result = structural_run
@@ -65,6 +66,7 @@ def test_structural_tier_is_perfect(structural_run):
     )
 
 
+@pytest.mark.slow  # #108: the structural (fake) run resolves at least one case onto pdf, and the document step proves that choice by really loading weasyprint
 def test_structural_tier_actually_exercises_every_check(structural_run):
     """A check nothing applies to would silently protect nothing."""
     _, result = structural_run
@@ -72,6 +74,7 @@ def test_structural_tier_actually_exercises_every_check(structural_run):
     assert never_applied == []
 
 
+@pytest.mark.slow  # #108: the structural (fake) run resolves at least one case onto pdf, and the document step proves that choice by really loading weasyprint
 def test_the_score_does_not_depend_on_the_deliverable_format(
     structural_run, html_structural_run
 ):
@@ -92,6 +95,7 @@ def test_the_score_does_not_depend_on_the_deliverable_format(
     assert html.checks == markdown.checks
 
 
+@pytest.mark.slow  # #108: the structural (fake) run resolves at least one case onto pdf, and the document step proves that choice by really loading weasyprint
 def test_the_answer_is_scored_on_more_runs_than_the_file(structural_run):
     """#96 made most runs file-less, which is exactly how the answer checks
     could go dark while the tier kept reading 100%: gated on a file, they
@@ -112,6 +116,7 @@ def test_the_answer_is_scored_on_more_runs_than_the_file(structural_run):
     assert {("answer", True), ("answer", False), ("unanswered", True)} <= claims
 
 
+@pytest.mark.slow  # #108: the structural (fake) run resolves at least one case onto pdf, and the document step proves that choice by really loading weasyprint
 def test_structural_tier_covers_both_routes_and_the_guard(structural_run):
     cases, result = structural_run
     routes = {c.expect_route for c in cases}
@@ -701,6 +706,7 @@ def test_the_summary_shows_the_delta_against_a_baseline():
 
 # ---------------------------------------------------------------- the cli
 
+@pytest.mark.slow  # #108: a real structural pass, same weasyprint tax as above
 def test_cli_runs_and_gates_the_structural_tier(capsys):
     from evals.__main__ import main
 

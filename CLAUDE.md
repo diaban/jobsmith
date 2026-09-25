@@ -2,9 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**This file holds the rules; `docs/decisions/` holds why.** A rule that came out of a decision ends with `→ NNNN`, meaning `docs/decisions/NNNN-*.md`: the measurements, the alternatives that lost and why. Read the record before changing the rule; the index is `docs/decisions/README.md`.
+**This file holds the rules; `docs/decisions/` holds why.** A rule that came out of a decision ends with `→ NNNN`, meaning `docs/decisions/NNNN-*.md`: the measurements, the alternatives that lost and why. Read the record before changing the rule; the index is `docs/decisions/README.md`. → 0102
 
-**Size budget: 40 000 characters** (≈ 10k tokens), enforced by `tests/test_claude_md_budget.py`. Every session carries this file through every turn; at 174k it was the largest fixed cost of a delegated task and went stale unowned. 40k — under a quarter — fits the code map and the rules, not narrative. When the test fails, move history into a record; do not raise the number.
+**Size budget: 40 000 characters** (≈ 10k tokens), enforced by `tests/test_claude_md_budget.py`. Every session carries this file through every turn; at 174k it was the largest fixed cost of a delegated task and went stale unowned. 40k — under a quarter — fits the code map and the rules, not narrative. When the test fails, move history into a record; do not raise the number. → 0102
 
 ## Project overview
 
@@ -15,11 +15,12 @@ CLI/API surface, limits. Keep it in sync when a command or a limit changes.
 
 ## Commands
 
-A Makefile wraps the common ones: `make help` lists them (`install`, `install-all`, `test [T=kw]`, `lint`, `fix`, `types`, `check` = lint+types+leak-gate+tests, `eval`/`eval-llm` = score the prompts on the golden set, `serve`/`chat`/`ui`/`jobs` = the global agent, `chat-banking`/`api-banking`/`demo-banking` = the example, `clean`). Raw equivalents:
+A Makefile wraps the common ones: `make help` lists them (`install`, `install-all`, `test [T=kw]`, `test-fast` = skip what's marked `slow`, `lint`, `fix`, `types`, `check` = lint+types+leak-gate+tests, `eval`/`eval-llm` = score the prompts on the golden set, `serve`/`chat`/`ui`/`jobs` = the global agent, `chat-banking`/`api-banking`/`demo-banking` = the example, `clean`). Raw equivalents:
 
 ```bash
 uv venv --python 3.12 .venv && uv pip install -e ".[dev,api,anthropic]"  # setup
 .venv/bin/python -m pytest tests/ -q                        # all tests
+.venv/bin/python -m pytest tests/ -q -m "not slow"          # the inner loop (make test-fast)
 .venv/bin/python -m pytest tests/test_planner.py::test_cycle_rejected  # one test
 .venv/bin/ruff check .                                      # lint
 .venv/bin/pyright                                           # types (config: [tool.pyright])
@@ -38,13 +39,12 @@ jobsmith --agent banking chat | serve                       # any agent, same sh
 
 - **A PR writes its decision record** in `docs/decisions/` (`NNNN` = issue number, `TEMPLATE.md`, a line in the index) whenever it takes a decision a later reader could undo without knowing why — the agent that measured and chose writes it, in the same PR. **`CLAUDE.md` gains a line only when a rule is created or changed**: a short statement plus `→ NNNN`. Never narrative.
 - **Run the `scribe` agent** (`.claude/agents/scribe.md`) every ~3 merges, after a batch of parallel PRs lands, or when this file nears its budget: it writes missing records, keeps the index, fixes stale claims and writes a brief in `docs/briefs/` covering `main` since the last one.
+- **Falsify with the targeted test** (file or `-k`), not the whole suite: `make test-fast` (`-m "not slow"`) while iterating, the full suite once before the PR — a delegated task that re-runs everything per falsification pays the slow tests' cost every time. → 0109
 - **One short-lived branch per issue**, off `main`: `feat/<n>-<slug>`, `fix/<n>-<slug>`, `chore/<slug>` (`gh issue develop <n>` creates one already linked). Open a PR, let CI run, merge, delete. **No `develop` branch**: there are no releases yet, so it would only add a merge — the PR + CI is the integration point it used to provide. Releases, when they come, are tags.
 - `main` stays green. CI (`.github/workflows/ci.yml`) runs what `make check` runs — lint, **types**, the leakage gate, tests — on push and PR across Python 3.11 and 3.12, plus `uv lock --check` so the lockfile cannot silently drift from pyproject. CI installs **every** extra, so it is the stricter reading: the optional providers' imports resolve there and are type-checked, where a plain `make install` (`.[dev,api]`) leaves them unresolved.
 - **The type gate (`make types`, pyright)** is the only check that sees a signature that lies; pyright rather than mypy because Pylance is pyright, so `[tool.pyright]` configures editor and gate at once. → 0031
   - **`reportTypedDictNotRequiredAccess` is on**: `query` is `Required[str]` (guaranteed at entry); every other state key is guaranteed only by graph order and is read with `.get()` plus a default, next to a comment naming the node that guarantees it. **Never blanket-`# pyright: ignore` it** — a site where neither is honest is a finding about the graph. → 0031
-  - `reportMissingImports` is a **warning**, not an error: the optional extras are imported lazily behind `try/except ImportError`, and their absence under `.[dev,api]` is a fact about that environment, not a defect. A misspelled import stays visible and is loud at runtime anyway.
-  - Scope is `jobsmith/`. `tests/` and `evals/` are out, and `typeCheckingMode` is `basic`, not `strict` — the point is a gate that holds, not a maximal one.
-  - pyright is a Python wrapper around a bundled JS checker: it needs a `node` on `PATH`. GitHub runners have one; without one it silently downloads a node build on first run, which is why `make types` is fast here and may not be on a fresh machine.
+  - `reportMissingImports` is a **warning**, not an error (lazy optional extras); scope is `jobsmith/` only, `typeCheckingMode: basic`; pyright needs `node` on `PATH` (silently downloaded on first run if missing, which is why a fresh machine's first `make types` is slow). → 0031
 - **`main` is protected**: PR required, the three checks must pass, admins included, no force-push. **Status checks are strict** — a branch must contain the current `main` before it can merge, so CI validates the *post-merge* state rather than a stale snapshot. When several PRs are in flight, each merge invalidates the rest: bring them up to date with `gh pr update-branch <n>` (or a rebase) and let CI re-run. Green checks on a stale base do not mean the merge is green. → 0000
 - **`uv.lock` is committed**; regenerate it (`uv lock`) in the same commit as any dependency change — version drift has bitten this project three times. → 0000
 - **Parallel sessions use git worktrees**, one per issue — separate checkouts of the same repo, so two sessions never fight over the working tree or the current branch:
@@ -73,7 +73,7 @@ Domain-leakage gate (`make leak-check`, must return nothing): `grep -ri --includ
 
 - **Live progress and produced files are on the port**: `subscribe`/`unsubscribe`, `list_outputs`, `find_output`. `DaemonClient.subscribe` drops on a full queue like `InProcessEvents`; **`None` on the queue means the stream is over** and is never dropped. `find_output` locates a file on the machine that ran the job, identically on both backings. `tests/test_service.py` asserts identical answers from both. → 0048
 - **The port throws exactly `BinaryDeliverable`, `ChatStreamError`, `ServiceUnavailable`.** `DaemonClient` translates `httpx.TransportError` (only in `_request`/`_streaming`) and **nothing else** — a 500 is a defect; `LocalAgentService` translates nothing; `_read_events` says a dead daemon as the `None` marker. Front-ends catch `ServiceUnavailable` **by name**, never a broad `except`. → 0064
-- **A turn is a flow**: `stream`/`stream_approval` are abstract; `send`/`approve` are `terminal_of(self.stream(...))`. Events are dicts (`as_event`); a sixth, `job_started`, and the job's answer as `token`s came with #83 (→ 0083). **`Message.content` is the concatenation of the turn's `Token`s**, not the model's last message — backing parity cannot see a divergence, `test_a_turn_answers_the_same_whether_it_is_waited_for_or_watched` can. Terminals: `{"type": "message", "content"}`, `{"type": "proposal", "query", "rationale", "sources"}`. → 0050
+- **A turn is a flow**: `stream`/`stream_approval` are abstract; `send`/`approve` are `terminal_of(self.stream(...))`. Events are dicts (`as_event`); a sixth, `job_started`, and the job's answer as `token`s came with #83 (→ 0083); a seventh, `job_planned` (`{job_id, steps}`), with #86 (→ 0086). **`Message.content` is the concatenation of the turn's `Token`s**, not the model's last message — backing parity cannot see a divergence, `test_a_turn_answers_the_same_whether_it_is_waited_for_or_watched` can. Terminals: `{"type": "message", "content"}`, `{"type": "proposal", "query", "rationale", "sources"}`. → 0050
 - **The chat stream never drops a token**: no queue on the path (runner generator → `StreamingResponse` → `aiter_lines`); an undecodable SSE line or a stream with no terminal raises `ChatStreamError`. `/events` is the opposite and sheds. → 0050
 
 ### CLI + daemon (`cli/`) — where jobs actually run
@@ -84,6 +84,7 @@ The point of this layer: **a job must outlive the command that launched it**. `j
 - **All diagnostics go to stderr** (banners, tool activity); stdout stays pipeable and carries the answer's tokens; both are flushed per write. → 0000
 - The REPL renders the flow with no fallback branch and never prints the terminal (the tokens delivered it); a mid-turn `ChatStreamError` is said on stderr and the loop continues. → 0050
 - **The job notice is on stdout**, one `job_lines` renderer for notice and proposal, ending `stop it : /cancel <id>`. → 0083
+- **The plan is activity, not record**: `job_planned` goes to stderr as `… plan: a + b → c` (waves from `core.state.plan_waves`); the TUI says it on the activity line, never in the conversation. → 0086
 - `run_repl` wraps each command in one `except ServiceUnavailable`; `run_command` likewise (exit 1). → 0064
 - `cli/main.py` — argparse; `--llm` is exported as `$JOBSMITH_LLM` so `pick_provider` sees it from both stacks. Bare `jobsmith` == `jobsmith chat`.
 - Sessions are **rebuildable by id**: the API's registry is only a cache, the conversation lives in the checkpointer under `thread_id=session_id`, so `jobsmith chat --session <id>` resumes across a daemon restart (and gets the finished-job announcement). `session_factory` therefore takes an optional `session_id`.
@@ -122,7 +123,7 @@ AgentDefinition(
 ### The composition root (`app/`)
 
 Wiring only, no content — everything here is domain-neutral:
-- `providers.py`: `pick_provider` (one `--llm=` flag / key auto-detect shared by both LLM stacks), `make_llm` (job engine, `clients.py` adapters), `make_chat_model` (LangChain), `load_dotenv`, and the keyless fakes — `KeywordLLM` plans by **parsing capability names out of the rendered planner prompt** (works with any registry), `KeywordChatModel` proposes a job on analysis-ish keywords.
+- `providers.py`: `pick_provider` (one `--llm=` flag / key auto-detect shared by both LLM stacks), `make_llm` (job engine, `clients.py` adapters), `make_chat_model` (LangChain), `load_dotenv`, and the keyless fakes — `KeywordLLM` plans by **parsing capability names out of the rendered planner prompt** (works with any registry), `KeywordChatModel` runs a job on analysis-ish keywords (since #83: synchronous by default, no proposal card unless `$JOBSMITH_APPROVE_JOBS` is set).
 - `agent.py`: `build_app(agent=..., **overrides) -> AgentApp` composes ONE agent on one `AsyncExitStack`. **`reports_dir` is resolved once, to an absolute path** (`pick_reports_dir`); `AgentContext(readable_roots=(reports_dir,))`; one `StoreJobRepository` serves both the manager and the `PriorJobSource`. → 0063
 - `persistence.py`: `pick_db()` (arg > `--db=` > `$JOBSMITH_DB` > `<data dir>/jobs.db`) + `open_persistence(spec, stack)` → `(checkpointer, store)`, teardown on the caller's `AsyncExitStack`.
   - **Default: a SQLite file under `data_dir()`** (`$XDG_DATA_HOME/jobsmith` if absolute, else the platform data dir, never the cwd); SQLite is a core dependency. **`memory` must be asked for by name**: tests, `evals/harness.py` and the demo pass `db="memory"`; `conftest.sandboxed_data_dir` fails the run if the suite wrote to the data dir. → 0063
@@ -163,7 +164,7 @@ errors: execution_error → escalate (some ok result) | user_error (none) → EN
 
 - **Router** (`core/router.py`) is a dedicated triage node — the planner never decides *whether* to plan. Routes live in `Router.routes` (`plan`, `direct` → `DirectResponder`); **fail-open** to `plan`. New route = `Router.routes` entry + node + `AgentBuilder.route_targets` entry. → 0000
   - An **empty registry** routes `"direct"` structurally, before the LLM call, fallback included. → 0038
-- **Document intent** (`core/document.py`), a decision node **before triage**: fills silence, never overrides (a seeded `document_formats` returns before any model call), chooses from `available_formats(registry)` so it cannot refuse, fail-open (writes nothing = no file), writes only to state (`FormatsChosen`, folded by `JobManager._apply`). → 0090
+- **Document intent** (`core/document.py`), a decision node **before triage**: fills silence, never overrides (a seeded `document_formats` returns before any model call), chooses from `available_formats(registry)` and proves a choice (`confirm`) so it cannot refuse, fail-open (writes nothing = no file), writes only to state (`FormatsChosen`, folded by `JobManager._apply`). → 0090, 0108
   - **No document unless asked**: `_deliverable_wanted` is `bool(job.formats)`; silence is `FormatsChosen(None)`. **`None` (may be filled) and `[]` (never overridden) are two facts** — never `formats or []`. → 0096
 - **Planner** (`core/planner.py`) renders its prompt from `registry.specs()`, validates the LLM's JSON DAG: names against the registry, drops steps whose `is_applicable(state)` is false (generalizes "vision only if image" via `spec.requires_inputs`), **prunes dropped names from surviving `depends_on`**, Kahn cycle check.
   - A plan emptied by applicability routes to `direct_answer` (`_route_after_planner`); `{"steps": []}` from the model is still an error. → 0038
@@ -200,7 +201,7 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 - **An annex is a file a step declared** via `ArtifactStore` + `artifact_meta(...)`, collected in plan order at **every** terminal, assigned never appended; a declared-but-absent file goes in `job.error`. → 0035, 0041
 - **Name, title and formats are facts on the job**, refused in `create_job`; a title is cut on a word (`document_title`). → 0055, 0054
 - **The report is title + answer + one `job_reference` line**; the record holds the rest (`with_provenance` to recite it). → 0085
-- **HTML takes no dependency**: escape everything first, add only our own tags, no links, nested lists clamped to the open-list stack. **The PDF is that page printed**, engine probed at startup; `.[pdf]` needs pango/cairo. → 0009, 0076, 0034
+- **HTML takes no dependency**: escape everything first, add only our own tags, no links, nested lists clamped to the open-list stack. **The PDF is that page printed**; `.[pdf]` needs pango/cairo. **Offered when installed** (`find_spec`, never an instance); the engine is imported, cached both ways, only on first need — `create_job` (a `ValueError` with 0034's two messages), the document step's `confirm`, or startup when the deployment default is PDF. → 0009, 0076, 0034, 0108
 - **Capabilities present their own results**: `Capability.render_report(result)` (twin of `render_context`, which targets the model) with `default_result_markdown` as the base implementation — prose stays prose, list[str] becomes bullets, only structured values fall back to JSON. Never grow that default to learn payload shapes: override `render_report` in the capability instead.
 - `Job.usage` refreshes on every persist; per-step usage is in `meta["usage"]`, failures included. → 0002
 - `Job` also carries `session_id` (chat session that launched it) and an `announced` flag (`list_finished_unannounced`/`mark_announced` drive chat notifications).
@@ -209,11 +210,12 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 
 `ChatSession(manager, model, *, session_id, system_prompt, checkpointer).build()` → a `langchain.agents.create_agent` (LangChain model, NOT the framework's LLMClient — deliberate two-stack split: LangChain handles per-provider tool formats; the job engine stays dependency-light).
 
-- **`chat/runner.py` alone knows what `astream` emits** (`messages`/`updates`/`custom`): `Token`, `ToolStarted`/`ToolFinished` (real tool name; wording is the front-end's), `JobStarted`, then exactly one terminal, `Message` or `Proposal`. The job's answer is a `Token` from the custom channel. → 0050, 0083
+- **`chat/runner.py` alone knows what `astream` emits** (`messages`/`updates`/`custom`): `Token`, `ToolStarted`/`ToolFinished` (real tool name; wording is the front-end's), `JobStarted`, `JobPlanned`, then exactly one terminal, `Message` or `Proposal`. The job's answer is a `Token` from the custom channel. → 0050, 0083
 - **Tools** (`chat/tools.py`) wrap JobManager use-cases, scoped to the session's own jobs. `launch_job` **runs the task**: `create_job(session_id=...)` + `start_job`, then it *waits* on that task for `pick_sync_timeout()`.
 - **Synchronous by default, promoted by the clock**: `start_job` then `asyncio.wait` (never `wait_for`) for `$JOBSMITH_SYNC_TIMEOUT` (20 s; `0` = never); no classification; a job finished in the turn is `mark_announced`. → 0083
+- **The plan is announced while the turn waits**, from `manager.subscribe()` (subscribed before `start_job`, drained with `None` when the run ends, released in `finally`); never after promotion; a one-step plan is not announced. → 0086
 - **The answer is written verbatim into the turn**, never returned through the model; a promoted answer uses the same channel up to `$JOBSMITH_INLINE_ANSWER_MAX` (2 000), or at any length when no file was written. → 0083, 0085
-- **The approval card is a notice** (`job_started`: query, sources, name/title/formats, job id); the gate survives behind `$JOBSMITH_APPROVE_JOBS`. → 0083
+- **The approval card is a notice** (`job_started`: query, sources, `from_jobs` as short id + start of query, name/title/formats, job id); the gate survives behind `$JOBSMITH_APPROVE_JOBS`. → 0083, 0104
 - **The engine never sees the thread**: a self-contained `query`, plus `recent_conversation()` as `inputs[CONVERSATION_INPUT_KEY]`. `source_files` and `from_jobs` (resolved against **this session's** jobs) are `launch_job` arguments. → 0004, 0060, 0074
 - **Notifications** (`JobNotificationMiddleware.awrap_model_call`) are transient `SystemMessage`s in the model *request*, never in state. → 0006
   - Completion (every terminal, `ANNOUNCEABLE`) and progress (only when `progress_signature()` moved) notices go **directly after the system prompt** (`_inject`), where Anthropic hoists them. → 0006

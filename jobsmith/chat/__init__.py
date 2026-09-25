@@ -10,6 +10,7 @@ LLMClient protocol.
 from .runner import (
     ChatEvent,
     ChatRunner,
+    JobPlanned,
     JobStarted,
     Message,
     Proposal,
@@ -25,6 +26,7 @@ __all__ = [
     "ChatRunner",
     "ChatSession",
     "DEFAULT_CHAT_SYSTEM_PROMPT",
+    "JobPlanned",
     "JobStarted",
     "Message",
     "Proposal",

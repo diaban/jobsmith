@@ -888,6 +888,7 @@ async def test_notices_stay_adjacent_to_the_leading_system_prompt(
     assert call[-1].content == "unrelated question"
 
 
+@pytest.mark.slow  # real langchain_anthropic/langchain_openai imports cost seconds
 async def test_notices_survive_the_real_provider_formatters(store, checkpointer, tmp_path):
     """The bug this class of test exists for: every other test scripts the
     model, so no notice's *formatting* was ever exercised. A non-adjacent

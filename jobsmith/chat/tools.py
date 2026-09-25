@@ -90,6 +90,7 @@ it can still be fixed.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import sys
 from collections.abc import Callable, Iterable
@@ -112,9 +113,24 @@ from ..jobs.models import Job, JobStatus
 from ..jobs.report import (
     available_formats,
     document_stem,
+    document_title,
     ensure_formats_available,
 )
-from .runner import CUSTOM_ANSWER, CUSTOM_JOB_STARTED
+from .runner import CUSTOM_ANSWER, CUSTOM_JOB_PLANNED, CUSTOM_JOB_STARTED
+
+#: How much of a referenced job's query the notice carries (#104): enough to
+#: recognise which of the conversation's jobs it is, cut on a word — the
+#: notice names the job, it does not restate it.
+REFERENCE_QUERY_MAX = 60
+
+
+def job_reference(job: Job) -> dict[str, str]:
+    """A job a run builds on, as the notice shows it: its id and the start of
+    its query. Plain values, because this crosses HTTP and both backings must
+    answer with the same JSON."""
+    return {"job_id": job.job_id,
+            "query": document_title(job.query, limit=REFERENCE_QUERY_MAX)}
+
 
 # Bounds on the conversation excerpt attached to a launch (~400 tokens worst case).
 MAX_CONTEXT_TURNS = 6      # most recent user/assistant turns kept
@@ -332,6 +348,41 @@ def stream_writer() -> Callable[[dict[str, Any]], None]:
         return lambda _payload: None
 
 
+async def announce_plan(manager: JobManager, job_id: str,
+                        events: asyncio.Queue,
+                        write: Callable[[dict[str, Any]], None]) -> None:
+    """Write the job's plan into the turn the moment it is decided (#86).
+
+    Driven by the manager's own event stream, which already says "this job
+    moved" when the plan lands (`PlanReady` persists a summary for exactly
+    that): an event for this job is a reason to re-read it, and the first
+    read that finds a plan announces it and ends the watch. An event says
+    *something changed*, never what (0048), so a dropped one costs a later
+    announcement and nothing else — the next step landing re-reads it.
+
+    `None` on the queue is the waiter's "the run is over and so is the turn's
+    waiting": the watch drains what was published before it, so a run that
+    finished before this caught up still has its plan said, in order, before
+    its answer. A job that ends with no plan (answered directly) says nothing.
+
+    A plan of one step is not announced: it tells the reader nothing the
+    `job_started` notice did not, and the line would only repeat its name.
+    """
+    while (event := await events.get()) is not None:
+        if event.get("job_id") != job_id:
+            continue
+        job = await manager.get_job(job_id)
+        if job is None:
+            return
+        if job.plan:
+            if len(steps := job.plan["steps"]) > 1:
+                write({"event": CUSTOM_JOB_PLANNED, "job_id": job_id, "steps": [
+                    {"capability": step["capability"],
+                     "depends_on": list(step.get("depends_on") or [])}
+                    for step in steps]})
+            return
+
+
 def _files_of(job: Job) -> str:
     return ", ".join(output.path for output in job.outputs)
 
@@ -536,7 +587,7 @@ def make_job_tools(
         # run, like an unusable format — the model can fix it on the spot,
         # where a job that silently dropped it would answer a different
         # question from the one the user asked.
-        referenced: list[str] = []
+        referenced: list[Job] = []
         for prefix in (str(j).strip() for j in from_jobs or []):
             if not prefix:
                 continue
@@ -545,9 +596,13 @@ def make_job_tools(
                 return (f"NOT launched: no unique job of this conversation matches "
                         f"{prefix!r}. Nothing ran. Check the id (list the session's "
                         "jobs if you need to) and propose a launch again.")
-            referenced.append(found.job_id)
+            # Once each, first-seen order: a full id and its prefix name the
+            # same run, and `prior_jobs` would otherwise load it twice and
+            # spend its budget twice — and the notice would list it twice.
+            if all(found.job_id != seen.job_id for seen in referenced):
+                referenced.append(found)
         if referenced:
-            job_inputs[FROM_JOBS_INPUT_KEY] = referenced
+            job_inputs[FROM_JOBS_INPUT_KEY] = [job.job_id for job in referenced]
 
         # Refused BEFORE the card, not after the run: a format nothing can
         # render here and a name that is not a filename are both things the
@@ -561,7 +616,9 @@ def make_job_tools(
             # `create_job` alone because the notice below must show the
             # formats it became, not the alias (#55: what the user is shown
             # is what will be written).
-            wanted = ensure_formats_available(formats, default=manager.default_formats)
+            # In a thread: the first PDF request loads its engine (#108).
+            wanted = await asyncio.to_thread(
+                ensure_formats_available, formats, default=manager.default_formats)
             given = (document_name or "").strip()
             name = document_stem(given) if given else ""
         except ValueError as refused:
@@ -585,6 +642,11 @@ def make_job_tools(
             # gets, and for the stronger reason: this is the user handing
             # something over, not the model restating what they asked
             "sources": sources,
+            # the earlier jobs it builds on (#74), named so the user can tell
+            # which of this conversation's jobs the model picked (#104): a
+            # wrong one of three, or a prefix that resolved to another, is
+            # otherwise a second silent decision, exactly like a file
+            "from_jobs": [job_reference(job) for job in referenced],
         }
 
         # The gate, when a deployment asked for it back. Off by default: the
@@ -615,8 +677,31 @@ def make_job_tools(
         # "stop waiting", so nothing is cancelled and nothing is restarted:
         # the promoted run IS the run that was about to finish, and a turn
         # that dies (a UI cancelling its worker) does not take it with it.
-        task = manager.start_job(job.job_id)
-        done, _still_running = await asyncio.wait({task}, timeout=timeout)
+        #
+        # The plan is announced while it waits (#86), from the manager's own
+        # events — subscribed BEFORE the run starts, so the one that says the
+        # plan landed cannot be published to nobody. Only for as long as the
+        # turn waits: a promoted run's plan reaches the user the way the rest
+        # of its progress does (the progress notice, the jobs pane, `/job`),
+        # never as a message nobody asked for.
+        events = manager.subscribe()
+        watch = asyncio.create_task(announce_plan(manager, job.job_id, events, write))
+        # A courtesy, never a reason for the run's own turn to fail: whatever
+        # stopped the watch is retrieved here and goes no further.
+        watch.add_done_callback(lambda t: t.cancelled() or t.exception())
+        try:
+            task = manager.start_job(job.job_id)
+            done, _still_running = await asyncio.wait({task}, timeout=timeout)
+            if done:
+                # drain: what the run published before it ended is said
+                # before its answer, and then the watch is over (a queue too
+                # full to take the marker has shed events anyway)
+                with contextlib.suppress(asyncio.QueueFull):
+                    events.put_nowait(None)
+                    await asyncio.wait({watch})
+        finally:
+            watch.cancel()
+            manager.unsubscribe(events)
         if not done:
             return _promoted(job, timeout)
 

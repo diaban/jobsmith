@@ -51,13 +51,24 @@ on the record (`deliverable_expected`) and the answer is delivered in full
 either way (#85), where an invented one is a file nobody asked for — and it
 is still the only side this node can fail on without refusing.
 
+**What it is offered is not yet proved** (#108). The list is what the
+deployment has *installed*, answered without loading any engine — proving
+that PDF renders costs a ~4 s import that composing the app must not pay. So
+a choice is confirmed before it is written (`confirm`, handed down with the
+list, `jobs/report.py::renderable_formats`): the first run whose request
+chose PDF probes the engine there, still before any work, and a format that
+cannot render is dropped like any other name outside the list. No job
+reaches its end to discover its format was never renderable.
+
 What it deliberately does NOT decide: the document's *title* and *name*. A
 title is already derived from the request mechanically (#54) and a second,
 interpretive derivation beside it would need a rule saying which wins.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import Callable, Sequence
 
 from .deps import Deps
 from .profile import DEFAULT_DOCUMENT_INTENT_TEMPLATE
@@ -81,6 +92,7 @@ class DocumentIntent:
         formats: tuple[str, ...] | list[str] = (),
         *,
         default_formats: tuple[str, ...] | list[str] = (),
+        confirm: Callable[[Sequence[str]], Sequence[str]] | None = None,
         prompt_template: str | None = None,
     ):
         self.deps = deps
@@ -94,6 +106,10 @@ class DocumentIntent:
         # request for an unnamed document silent, i.e. no file: this node
         # does not pick a format on the deployment's behalf.
         self.default_formats = tuple(default_formats)
+        # Which of a chosen list can REALLY be rendered — the proof `formats`
+        # does not carry (#108). Blocking (it may import an engine), so it
+        # runs in a thread. None trusts the list, as a hand-built graph does.
+        self.confirm = confirm
         self.prompt_template = prompt_template or self.DEFAULT_TEMPLATE
 
     # -------- Prompt rendering --------
@@ -179,7 +195,11 @@ class DocumentIntent:
                 # not overrule an explicit "no document".
                 return {"document_formats": []}
             # The most specific thing the model said wins — see `_read`.
-            if chosen := self._read(answer, reply.get("formats")):
+            chosen = self._read(answer, reply.get("formats"))
+            if chosen and self.confirm is not None:
+                proved = await asyncio.to_thread(self.confirm, chosen)
+                chosen = [name for name in chosen if name in proved]
+            if chosen:
                 return {"document_formats": chosen}
         except Exception:  # fail-open by design, see the module docstring
             pass

@@ -21,12 +21,12 @@ from pathlib import Path
 
 import httpx
 import pytest
-from conftest import ScriptedChatModel
+from conftest import FakeLLM, ScriptedChatModel, plan_json
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
 from test_chat import launch_call
 from test_cli import daemon_client_over, wait_done
-from test_jobs import make_manager
+from test_jobs import SlowEcho, make_manager
 from test_report_pdf import StubPdf
 
 from jobsmith.api import create_api
@@ -153,7 +153,8 @@ async def test_identical_answers_through_either_backing(
         assert reply == {"type": "proposal", "query": "analyse it",
                          "rationale": "multi-step", "sources": [],
                          "document_name": "chair_notes",
-                         "document_title": "Comparatif", "formats": ["markdown"]}
+                         "document_title": "Comparatif", "formats": ["markdown"],
+                         "from_jobs": []}
 
         approved = await client.approve(session_id, True)
         assert approved["type"] == "message"
@@ -319,7 +320,12 @@ async def test_a_deliverable_declared_binary_is_refused_without_reading_it(tmp_p
         await service.get_report("j1")
 
 
-@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
+@pytest.mark.parametrize("over_http", [
+    pytest.param(False, id="local"),
+    # The only case in this file that actually starts a uvicorn server (see
+    # `_serving`) — marked so `make test-fast` need not bind a real socket.
+    pytest.param(True, id="http", marks=pytest.mark.slow),
+])
 async def test_progress_events_reach_either_backing(store, checkpointer, tmp_path, over_http):
     """A front-end must not have to ask which backing it holds to see a job move.
 
@@ -381,7 +387,7 @@ async def test_a_turn_is_the_same_flow_through_either_backing(
                                  "rationale": "multi-step", "sources": [],
                                  "document_name": "chair_notes",
                                  "document_title": "Comparatif",
-                                 "formats": ["markdown"]}
+                                 "formats": ["markdown"], "from_jobs": []}
 
         answering = [e async for e in client.stream_approval(session_id, True)]
         assert {"type": "tool_finished", "name": "launch_job"} in answering
@@ -470,7 +476,8 @@ async def test_a_task_runs_inside_the_turn_on_either_backing(
         assert started == {"type": "job_started", "job_id": job["job_id"],
                            "query": "analyse it", "rationale": "multi-step",
                            "sources": [], "document_name": "chair_notes",
-                           "document_title": "Comparatif", "formats": ["markdown"]}
+                           "document_title": "Comparatif", "formats": ["markdown"],
+                           "from_jobs": []}
 
         finished = await client.get_job(job["job_id"])
         assert finished["status"] == "done"
@@ -481,6 +488,224 @@ async def test_a_task_runs_inside_the_turn_on_either_backing(
         assert events[-1] == {"type": "message", "content": streamed}
     finally:
         await client.aclose()
+
+
+LONG_QUERY = ("compare the two ergonomic chairs on price, lumbar support, "
+              "warranty and delivery time")
+
+
+@pytest.mark.parametrize("approval", [False, True], ids=["notice", "proposal"])
+@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
+async def test_the_jobs_a_run_builds_on_cross_either_backing(
+    store, checkpointer, tmp_path, over_http, approval
+):
+    """#104: the earlier jobs a run is handed are shown like the files it may
+    open — on the notice and on the proposal, and identically on both
+    backings: a list of plain `{job_id, query}` dicts, never a tuple, with
+    each query cut on a word so the user recognises the job without the
+    notice restating it."""
+    manager = make_manager(store, checkpointer, tmp_path)
+    first = await manager.create_job(LONG_QUERY, session_id="s-builds")
+    second = await manager.create_job("price the standing desk", session_id="s-builds")
+    responses = [launch_call("a one-pager out of both", "builds on them",
+                             from_jobs=[first.job_id[:8], second.job_id[:8]]),
+                 AIMessage(content="launched!")]
+    saver = MemorySaver()
+
+    def session_factory(session_id=None):
+        from jobsmith.chat import ChatSession
+        return ChatSession(manager, ScriptedChatModel(responses=list(responses)),
+                           session_id=session_id, checkpointer=saver,
+                           approval_required=approval)
+
+    service = LocalAgentService(manager, session_factory)
+    client = daemon_client_over(create_api(service)) if over_http else service
+    try:
+        session_id = await client.new_session("s-builds")
+        events = [e async for e in client.stream(session_id, "one-pager out of both")]
+        (shown,) = [e for e in events if e["type"] in ("job_started", "proposal")]
+        assert shown["type"] == ("proposal" if approval else "job_started")
+        assert shown["from_jobs"] == [
+            {"job_id": first.job_id,
+             "query": "compare the two ergonomic chairs on price, lumbar support…"},
+            {"job_id": second.job_id, "query": "price the standing desk"},
+        ]
+    finally:
+        await client.aclose()
+
+
+# A plan worth announcing (#86): two steps that run together, then a chain.
+PLANNED_DEPS = {"research": ["web_search", "documents"], "analysis": ["research"]}
+PLANNED_STEPS = [
+    {"capability": "web_search", "depends_on": []},
+    {"capability": "documents", "depends_on": []},
+    {"capability": "research", "depends_on": ["web_search", "documents"]},
+    {"capability": "analysis", "depends_on": ["research"]},
+]
+
+
+class Gate(SlowEcho):
+    """A step that holds the run until the test says so — how "the plan is
+    shown while the run is still going" is observed, rather than inferred."""
+
+    def __init__(self, name: str):
+        super().__init__(name)
+        self.open = asyncio.Event()
+
+    async def work(self, state):
+        await self.open.wait()
+        return await super().work(state)
+
+
+def planned_manager(store, checkpointer, tmp_path, *, gate: Gate | None = None):
+    """A manager whose planner answers `PLANNED_STEPS`; `gate`, if given,
+    stands in for the first step, so the run cannot finish before it opens."""
+    caps = [gate or SlowEcho("web_search"), SlowEcho("documents"),
+            SlowEcho("research"), SlowEcho("analysis")]
+    llm = FakeLLM({"planner": plan_json(*[c.spec.name for c in caps], deps=PLANNED_DEPS)},
+                  default="A sufficiently long final answer for the plan test.")
+    return make_manager(store, checkpointer, tmp_path, caps=caps, llm=llm)
+
+
+def planned_service(manager, *, sync_timeout=None, responses=None):
+    saver = MemorySaver()
+    responses = responses or [launch_call("analyse it", "several steps"),
+                              AIMessage(content="done.")]
+
+    def session_factory(session_id=None):
+        from jobsmith.chat import ChatSession
+        return ChatSession(manager, ScriptedChatModel(responses=list(responses)),
+                           session_id=session_id, checkpointer=saver,
+                           sync_timeout=sync_timeout)
+
+    return LocalAgentService(manager, session_factory)
+
+
+@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
+async def test_the_plan_crosses_either_backing_between_the_notice_and_the_answer(
+    store, checkpointer, tmp_path, over_http
+):
+    """#86: `job_planned` carries the plan as the planner left it — steps in
+    plan order, each with its dependencies, as plain lists — identically on
+    both backings, after the notice that names the job and before the answer
+    the job produced. It is not a token, so the reply a caller that waits is
+    handed does not contain it."""
+    manager = planned_manager(store, checkpointer, tmp_path)
+    service = planned_service(manager)
+    client = daemon_client_over(create_api(service)) if over_http else service
+    try:
+        session_id = await client.new_session()
+        events = [e async for e in client.stream(session_id, "please analyse it")]
+        (job,) = await client.list_jobs(session_id=session_id)
+
+        (planned,) = [e for e in events if e["type"] == "job_planned"]
+        assert planned == {"type": "job_planned", "job_id": job["job_id"],
+                           "steps": PLANNED_STEPS}
+        kinds = [e["type"] for e in events]
+        assert kinds.index("job_started") < kinds.index("job_planned") < kinds.index("token")
+        assert "analysis" not in events[-1]["content"], "the plan leaked into the reply"
+    finally:
+        await client.aclose()
+
+
+async def test_the_plan_is_shown_while_the_run_is_still_going(store, checkpointer, tmp_path):
+    """The point of #86, observed: the plan reaches the turn while the first
+    step is still held — not discovered once the run is over. The gate only
+    opens when the turn has shown the plan, so a plan that travelled late
+    would hang here (bounded by the timeout) rather than pass."""
+    gate = Gate("web_search")
+    manager = planned_manager(store, checkpointer, tmp_path, gate=gate)
+    service = planned_service(manager)
+    session_id = await service.new_session()
+    seen: list[dict] = []
+
+    async def turn():
+        async for event in service.stream(session_id, "please analyse it"):
+            seen.append(event)
+            if event["type"] == "job_planned":
+                (job,) = await service.list_jobs(session_id=session_id)
+                assert job["status"] == "running"
+                assert not any(e["type"] == "token" for e in seen)
+                gate.open.set()
+
+    await asyncio.wait_for(turn(), timeout=10)
+    assert gate.open.is_set(), "the turn ended without ever showing the plan"
+    assert not manager.events._subscribers, "the turn left its subscription behind"
+
+
+async def test_a_run_faster_than_its_watch_still_has_its_plan_said_first(
+    store, checkpointer, tmp_path, monkeypatch
+):
+    """The watch reads the manager's events at its own pace; a run can end
+    before it has caught up (a busy daemon, a slow store). What the run
+    published before it ended is still said — and in order, before its
+    answer — because the waiter drains the watch instead of dropping it."""
+    manager = planned_manager(store, checkpointer, tmp_path)
+
+    class Lagging(asyncio.Queue):
+        async def get(self):
+            await asyncio.sleep(0.05)
+            return await super().get()
+
+    def lagging_subscribe(*, max_queue=256):
+        queue = Lagging(maxsize=max_queue)
+        manager.events._subscribers.add(queue)
+        return queue
+
+    monkeypatch.setattr(manager, "subscribe", lagging_subscribe)
+    service = planned_service(manager)
+    session_id = await service.new_session()
+    events = [e async for e in service.stream(session_id, "please analyse it")]
+    kinds = [e["type"] for e in events]
+    assert "job_planned" in kinds, "the plan was lost to a watch that fell behind"
+    assert kinds.index("job_planned") < kinds.index("token")
+
+
+async def test_a_one_step_plan_and_a_direct_answer_announce_nothing(
+    store, checkpointer, tmp_path
+):
+    """A plan of one step tells nothing the notice did not, and a reply that
+    ran no job has no plan: neither turn carries `job_planned`."""
+    one_step = _service_over(store, checkpointer, tmp_path, approval=False)
+    session_id = await one_step.new_session()
+    events = [e async for e in one_step.stream(session_id, "please analyse it")]
+    assert "job_started" in [e["type"] for e in events], "no job ran; this proves nothing"
+    assert "job_planned" not in [e["type"] for e in events]
+
+    direct = planned_service(planned_manager(store, checkpointer, tmp_path),
+                             responses=[AIMessage(content="Paris.")])
+    session_id = await direct.new_session()
+    events = [e async for e in direct.stream(session_id, "capital of France?")]
+    assert [e["type"] for e in events] == ["token"] * (len(events) - 1) + ["message"]
+
+
+async def test_a_promoted_run_says_nothing_of_its_plan_once_the_turn_is_over(
+    store, checkpointer, tmp_path
+):
+    """#86, the promoted case: the plan travels only while the turn waits.
+    With no wait at all (`0`), the turn ends before the planner answers and
+    nothing about the plan is written — not into that turn, and the watch
+    does not outlive it (no subscriber left on the manager). The plan is
+    still on the record, where the progress notice, the jobs pane and `/job`
+    read it."""
+    gate = Gate("web_search")
+    manager = planned_manager(store, checkpointer, tmp_path, gate=gate)
+    service = planned_service(manager, sync_timeout=0)
+    session_id = await service.new_session()
+    events = [e async for e in service.stream(session_id, "please analyse it")]
+    assert "job_started" in [e["type"] for e in events]
+    assert "job_planned" not in [e["type"] for e in events]
+    assert not manager.events._subscribers, "the watch outlived the turn"
+
+    (job,) = await service.list_jobs(session_id=session_id)
+    for _ in range(500):                       # the run goes on, unwatched
+        if (await service.get_job(job["job_id"]))["plan"]:
+            break
+        await asyncio.sleep(0.01)
+    gate.open.set()
+    finished = await wait_done(service, job["job_id"])
+    assert [s["capability"] for s in finished["plan"]["steps"]] == [
+        s["capability"] for s in PLANNED_STEPS]
 
 
 async def test_the_event_reader_survives_a_line_it_cannot_read():

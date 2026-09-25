@@ -68,7 +68,7 @@ agent> compare hexagonal and layered architectures for an LLM agent, as a report
       writes   : architecture_comparison.md
       stop it  : /cancel 17abcd66
 
-  … running the task
+  … plan: research → analysis → critique
   It is taking longer than 20s, so it is now running in the background —
   I will report back here when it lands.
 
@@ -78,7 +78,7 @@ agent> /jobs
 agent> and which one does LangGraph itself use?
   ...
 
-  [the job finishes — the next turn carries the synthesis and the report path]
+  [the job finishes — the next turn carries the answer, verbatim, and names the report file]
 ```
 
 Three things are on that notice on purpose, and they used to be on a y/N card:
@@ -124,8 +124,9 @@ exists, empty, so old install commands keep working.
 own knowledge or to run a task on the engine; it does not ask permission, it
 says what it is doing. The answer is printed **as it is written** — and when a
 task answers, its answer is printed *verbatim*, never a summary of it — while
-what the agent is doing meanwhile (`… running the task`) shows on stderr, so
-stdout stays the conversation and nothing else. In-REPL commands:
+what the agent is doing meanwhile (`… running the task`, then the plan the
+moment it is decided, `… plan: web_search → research → analysis`) shows on
+stderr, so stdout stays the conversation and nothing else. In-REPL commands:
 
 | command | |
 |---|---|
@@ -290,8 +291,13 @@ the prose:
 ```
 you : make a one-pager out of that comparison
       task     : condense the chair comparison into a one-page brief
+      builds on: job 8aea26ec — compare the two ergonomic chairs on price, lumbar…
       stop it  : /cancel 4f21b0aa
 ```
+
+The notice names each job the run builds on — its short id and the start of
+its request — so a follow-up pointed at the wrong one of your recent jobs is
+caught before it runs, as a file you did not mean to hand over is.
 
 A report is a deliverable, not a trace: it never carried the research notes or
 the retrieved pages, it may be a PDF nobody can read back, and since a run only
@@ -467,8 +473,11 @@ sudo apt-get install -y libpango-1.0-0 libpangoft2-1.0-0   # Debian/Ubuntu
 
 (`ubuntu-latest` already has them — CI renders a PDF with no extra step. A
 container built `FROM python:3.12-slim` does not.) A format nothing can
-render refuses at startup rather than at the end of the first job that asked
-for one.
+render is refused when a job asks for it — before the job exists, with a
+message saying whether `pip install` or the system libraries are missing —
+never at the end of its run; with `JOBSMITH_REPORT_FORMAT=pdf` it is refused
+at startup. The engine (~4 s to import) is loaded only then, so commands that
+never ask for a PDF do not pay for it.
 
 **Or several at once.** The variable takes a comma-separated list —
 `JOBSMITH_REPORT_FORMAT=markdown,html` — and a run asked for a document then
@@ -630,7 +639,7 @@ handle per-provider tool formats), the job engine uses a dependency-light
 |---|---|
 | `POST /sessions` · `POST /sessions/{id}/messages` | chat; a reply is `{"type": "message"}`, or `{"type": "proposal"}` where the approval gate was kept. A task runs inside the turn, so this can take as long as the task |
 | `POST /sessions/{id}/approval` | answer a proposal — `{"approved": bool}` |
-| `.../messages/stream` · `.../approval/stream` | the same turn as SSE: `token`, `tool_started`, `tool_finished`, `job_started`, then that same reply |
+| `.../messages/stream` · `.../approval/stream` | the same turn as SSE: `token`, `tool_started`, `tool_finished`, `job_started`, `job_planned`, then that same reply |
 | `GET /jobs` · `GET /jobs/{id}` | listing and full detail (plan, timings, results) |
 | `POST /jobs` · `POST /jobs/{id}/cancel` | direct launch, cancellation |
 | `GET /jobs/{id}/outputs[/{name}]` · `/report` | the deliverables (`/report` is text-only: `415` on a PDF, pointing at the download) |
@@ -657,7 +666,7 @@ handle per-provider tool formats), the job engine uses a dependency-light
 | `$JOBSMITH_REPORTS_DIR` | where deliverables and annexes are written (default: `reports/` in the data directory). Resolved to an absolute path at startup; it is also the directory `read_files` may read a report back from |
 | `$XDG_DATA_HOME` | relocates the data directory (`$XDG_DATA_HOME/jobsmith`), on every platform |
 | `$JOBSMITH_PRICES` | per-model prices for the cost estimate, as inline JSON or a path to a JSON file (USD per million tokens) |
-| `$JOBSMITH_REPORT_FORMAT` | `markdown` (default), `html` or `pdf` (extra `.[pdf]` + pango/cairo) — the format of a document **asked for without naming one** ("…as a report", `formats: ["default"]`). It never causes a file to be written: a request that says nothing about a document gets none (#96). A comma-separated list (`markdown,pdf`) writes one file per format, the first being the main one; a format nothing can render here is refused at startup |
+| `$JOBSMITH_REPORT_FORMAT` | `markdown` (default), `html` or `pdf` (extra `.[pdf]` + pango/cairo) — the format of a document **asked for without naming one** ("…as a report", `formats: ["default"]`). It never causes a file to be written: a request that says nothing about a document gets none (#96). A comma-separated list (`markdown,pdf`) writes one file per format, the first being the main one; a format nothing can render here is refused at startup (a PDF asked for by one request is checked when that job is created) |
 | `--url` / `--local` | point at another daemon / never use one |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | key auto-detection; Anthropic wins if both are set |
 | `ANTHROPIC_MODEL`, `OPENAI_MODEL`, `OPENAI_BASE_URL` | model override; the base URL points at Ollama, vLLM or a gateway |

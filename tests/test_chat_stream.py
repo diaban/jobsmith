@@ -35,7 +35,7 @@ from jobsmith.chat import (
 )
 from jobsmith.chat.session import NOTICE_MARKER
 from jobsmith.cli.client import DaemonClient
-from jobsmith.cli.repl import TurnPrinter, render_turn, run_repl, tool_activity
+from jobsmith.cli.repl import TurnPrinter, job_lines, render_turn, run_repl, tool_activity
 from jobsmith.service import ChatStreamError, LocalAgentService, ServiceUnavailable
 
 ANSWER = "A reasonably long answer that no single chunk should carry."
@@ -285,6 +285,62 @@ async def test_the_repl_shows_what_the_run_will_do_and_how_to_stop_it(capsys):
     assert "writes   : chairs.md, chairs.html" in out
     assert "stop it  : /cancel abcdef01" in out
     assert "the answer" in out
+
+
+def test_the_repl_names_the_jobs_a_run_builds_on():
+    """#104: an earlier job a run is handed is shown like a file it may open —
+    by the short id `/job` and `/cancel` take and the start of its query, one
+    line each, on the notice and on the proposal alike (one renderer)."""
+    refs = [{"job_id": "0123456789abcdef", "query": "compare the two chairs"},
+            {"job_id": "fedcba9876543210", "query": "price the standing desk"}]
+    notice = {"type": "job_started", "job_id": "abcdef0123456789",
+              "query": "a one-pager out of both", "rationale": "several steps",
+              "sources": [], "formats": None, "from_jobs": refs}
+    proposal = {k: v for k, v in notice.items() if k != "job_id"} | {"type": "proposal"}
+
+    lines = job_lines(notice)
+    assert lines[2:4] == ["    builds on: job 01234567 — compare the two chairs",
+                          "             : job fedcba98 — price the standing desk"]
+    assert job_lines(proposal) == lines
+
+    # nothing referenced, nothing said — an empty line would read as a claim
+    assert not any("builds on" in line
+                   for line in job_lines(notice | {"from_jobs": []}))
+
+
+async def test_the_repl_says_the_plan_as_activity_not_as_the_answer(
+    store, checkpointer, tmp_path, capsys
+):
+    """#86, through the real service: the plan is said on stderr, beside the
+    activity it sharpens, as the waves in order — two steps that run together
+    side by side. stdout, the record of the turn (the notice, the answer),
+    does not carry it."""
+    from test_service import planned_manager, planned_service
+
+    service = planned_service(planned_manager(store, checkpointer, tmp_path))
+    session_id = await service.new_session()
+    await render_turn(service.stream(session_id, "please analyse it"), TurnPrinter())
+    out, err = capsys.readouterr()
+
+    assert "  … plan: web_search + documents → research → analysis\n" in err
+    assert "plan:" not in out and "→" not in out
+    assert "running this as job" in out, "no job ran; this proves nothing"
+    # said after the task started and before it finished
+    assert err.index("… running the task") < err.index("… plan:") \
+        < err.index("✓ running the task")
+
+
+def test_a_plan_reads_as_its_waves():
+    """One line, the drawings' columns: a step is placed after the longest
+    chain of what it waits on, whatever order the plan lists it in."""
+    from jobsmith.cli.repl import plan_line
+
+    assert plan_line([
+        {"capability": "critique", "depends_on": ["analysis"]},
+        {"capability": "analysis", "depends_on": ["research"]},
+        {"capability": "research", "depends_on": []},
+        {"capability": "slide_deck", "depends_on": ["analysis"]},
+    ]) == "research → analysis → critique + slide_deck"
 
 
 async def test_the_repl_streams_a_turn_and_still_asks_for_approval(capsys, monkeypatch):

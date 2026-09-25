@@ -1,7 +1,7 @@
 # 0074 — A follow-up job references the job, not the file it wrote
 
 - **Issue:** #74 · **PR:** #94
-- **Status:** accepted · partially superseded by [0085](0085-answer-in-the-conversation.md)
+- **Status:** accepted · partially superseded by [0085](0085-answer-in-the-conversation.md) · the notice gap closed by [0104](0104-notice-names-prior-jobs.md)
 - **Source:** migrated verbatim from `CLAUDE.md` at `8326b98` (#102). The text is the original; only the headings (which section of `CLAUDE.md` it lived in) and the links were added.
 - **See also:** [0060](0060-requests-name-files.md), [0081](0081-grounding-reaches-reasoning.md)
 

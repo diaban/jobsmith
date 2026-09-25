@@ -37,9 +37,24 @@ from jobsmith.jobs.report_html import HtmlReport, dag_svg
 from jobsmith.jobs.report_pdf import DAG_STYLE, PAGED_STYLE, PdfReport
 
 pdf_installed = importlib.util.find_spec("weasyprint") is not None
-requires_pdf = pytest.mark.skipif(
+_skip_without_pdf = pytest.mark.skipif(
     not pdf_installed, reason="the optional .[pdf] extra is not installed"
 )
+
+
+def requires_pdf(func):
+    """Every test this guards imports the real engine (measured, #109): the
+    first one in a process pays weasyprint's ~4s import, so `slow` travels
+    with the skip rather than being repeated at each call site."""
+    return pytest.mark.slow(_skip_without_pdf(func))
+
+
+@pytest.fixture(autouse=True)
+def unprobed(monkeypatch):
+    """Each test starts before the engine was probed: the outcome is cached
+    for the process (#108), and a test that simulates a broken engine must
+    neither see a real probe's success nor leave its failure behind."""
+    monkeypatch.setattr(report_pdf, "_probed", None)
 
 
 class StubPdf(FileReporter):
@@ -181,9 +196,9 @@ def test_a_pdf_that_cannot_be_written_still_records_the_markdown(tmp_path):
 
 def test_the_engine_is_probed_when_the_reporter_is_composed(monkeypatch):
     """A format nothing can render must not be composed — the same rule the
-    registry applies to a capability nothing can serve. Failing here means a
-    daemon says so at startup instead of at the end of the first job that
-    asked for a PDF."""
+    registry applies to a capability nothing can serve. Composition happens
+    in `create_job` for a job that asks for one (at startup only for a PDF
+    default, #108), so it is refused before any work, never at a job's end."""
     def no_engine():
         raise RuntimeError("boom")
 

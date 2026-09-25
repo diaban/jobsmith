@@ -32,7 +32,7 @@ from typing import Any
 from jobsmith.app.agent import build_app, pick_report_formats
 from jobsmith.app.providers import KeywordChatModel, make_llm, pick_provider
 from jobsmith.core.executor import Executor
-from jobsmith.jobs.report import available_formats
+from jobsmith.jobs.report import available_formats, renderable_formats
 
 from .cases import FIXTURE_NAME, FIXTURE_REF, FIXTURE_TEXT, EvalCase
 from .deliverable import ensure_readable
@@ -223,8 +223,10 @@ async def run_suite(
         registry = registry_names(app)
         # Composed once, like the registry: it is what the engine's own
         # document step was given to choose from (#90), and a check measuring
-        # a format this deployment cannot render measures the machine.
-        renderable = tuple(available_formats(app.registry))
+        # a format this deployment cannot render measures the machine. Proved
+        # (`renderable_formats`), not just offered: offering loads no engine
+        # (#108), and a case must not be scored on pango's absence.
+        renderable = tuple(renderable_formats(available_formats(app.registry)))
         try:
             semaphore = asyncio.Semaphore(max(1, concurrency))
 
