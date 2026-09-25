@@ -1,6 +1,6 @@
 # 0077 — The generator is told which files the run delivers, and names no other
 
-- **Issue:** #77 · **PR:** #NN
+- **Issue:** #77 · **PR:** #114
 - **Status:** accepted
 - **Rule in `CLAUDE.md`:** "The generator is told which files the run delivers" (Agents) and "`answer_invents_no_file` is the one check read against the record" (Evaluating prompts)
 
