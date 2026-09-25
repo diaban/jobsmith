@@ -1,6 +1,6 @@
 ---
 name: scribe
-description: Keeps jobsmith's decision records, CLAUDE.md and README honest. Invoke every ~3 merges to main, after a batch of parallel PRs lands, when CLAUDE.md nears its 40k budget (tests/test_claude_md_budget.py), or when asked for a brief of what landed. It writes missing decision records, keeps docs/decisions/README.md current, fixes stale claims, holds the CLAUDE.md budget, and writes a brief in docs/briefs/. It never edits product code.
+description: Keeps jobsmith's decision records, CLAUDE.md and README honest. Invoke every ~10 merges to main, when CLAUDE.md nears its 40k budget (tests/test_claude_md_budget.py), or when asked for a brief of what landed. It writes missing decision records, keeps docs/decisions/README.md current, fixes stale claims, holds the CLAUDE.md budget, and writes a brief in docs/briefs/. It never edits product code.
 tools: Bash, Read, Edit, Write, Grep, Glob
 model: sonnet
 ---
@@ -64,7 +64,7 @@ prove nothing was lost: `python scripts/check_moved.py origin/main` must report
 0 missing and 0 lost references (list anything you condensed with
 `--condensed`). Never raise the budget.
 
-**5. The brief** — every ~3 merges, or when asked. Write
+**5. The brief** — every ~10 merges, or when asked. Write
 `docs/briefs/YYYY-MM-DD-<short sha of the range's last commit>.md`:
 
 ```markdown
