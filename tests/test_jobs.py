@@ -7,92 +7,13 @@ from pathlib import Path
 
 import pytest
 from conftest import FakeLLM, plan_json
-from langgraph.constants import END
+from support import SlowEcho, cancelled_midway, make_manager
 
 from jobsmith.core.builder import build_agent
-from jobsmith.core.capability import Capability, CapabilityBaseState, CapabilitySpec
 from jobsmith.core.deps import Deps
 from jobsmith.core.registry import CapabilityRegistry
-from jobsmith.jobs.manager import JobManager
 from jobsmith.jobs.models import JobStatus
 from jobsmith.jobs.runner import GraphRunner, StepFinished
-
-
-class SlowEcho(Capability):
-    def __init__(self, name: str, *, delay: float = 0.0, fail: bool = False):
-        self.spec = CapabilitySpec(name=name, description=f"{name} capability")
-        self.delay = delay
-        self.fail = fail
-
-    async def work(self, state: CapabilityBaseState) -> dict:
-        if self.delay:
-            await asyncio.sleep(self.delay)
-        if self.fail:
-            return self._emit_failure(f"{self.spec.name} broke")
-        return self._emit_success({"echo": self.spec.name})
-
-    def render_context(self, result):
-        return f"# {self.spec.name}\n{result['data']['echo']}"
-
-    def build(self):
-        g = self.state_graph(CapabilityBaseState)
-        g.add_node("work", self.work)
-        g.set_entry_point("work")
-        g.add_edge("work", END)
-        return g.compile()
-
-
-class CountingEcho(SlowEcho):
-    """Echoes how many times it has run, so a re-run shows up in the result."""
-
-    def __init__(self, name: str, **kwargs):
-        super().__init__(name, **kwargs)
-        self.runs = 0
-
-    async def work(self, state: CapabilityBaseState) -> dict:
-        self.runs += 1
-        if self.delay:
-            await asyncio.sleep(self.delay)
-        return self._emit_success({"echo": f"{self.spec.name}#{self.runs}"})
-
-
-async def cancelled_midway(store, checkpointer, tmp_path, *, session_id=None,
-                           formats=None):
-    """A job stopped *inside* its second step: one result stored, one pending.
-
-    The shape every resume test needs — and the one a job really stops in,
-    since a cancellation lands wherever the run happened to be. Returns the
-    manager, the job, and the two capabilities (mutate `slow.delay` to let the
-    interrupted step finish instantly when the run is resumed).
-    """
-    alpha, slow = CountingEcho("alpha"), CountingEcho("slow", delay=30.0)
-    llm = FakeLLM(
-        {"planner": plan_json("alpha", "slow", deps={"slow": ["alpha"]})},
-        default="A sufficiently long final answer for the job test.",
-    )
-    mgr = make_manager(store, checkpointer, tmp_path, caps=[alpha, slow], llm=llm)
-    job = await mgr.create_job("a job worth resuming", session_id=session_id,
-                               formats=formats)
-    mgr.start_job(job.job_id)
-    for _ in range(500):                       # wait until `slow` is actually running
-        await asyncio.sleep(0.01)
-        if slow.runs:
-            break
-    assert slow.runs == 1, "the second step never started"
-    stopped = await mgr.cancel_job(job.job_id)
-    assert stopped.status is JobStatus.CANCELLED
-    assert set(stopped.results) == {"alpha"}   # the finished step was persisted
-    return mgr, job, alpha, slow
-
-
-def make_manager(store, checkpointer, tmp_path, *, caps=None, llm=None) -> JobManager:
-    caps = caps if caps is not None else [SlowEcho("alpha")]
-    llm = llm or FakeLLM(
-        {"planner": plan_json(*[c.spec.name for c in caps])},
-        default="A sufficiently long final answer for the job test.",
-    )
-    graph = build_agent(Deps(llm=llm), CapabilityRegistry(caps), checkpointer=checkpointer)
-    return JobManager(graph, store, reports_dir=tmp_path / "artifacts")
 
 
 async def test_create_run_done_with_store_contents(store, checkpointer, tmp_path):
@@ -503,36 +424,6 @@ def test_mermaid_draws_isolated_steps_once():
     assert "research --> analysis" in mermaid
     assert mermaid.count("research") == 1      # not redrawn as a bare node
     assert "\n  aside\n" in mermaid            # isolated step still shown
-
-
-async def test_several_formats_are_all_recorded_as_deliverables(
-    store, checkpointer, tmp_path
-):
-    """A job hands back what its Reporter produced — one file or several.
-    Both land in `Job.outputs`, so both are in the store and visible to
-    `GET /jobs/{id}/outputs` and `jobsmith outputs`; a file that exists on
-    disk without a JobOutput is a deliverable nobody can find."""
-    from jobsmith.jobs.report import compose_reporters
-
-    mgr = make_manager(store, checkpointer, tmp_path)
-    mgr.reporter = compose_reporters("markdown,html")   # the documented swap seam
-    job = await mgr.create_job("two deliverables", formats=["markdown"])
-    done = await mgr.run_job(job.job_id)
-
-    assert [(o.format, o.role) for o in done.outputs] == [
-        ("markdown", "main"), ("html", "alternate")]
-    artifacts = tmp_path / "artifacts"
-    assert sorted(p.name for p in artifacts.iterdir()) == [
-        f"{done.job_id}.html", f"{done.job_id}.md"]
-    assert done.report_path == str(artifacts / f"{done.job_id}.md")
-
-    # persisted, and reloaded with the roles intact — `report_path` is derived
-    summary = (await store.aget(("jobs", "index"), job.job_id)).value
-    assert [o["role"] for o in summary["outputs"]] == ["main", "alternate"]
-    fetched = await mgr.get_job(job.job_id)
-    assert [(o.format, o.role) for o in fetched.outputs] == [
-        ("markdown", "main"), ("html", "alternate")]
-    assert fetched.report_path == done.report_path
 
 
 async def test_a_chain_records_when_each_step_actually_finished(

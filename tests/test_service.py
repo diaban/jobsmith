@@ -21,13 +21,20 @@ from pathlib import Path
 
 import httpx
 import pytest
-from conftest import FakeLLM, ScriptedChatModel, plan_json
+from conftest import ScriptedChatModel
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
-from test_chat import launch_call
-from test_cli import daemon_client_over, wait_done
-from test_jobs import SlowEcho, make_manager
-from test_report_pdf import StubPdf
+from support import (
+    PLANNED_STEPS,
+    Gate,
+    StubPdf,
+    daemon_client_over,
+    launch_call,
+    make_manager,
+    planned_manager,
+    planned_service,
+    wait_done,
+)
 
 from jobsmith.api import create_api
 from jobsmith.cli.client import DaemonClient, EmbeddedClient
@@ -535,50 +542,6 @@ async def test_the_jobs_a_run_builds_on_cross_either_backing(
 
 
 # A plan worth announcing (#86): two steps that run together, then a chain.
-PLANNED_DEPS = {"research": ["web_search", "documents"], "analysis": ["research"]}
-PLANNED_STEPS = [
-    {"capability": "web_search", "depends_on": []},
-    {"capability": "documents", "depends_on": []},
-    {"capability": "research", "depends_on": ["web_search", "documents"]},
-    {"capability": "analysis", "depends_on": ["research"]},
-]
-
-
-class Gate(SlowEcho):
-    """A step that holds the run until the test says so — how "the plan is
-    shown while the run is still going" is observed, rather than inferred."""
-
-    def __init__(self, name: str):
-        super().__init__(name)
-        self.open = asyncio.Event()
-
-    async def work(self, state):
-        await self.open.wait()
-        return await super().work(state)
-
-
-def planned_manager(store, checkpointer, tmp_path, *, gate: Gate | None = None):
-    """A manager whose planner answers `PLANNED_STEPS`; `gate`, if given,
-    stands in for the first step, so the run cannot finish before it opens."""
-    caps = [gate or SlowEcho("web_search"), SlowEcho("documents"),
-            SlowEcho("research"), SlowEcho("analysis")]
-    llm = FakeLLM({"planner": plan_json(*[c.spec.name for c in caps], deps=PLANNED_DEPS)},
-                  default="A sufficiently long final answer for the plan test.")
-    return make_manager(store, checkpointer, tmp_path, caps=caps, llm=llm)
-
-
-def planned_service(manager, *, sync_timeout=None, responses=None):
-    saver = MemorySaver()
-    responses = responses or [launch_call("analyse it", "several steps"),
-                              AIMessage(content="done.")]
-
-    def session_factory(session_id=None):
-        from jobsmith.chat import ChatSession
-        return ChatSession(manager, ScriptedChatModel(responses=list(responses)),
-                           session_id=session_id, checkpointer=saver,
-                           sync_timeout=sync_timeout)
-
-    return LocalAgentService(manager, session_factory)
 
 
 @pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])

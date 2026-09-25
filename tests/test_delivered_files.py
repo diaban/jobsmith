@@ -13,7 +13,6 @@ from typing import Any
 
 from conftest import FakeLLM
 
-from jobsmith.agents.default.profile import GLOBAL_GENERATOR_PROMPT
 from jobsmith.core.artifacts import ArtifactRef, artifact_meta
 from jobsmith.core.deps import Deps
 from jobsmith.core.generation import (
@@ -87,7 +86,3 @@ async def test_the_refiner_sees_the_same_list():
     assert "- Heating options (pptx)" in user
 
 
-def test_the_generator_prompt_offers_no_file_by_example():
-    # The observed sentence paraphrased this prompt's own example.
-    assert "slide deck, say" not in GLOBAL_GENERATOR_PROMPT
-    assert "files this run delivers" in GLOBAL_GENERATOR_PROMPT

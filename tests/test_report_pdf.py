@@ -16,37 +16,41 @@ properties of the framework, and they hold on a machine that cannot render.
 """
 from __future__ import annotations
 
-import importlib.util
+import json
+import os
+import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
-from test_report_html import done_job, make_document
+from conftest import FakeLLM
+from support import (
+    PDF_MARKS,
+    StubPdf,
+    done_job,
+    make_document,
+    make_manager,
+    no_distribution,
+    no_libraries,
+    requires_pdf,
+)
 
+from jobsmith.core.deps import Deps
+from jobsmith.core.document import DocumentIntent
 from jobsmith.jobs import report_pdf
+from jobsmith.jobs.models import JobStatus
 from jobsmith.jobs.report import (
-    FileReporter,
-    JobDocument,
     MultiReporter,
     ReportWriteError,
+    available_formats,
     compose_reporters,
     is_binary_format,
     make_reporter,
+    renderable_formats,
 )
 from jobsmith.jobs.report_html import HtmlReport, dag_svg
 from jobsmith.jobs.report_pdf import DAG_STYLE, PAGED_STYLE, PdfReport
-
-pdf_installed = importlib.util.find_spec("weasyprint") is not None
-_skip_without_pdf = pytest.mark.skipif(
-    not pdf_installed, reason="the optional .[pdf] extra is not installed"
-)
-
-
-def requires_pdf(func):
-    """Every test this guards imports the real engine (measured, #109): the
-    first one in a process pays weasyprint's ~4s import, so `slow` travels
-    with the skip rather than being repeated at each call site."""
-    return pytest.mark.slow(_skip_without_pdf(func))
 
 
 @pytest.fixture(autouse=True)
@@ -55,23 +59,6 @@ def unprobed(monkeypatch):
     for the process (#108), and a test that simulates a broken engine must
     neither see a real probe's success nor leave its failure behind."""
     monkeypatch.setattr(report_pdf, "_probed", None)
-
-
-class StubPdf(FileReporter):
-    """A binary Reporter with no engine behind it — the shape, not the render.
-
-    Everything about a binary deliverable that the framework must handle is
-    here: bytes on disk, a format that declares itself binary. Used where the
-    property under test belongs to the port or the manager rather than to
-    WeasyPrint, so those tests hold on a machine with no engine at all.
-    """
-
-    format = "pdf"
-    extension = "pdf"
-    binary = True
-
-    def serialize(self, document: JobDocument, path: Path) -> None:
-        path.write_bytes(b"%PDF-1.7\n\xe2\xe3\xcf\xd3 not text\n%%EOF\n")
 
 
 # ------------------------------------------------------------------ the engine
@@ -191,39 +178,108 @@ def test_a_pdf_that_cannot_be_written_still_records_the_markdown(tmp_path):
     assert Path(failed.value.outputs[0].path).is_file()
 
 
-# ----------------------------------------------------- the deployment constraint
+# ----------------------------------------- loading the engine: on first need → 0034, 0108
+
+def _compose_in_a_fresh_process(tmp_path: Path, **env: str) -> dict:
+    """`sys.modules` here already holds what earlier tests imported."""
+    script = textwrap.dedent("""
+        import asyncio, json, sys
+        from jobsmith.app.agent import build_app
+        from jobsmith.jobs.report import available_formats
+
+        async def main():
+            app = await build_app(db="memory", llm="fake")
+            offered = available_formats(app.registry)
+            await app.aclose()
+            return offered
+
+        offered = asyncio.run(main())
+        print(json.dumps({"loaded": "weasyprint" in sys.modules, "offered": offered}))
+    """)
+    environ = {**os.environ, "XDG_DATA_HOME": str(tmp_path),
+               "ANTHROPIC_API_KEY": "", "OPENAI_API_KEY": "", "TAVILY_API_KEY": "",
+               "JOBSMITH_REPORT_FORMAT": "", **env}
+    done = subprocess.run([sys.executable, "-c", script], capture_output=True,
+                          text=True, env=environ, cwd=tmp_path, timeout=120)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout.strip().splitlines()[-1])
 
 
-def test_the_engine_is_probed_when_the_reporter_is_composed(monkeypatch):
-    """A format nothing can render must not be composed — the same rule the
-    registry applies to a capability nothing can serve. Composition happens
-    in `create_job` for a job that asks for one (at startup only for a PDF
-    default, #108), so it is refused before any work, never at a job's end."""
-    def no_engine():
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(report_pdf, "_engine", no_engine)
-    with pytest.raises(RuntimeError, match="boom"):
-        make_reporter("pdf")
+def test_composing_the_app_does_not_load_the_pdf_engine(tmp_path):
+    seen = _compose_in_a_fresh_process(tmp_path)
+    assert seen["loaded"] is False
+    if report_pdf.engine_installed():
+        assert "pdf" in seen["offered"]      # loading nothing did not cost the offer
 
 
-def test_a_missing_distribution_and_missing_libraries_are_different_messages(monkeypatch):
-    """One `pip install` fixes the first and cannot fix the second, so a
-    deployer must be able to tell them apart from the message alone."""
-    monkeypatch.delitem(sys.modules, "weasyprint", raising=False)
-    monkeypatch.setitem(sys.modules, "weasyprint", None)   # import halts: ImportError
-    with pytest.raises(RuntimeError, match=r"jobsmith\[pdf\]"):
-        report_pdf._engine()
+@requires_pdf
+def test_a_deployment_whose_default_is_pdf_still_probes_at_startup(tmp_path):
+    assert _compose_in_a_fresh_process(tmp_path, JOBSMITH_REPORT_FORMAT="pdf")["loaded"]
 
-    class NoLibraries:
-        """What cffi does when it cannot dlopen pango: OSError, at import."""
 
-        def find_spec(self, name, path=None, target=None):
-            if name == "weasyprint":
-                raise OSError("cannot load library 'libpango-1.0.so.0'")
-            return None
+def test_the_offer_is_answered_without_the_engine(monkeypatch):
+    def never():
+        raise AssertionError("offering pdf must not probe the engine")
 
-    monkeypatch.delitem(sys.modules, "weasyprint", raising=False)
-    monkeypatch.setattr(sys, "meta_path", [NoLibraries(), *sys.meta_path])
+    monkeypatch.setattr(report_pdf, "_engine", never)
+    monkeypatch.setattr(report_pdf.importlib.util, "find_spec", lambda name, *a: object())
+    assert "pdf" in available_formats()
+    monkeypatch.setattr(report_pdf.importlib.util, "find_spec", lambda name, *a: None)
+    assert "pdf" not in available_formats()
+
+
+@pytest.mark.parametrize(("break_it", "message"), [
+    (no_distribution, r"jobsmith\[pdf\]"),     # one `pip install` fixes it...
+    (no_libraries, "pango"),                   # ...and cannot fix this one
+])
+async def test_a_pdf_request_is_refused_in_create_job_saying_which_fix(
+    store, checkpointer, tmp_path, monkeypatch, break_it, message
+):
+    break_it(monkeypatch)
+    mgr = make_manager(store, checkpointer, tmp_path)
+    with pytest.raises(ValueError, match=message):
+        await mgr.create_job("compare the chairs", formats=["markdown", "pdf"])
+    assert await mgr.list_jobs() == []
+
+
+async def test_the_probe_runs_once_and_a_failure_stops_the_offer(
+    store, checkpointer, tmp_path, monkeypatch
+):
+    calls = []
+
+    def broken():
+        calls.append(1)
+        raise RuntimeError(report_pdf._MISSING_LIBRARIES)
+
+    monkeypatch.setattr(report_pdf, "_engine", broken)
+    monkeypatch.setattr(report_pdf.importlib.util, "find_spec", lambda name, *a: object())
+    assert "pdf" in available_formats()      # installed, not yet proved
+    mgr = make_manager(store, checkpointer, tmp_path)
+    for _ in range(2):
+        with pytest.raises(ValueError, match="pango"):
+            await mgr.create_job("compare the chairs", formats=["pdf"])
+    assert calls == [1]
+    assert "pdf" not in available_formats()
     with pytest.raises(RuntimeError, match="pango"):
-        report_pdf._engine()
+        make_reporter("pdf")                  # never composed once proved unrenderable
+
+
+@requires_pdf
+async def test_a_pdf_request_where_the_engine_runs_renders(store, checkpointer, tmp_path):
+    mgr = make_manager(store, checkpointer, tmp_path)
+    done = await mgr.run_job((await mgr.create_job("compare the chairs", formats=["pdf"])).job_id)
+
+    assert done.status is JobStatus.DONE and done.error is None
+    assert Path(done.report_path).read_bytes().startswith(b"%PDF-")
+
+
+@pytest.mark.parametrize("renders", [
+    False, pytest.param(True, marks=PDF_MARKS)])
+async def test_the_document_step_keeps_a_pdf_only_if_it_renders(monkeypatch, renders):
+    if not renders:
+        no_libraries(monkeypatch)
+    reply = json.dumps({"document": "named", "formats": ["pdf"]})
+    step = DocumentIntent(Deps(llm=FakeLLM({"document step": reply})),
+                          ("html", "markdown", "pdf"), confirm=renderable_formats)
+    decided = await step.run({"query": "as a pdf"})
+    assert decided == ({"document_formats": ["pdf"]} if renders else {})

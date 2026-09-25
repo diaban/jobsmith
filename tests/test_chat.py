@@ -17,7 +17,7 @@ from conftest import FakeLLM, ScriptedChatModel, plan_json
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
-from test_jobs import make_manager
+from support import CFG, CountingEcho, launch_call, make_manager, make_session
 
 from jobsmith.chat import ChatRunner, ChatSession, JobStarted, Token, ToolFinished
 from jobsmith.chat.session import (
@@ -78,32 +78,6 @@ def format_for_anthropic(anthropic_chat_models, messages):
     if "model" in inspect.signature(formatter).parameters:
         return formatter(messages, model=ANTHROPIC_MODEL)
     return formatter(messages)
-
-
-def launch_call(query: str, rationale: str, **args) -> AIMessage:
-    return AIMessage(
-        content="",
-        tool_calls=[{
-            "name": "launch_job",
-            "args": {"query": query, "rationale": rationale, **args},
-            "id": "call_1",
-        }],
-    )
-
-
-def make_session(
-    store, checkpointer, tmp_path, responses, *, llm=None,
-    approval=False, sync_timeout=None, inline_answer_max=None,
-) -> tuple[ChatSession, ScriptedChatModel]:
-    manager = make_manager(store, checkpointer, tmp_path, llm=llm)
-    model = ScriptedChatModel(responses=responses)
-    session = ChatSession(manager, model, checkpointer=MemorySaver(),
-                          approval_required=approval, sync_timeout=sync_timeout,
-                          inline_answer_max=inline_answer_max)
-    return session, model
-
-
-CFG = {"configurable": {"thread_id": "chat-1"}}
 
 
 # ---------------- The nominal path: the task runs inside the turn ------------
@@ -238,7 +212,6 @@ async def test_a_turn_that_dies_mid_wait_does_not_take_the_job_with_it(
     through. Driving the run inside the turn instead would make every one of
     those a job silently thrown away.
     """
-    from test_jobs import CountingEcho
 
     # Long enough to be cancelled inside, short enough to finish afterwards:
     # the claim is that it finishes, so it has to be allowed to.
@@ -552,7 +525,6 @@ async def test_a_resumed_job_is_news_again(store, checkpointer, tmp_path):
     filtered out of `list_finished_unannounced` and its answer would never
     reach the conversation that asked for it. `_begin_resume` unmarks it, for
     the same reason it clears `job.error`: a resumed job is news again."""
-    from test_jobs import CountingEcho
 
     alpha, slow = CountingEcho("alpha"), CountingEcho("slow", delay=30.0)
     llm = FakeLLM(

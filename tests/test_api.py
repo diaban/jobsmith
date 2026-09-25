@@ -9,49 +9,12 @@ reached through honest (see `chat/tools.py::pick_approval_required`).
 """
 from __future__ import annotations
 
-import asyncio
-
-from conftest import ScriptedChatModel
-from httpx import ASGITransport, AsyncClient
 from langchain_core.messages import AIMessage
-from langgraph.checkpoint.memory import MemorySaver
-from test_chat import launch_call
-from test_jobs import make_manager
-from test_report_pdf import StubPdf
+from support import StubPdf, cancelled_midway, client_for, launch_call, make_app, wait_done
 
 from jobsmith.api import create_api
-from jobsmith.chat import ChatSession
 from jobsmith.jobs.report import compose_reporters
 from jobsmith.service import LocalAgentService
-
-
-def make_app(store, checkpointer, tmp_path, responses, *, approval=False):
-    manager = make_manager(store, checkpointer, tmp_path)
-    checkpointer_for_sessions = MemorySaver()
-
-    def session_factory(session_id: str | None = None) -> ChatSession:
-        return ChatSession(
-            manager,
-            ScriptedChatModel(responses=list(responses)),
-            session_id=session_id,
-            checkpointer=checkpointer_for_sessions,
-            approval_required=approval,
-        )
-
-    return create_api(LocalAgentService(manager, session_factory)), manager
-
-
-def client_for(app) -> AsyncClient:
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
-
-
-async def wait_done(client: AsyncClient, job_id: str) -> dict:
-    for _ in range(300):
-        job = (await client.get(f"/jobs/{job_id}")).json()
-        if job["status"] in ("done", "failed"):
-            return job
-        await asyncio.sleep(0.01)
-    raise AssertionError("job did not finish")
 
 
 async def test_chat_flow_proposal_approval_report(store, checkpointer, tmp_path):
@@ -200,7 +163,6 @@ async def test_direct_job_launch_and_cancel_and_404s(store, checkpointer, tmp_pa
 async def test_resume_endpoint_restarts_a_stopped_job(store, checkpointer, tmp_path):
     """A cancelled job is restarted from its checkpoint over HTTP; a job with
     nothing left to run is refused with 409 rather than silently accepted."""
-    from test_jobs import cancelled_midway
 
     manager, job, alpha, slow = await cancelled_midway(store, checkpointer, tmp_path)
     app = create_api(LocalAgentService(manager, lambda session_id=None: None))

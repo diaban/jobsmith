@@ -20,8 +20,7 @@ import pytest
 from conftest import FakeLLM, ScriptedChatModel, plan_json
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
-from test_chat import launch_call
-from test_jobs import make_manager
+from support import launch_call, make_manager
 
 from jobsmith.agents.base import AgentContext
 from jobsmith.agents.default import DefaultResources, default_capabilities, readable_roots

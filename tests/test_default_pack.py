@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from conftest import FakeLLM, plan_json
+from support import PACK_SCRIPT, notes_call
 
 from jobsmith.agents.base import AgentContext
 from jobsmith.agents.default import default_capabilities
@@ -16,13 +17,6 @@ from jobsmith.core.builder import build_agent
 from jobsmith.core.deps import Deps
 from jobsmith.core.registry import CapabilityRegistry
 from jobsmith.core.state import SOURCE_FILES_INPUT_KEY
-
-PACK_SCRIPT = {
-    "key aspects": '{"aspects": ["history", "impact"]}',
-    "research notes": "Notes: the history is long; the impact is broad.",
-    "You are an analyst": "Findings: impact outweighs history.",
-    "checking the findings": "- The impact claim: the notes give no numbers for it.",
-}
 
 
 async def test_research_decomposes_and_emits_notes():
@@ -240,16 +234,6 @@ def retrieved(step: str, *docs: tuple[str, str]) -> dict:
         {"id": doc_id, "title": doc_id, "source": f"/{doc_id}", "text": text}
         for doc_id, text in docs
     ]}}}
-
-
-def notes_call(llm: FakeLLM) -> dict:
-    """The call that wrote the notes — by its system prompt, either mode.
-
-    Not by a substring of the script: the planner's own prompt renders every
-    capability's description, and this one's says "research notes".
-    """
-    return next(c for c in llm.calls if c["messages"][0]["content"].startswith(
-        (ResearchCapability.NOTES_SYSTEM, ResearchCapability.GROUNDED_NOTES_SYSTEM)))
 
 
 async def test_research_writes_from_what_the_retrieval_found():
