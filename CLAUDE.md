@@ -113,6 +113,7 @@ AgentDefinition(
   - **A capability nothing can serve stays out of the registry** — every conditional step is registered only when something backs it (`open_default_resources`); an empty registry is then answered directly. → 0000, 0038
   - **`slide_deck` is a generation, not a report format**: deck structure is asked of the model; only `pptx_deck.py` imports `python-pptx`; 16:9; refused without a job before the LLM call; non-JSON salvaged as `meta["via_fallback"]`; a failed write declares nothing; the deck is an `annex`. **Its description says what it is NOT.** → 0035, 0061
   - **The deliverable is written for its reader**, and **answers**: the prompts that produce it name the reader, rule out the state of the work, and oblige the answer first, from the material, with doubt marked where it bears; `SUBJECT_ONLY_RULE` is on every material prompt and the generator; `NO_ANSWER_INSTRUCTION` sets a high bar and a shape for a refusal. → 0058, 0073
+  - **The generator is told which files the run delivers** (`delivered_files_note`: requested formats + declared annexes, or "none") and names no other; no prompt offers a file by example. → 0077
   - Retrieved passages carry a **quotable id** (`path#chunk`); `render_context` gives the model the material, `render_report` gives the human the provenance only.
   - **`research` reads every retrieval step's material** (`GROUNDING`, not first-match) and `read_files`' refusals (`REFUSALS`), in its own prompt, bounded at 32 000 characters, and says so in `meta["grounded_on"]`. → 0081
   - **`critique` checks the subject, not the work** (≤ 8 bullets, reads analysis *and* notes) and feeds the generator. Watch for an *Open questions* section appearing. → 0082
@@ -265,4 +266,5 @@ prints a table comparable with the previous run.
   function in `scoring.py` plus its name in `CHECK_NAMES` (a test pins the two
   together). Cases stay **domain-neutral** — `make leak-check` scans `evals/`
   too; an agent-specific golden set would live with that agent.
+- **`answer_invents_no_file` is the one check read against the record**: whether the answer tells the truth about `Job.outputs` is a fact, not a decision the case holds; a file kind the request or material already names is skipped. → 0077
 - **The structural tier must exercise every check.** The llm tier is a smoke signal, not a benchmark. → 0003

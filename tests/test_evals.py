@@ -262,6 +262,9 @@ def test_a_clean_observation_passes_everything():
             "final_answer": ("Before anything can be stated, a sourcing exercise "
                              "must establish which measurements exist."),
         }),
+        # a run that planned no deck, delivering a text that says one exists (#77)
+        ("answer_invents_no_file", {
+            "final_answer": ANSWER + "\n\nA slide deck exists alongside this document."}),
         # a refusal that turned into the work plan it was told not to write (#73)
         ("refusal_is_bare", {
             "terminal_kind": "unanswered",
@@ -273,6 +276,40 @@ def test_a_clean_observation_passes_everything():
 )
 def test_each_check_fires_on_its_own_violation(check, broken):
     assert _status(PLAN_CASE, _obs(**broken), check) == "fail"
+
+
+def test_answer_invents_no_file_catches_the_sentence_that_opened_it():
+    # #77, verbatim: no deck was planned and the outputs are the report alone.
+    said = ("Il est aussi indiqué qu'un fichier slide deck existe parallèlement "
+            "à ce document, mais son contenu n'est pas reproduit ici.")
+    obs = _obs(final_answer=f"{ANSWER}\n\n{said}", output_formats=("markdown", "html"))
+    assert _status(PLAN_CASE, obs, "answer_invents_no_file") == "fail"
+
+
+@pytest.mark.parametrize(
+    ("said", "changed"),
+    [
+        # the file exists: naming it is the truth
+        ("The slide deck delivered alongside this document has the figures.",
+         {"output_formats": ("markdown", "pptx")}),
+        ("See the attached PDF.", {"output_formats": ("pdf",)}),
+        ("The attached page restates it.", {"output_formats": ("html",)}),
+        # the word was the request's, or the material's, before it was the answer's
+        ("PDF export is the slower path.", {"query": "compare PDF libraries"}),
+        ("The manufacturer's PDF datasheet gives 4.2.",
+         {"material": "datasheet (PDF): COP 4.2"}),
+    ],
+)
+def test_answer_invents_no_file_leaves_a_true_or_borrowed_mention_alone(said, changed):
+    obs = _obs(final_answer=f"{ANSWER}\n\n{said}", **changed)
+    assert _status(PLAN_CASE, obs, "answer_invents_no_file") == "pass"
+
+
+def test_answer_invents_no_file_does_not_read_ordinary_words_as_files():
+    # "travaux annexes" came out of a real run and claims nothing.
+    obs = _obs(final_answer=f"{ANSWER}\n\nLes travaux annexes varient; the slides "
+                            "of the price curve are steep.")
+    assert _status(PLAN_CASE, obs, "answer_invents_no_file") == "pass"
 
 
 def test_document_format_scores_the_format_the_request_asked_for():

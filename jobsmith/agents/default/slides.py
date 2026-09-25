@@ -153,7 +153,7 @@ class SlideDeckCapability(Capability):
             "steps produced — plan it ONLY when the request asks for slides, "
             "a deck, a presentation, or something to show a room, and plan it "
             "LAST, after the steps that produce that material; the written "
-            "report is still delivered alongside it, so this is never a "
+            "answer is still delivered with it, so this is never a "
             "substitute for analysis. Do NOT plan it for a document meant to "
             "be read: a printable page, a one-pager, a PDF, a written report, "
             "a summary or a note are the deliverable the job already writes, "
@@ -370,7 +370,7 @@ class SlideDeckCapability(Capability):
         if not deck.slides:
             return None
         return (f"# Slide deck produced\n\n**{deck.title or 'Untitled'}** — "
-                f"{len(deck.slides)} slides, delivered alongside this report.")
+                f"{len(deck.slides)} slides, delivered as a separate file.")
 
     def render_report(self, result: CapabilityResult) -> str | None:
         """For the human: the file it produced, and what is on it."""

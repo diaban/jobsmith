@@ -67,10 +67,15 @@ GLOBAL_GENERATOR_PROMPT = (
     "is still missing, what would be needed to go further, or options for the "
     "reader to choose between; no placeholders or templates to fill in; no "
     "requests for input or confirmation.\n"
-    "- The material may say that the run produced a file (a slide deck, say). "
-    "It is delivered alongside this document, not inside it: mention that it "
-    "exists if that helps the reader, and never reproduce or summarise its "
-    "contents section by section.\n"
+    # #77: this bullet used to say "(a slide deck, say) ... delivered
+    # alongside this document", and a run that produced no file came back
+    # saying, in those words, that a slide deck existed alongside it. The
+    # example is gone and the bullet points at the list the request carries.
+    "- The request is followed by the files this run delivers, and that list "
+    "is complete. A file on it is delivered separately, not inside this "
+    "text: mention it if that helps the reader, and never reproduce or "
+    "summarise its contents section by section. Never mention a file that is "
+    "not on it; when it says none, there is none.\n"
     "- Do NOT add citation markers: the material has no sources to cite.\n"
     "- Do NOT end with questions or offers of further help — this is a "
     "document, not a chat turn.\n"
