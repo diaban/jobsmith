@@ -11,11 +11,10 @@ saying what it is, and the notice that reaches the conversation.
 from __future__ import annotations
 
 from conftest import FakeLLM, plan_json
-from langgraph.constants import END
+from support import SlowEcho
 
 from jobsmith.chat.session import JobNotificationMiddleware
 from jobsmith.core.builder import build_agent
-from jobsmith.core.capability import Capability, CapabilityBaseState, CapabilitySpec
 from jobsmith.core.deps import Deps
 from jobsmith.core.generation import split_declaration
 from jobsmith.core.registry import CapabilityRegistry
@@ -33,30 +32,12 @@ REFUSAL = (
 )
 
 
-class Echo(Capability):
-    def __init__(self, name: str = "alpha"):
-        self.spec = CapabilitySpec(name=name, description=f"{name} capability")
-
-    async def work(self, state: CapabilityBaseState) -> dict:
-        return self._emit_success({"echo": self.spec.name})
-
-    def render_context(self, result):
-        return f"# {self.spec.name}\n{result['data']['echo']}"
-
-    def build(self):
-        g = self.state_graph(CapabilityBaseState)
-        g.add_node("work", self.work)
-        g.set_entry_point("work")
-        g.add_edge("work", END)
-        return g.compile()
-
-
 def make_graph(checkpointer, answer: str):
     llm = FakeLLM(
         {"planner": plan_json("alpha"), "ONLY the provided": answer},
         default="a plain answer long enough to pass the length floor",
     )
-    graph = build_agent(Deps(llm=llm), CapabilityRegistry([Echo()]),
+    graph = build_agent(Deps(llm=llm), CapabilityRegistry([SlowEcho("alpha")]),
                         checkpointer=checkpointer)
     return graph, llm
 

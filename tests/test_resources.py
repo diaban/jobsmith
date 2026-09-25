@@ -12,12 +12,12 @@ from dataclasses import dataclass
 
 import pytest
 from conftest import FakeLLM, plan_json
-from langgraph.constants import END
+from support import OneStep
 
 from jobsmith.agents import AGENTS
 from jobsmith.agents.base import AgentContext, AgentDefinition
 from jobsmith.app.agent import build_app
-from jobsmith.core.capability import Capability, CapabilityBaseState, CapabilitySpec
+from jobsmith.core.capability import CapabilityBaseState
 from jobsmith.core.profile import AgentProfile
 
 
@@ -68,11 +68,11 @@ class Resources:
     visual: VisualIndex
 
 
-class IndexCapability(Capability):
+class IndexCapability(OneStep):
     """Depends on ONE narrow port, never on the pool."""
 
     def __init__(self, name: str, index, method: str):
-        self.spec = CapabilitySpec(name=name, description=f"{name} lookup")
+        super().__init__(name, description=f"{name} lookup")
         self.index = index
         self.method = method
 
@@ -82,13 +82,6 @@ class IndexCapability(Capability):
 
     def render_context(self, result):
         return ", ".join(result["data"]["hits"])
-
-    def build(self):
-        g = self.state_graph(CapabilityBaseState)
-        g.add_node("work", self.work)
-        g.set_entry_point("work")
-        g.add_edge("work", END)
-        return g.compile()
 
 
 def shared_backend_agent(log: list[str]) -> AgentDefinition:
