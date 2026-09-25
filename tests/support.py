@@ -31,21 +31,18 @@ CFG = {"configurable": {"thread_id": "chat-1"}}
 
 # ------------------------------------------------------------ capabilities
 
-class SlowEcho(Capability):
-    def __init__(self, name: str, *, delay: float = 0.0, fail: bool = False):
-        self.spec = CapabilitySpec(name=name, description=f"{name} capability")
-        self.delay = delay
-        self.fail = fail
+class OneStep(Capability):
+    """A capability whose sub-graph is the single node `work` — the shape of
+    every stub here. Subclasses write `work`; `spec` comes from the
+    constructor or a class attribute."""
+
+    def __init__(self, name: str, *, description: str | None = None,
+                 requires_inputs: tuple[str, ...] = ()):
+        self.spec = CapabilitySpec(name=name, description=description or f"{name} capability",
+                                   requires_inputs=tuple(requires_inputs))
 
     async def work(self, state: CapabilityBaseState) -> dict:
-        if self.delay:
-            await asyncio.sleep(self.delay)
-        if self.fail:
-            return self._emit_failure(f"{self.spec.name} broke")
-        return self._emit_success({"echo": self.spec.name})
-
-    def render_context(self, result):
-        return f"# {self.spec.name}\n{result['data']['echo']}"
+        raise NotImplementedError
 
     def build(self):
         g = self.state_graph(CapabilityBaseState)
@@ -53,6 +50,27 @@ class SlowEcho(Capability):
         g.set_entry_point("work")
         g.add_edge("work", END)
         return g.compile()
+
+
+class SlowEcho(OneStep):
+    """Echoes `payload` (its name by default), after `delay`, or fails."""
+
+    def __init__(self, name: str, *, delay: float = 0.0, fail: bool = False,
+                 payload: str | None = None, **spec):
+        super().__init__(name, **spec)
+        self.delay = delay
+        self.fail = fail
+        self.payload = payload or name
+
+    async def work(self, state: CapabilityBaseState) -> dict:
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        if self.fail:
+            return self._emit_failure(f"{self.spec.name} broke")
+        return self._emit_success({"echo": self.payload})
+
+    def render_context(self, result):
+        return f"# {self.spec.name}\n{result['data']['echo']}"
 
 
 class CountingEcho(SlowEcho):
@@ -97,6 +115,31 @@ async def until(check, *, what: str, seconds: float = 5.0):
     raise AssertionError(f"{what} never happened")
 
 
+SVG = '<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>'
+
+
+class ChartCapability(OneStep):
+    """Writes `filename` through the `ArtifactStore` port and declares it —
+    a store and a filename, never a directory (→ 0035)."""
+
+    def __init__(self, artifacts, *, filename: str = "chart.svg", name: str = "chart"):
+        super().__init__(name, description=f"draws {filename}")
+        self.artifacts = artifacts
+        self.filename = filename
+        self.seen_job_id: str | None = None
+
+    async def work(self, state: CapabilityBaseState) -> dict:
+        from jobsmith.core.artifacts import ArtifactRef, artifact_meta
+
+        self.seen_job_id = state.get("job_id", "")
+        path = await self.artifacts.write(self.seen_job_id, self.filename, SVG)
+        return self._emit_success({"chart": path},
+                                  meta=artifact_meta(ArtifactRef(path, title="Revenue chart")))
+
+    def render_context(self, result):
+        return "a chart was drawn"
+
+
 # ------------------------------------------------------------ the engine
 
 def make_manager(
@@ -114,6 +157,11 @@ def make_manager(
                         default_document_formats=default_formats if document_formats else ())
     return JobManager(graph, store, reports_dir=tmp_path / "artifacts",
                       default_formats=default_formats)
+
+
+def planning(*steps: str, deps: dict[str, list[str]] | None = None, **script: str) -> FakeLLM:
+    """A model whose planner plans `steps` (with `deps`) and that answers `ANSWER`."""
+    return FakeLLM({"planner": plan_json(*steps, deps=deps), **script}, default=ANSWER)
 
 
 def direct_llm(**script: str) -> FakeLLM:
@@ -185,6 +233,17 @@ def make_session(
                           approval_required=approval, sync_timeout=sync_timeout,
                           inline_answer_max=inline_answer_max)
     return session, model
+
+
+async def chat_turn(manager, responses, text: str, *, session_id: str | None = None):
+    """One streamed turn of a session over `manager` replaying `responses`:
+    its events, the scripted model (for what it was sent), the session id."""
+    from jobsmith.chat import ChatRunner, ChatSession
+
+    model = ScriptedChatModel(responses=responses)
+    session = ChatSession(manager, model, session_id=session_id, checkpointer=MemorySaver())
+    events = [e async for e in ChatRunner(session.build()).stream(session.session_id, text)]
+    return events, model, session.session_id
 
 
 def service_over(manager, responses, *, approval=False, sync_timeout=None):

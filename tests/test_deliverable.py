@@ -13,10 +13,10 @@ from types import SimpleNamespace
 import pytest
 from conftest import FakeLLM, plan_json
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langgraph.constants import END
 from support import (
     ANSWER,
     CFG,
+    ChartCapability,
     SlowEcho,
     client_for,
     direct_llm,
@@ -30,8 +30,8 @@ from support import (
 )
 
 from jobsmith.chat import ChatRunner, JobStarted
-from jobsmith.core.artifacts import ArtifactRef, LocalArtifactStore, artifact_meta
-from jobsmith.core.capability import Capability, CapabilityBaseState, CapabilitySpec
+from jobsmith.core.artifacts import LocalArtifactStore
+from jobsmith.core.capability import CapabilitySpec
 from jobsmith.jobs.models import JobStatus
 from jobsmith.jobs.report import (
     NAME_MAX,
@@ -320,31 +320,13 @@ async def test_no_document_still_lists_the_files_its_steps_wrote(
 ):
     """"No deliverable" is not "no outputs": an annex is kept, and never `main`. → 0041"""
 
-    class WritesAFile(Capability):
-        spec = CapabilitySpec(name="charts", description="draws a chart")
-
-        def __init__(self, artifacts):
-            self.artifacts = artifacts
-
-        async def work(self, state: CapabilityBaseState) -> dict:
-            path = await self.artifacts.write(state.get("job_id", ""), "chart.svg", b"<svg/>")
-            return self._emit_success({"drawn": True},
-                                      meta=artifact_meta(ArtifactRef(path, title="Chart")))
-
-        def build(self):
-            g = self.state_graph(CapabilityBaseState)
-            g.add_node("work", self.work)
-            g.set_entry_point("work")
-            g.add_edge("work", END)
-            return g.compile()
-
     mgr = make_manager(store, checkpointer, tmp_path,
-                       caps=[WritesAFile(LocalArtifactStore(tmp_path / "artifacts"))])
+                       caps=[ChartCapability(LocalArtifactStore(tmp_path / "artifacts"))])
     done = await run(mgr, "draw me one", formats=[])
 
     assert done.deliverable_expected is False and done.report_path is None
     [annex] = done.outputs
-    assert (annex.role, annex.produced_by, annex.name) == ("annex", "charts", "chart.svg")
+    assert (annex.role, annex.produced_by, annex.name) == ("annex", "chart", "chart.svg")
 
 
 async def test_every_surface_says_no_file_rather_than_not_yet(store, checkpointer, tmp_path):

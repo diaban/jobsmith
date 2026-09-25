@@ -2,48 +2,15 @@
 from __future__ import annotations
 
 from conftest import FakeLLM, plan_json
-from langgraph.constants import END
+from support import SlowEcho
 
 from jobsmith.core.builder import AgentBuilder, build_agent
-from jobsmith.core.capability import Capability, CapabilityBaseState, CapabilitySpec
 from jobsmith.core.deps import Deps
 from jobsmith.core.registry import CapabilityRegistry
-from jobsmith.core.state import CapabilityResult
 
 
-class EchoCapability(Capability):
-    """Single-node capability that echoes a configured payload."""
-
-    def __init__(
-        self,
-        name: str,
-        payload: str,
-        *,
-        fail: bool = False,
-        requires_inputs: tuple[str, ...] = (),
-    ):
-        self.spec = CapabilitySpec(
-            name=name,
-            description=f"echoes {payload}",
-            requires_inputs=requires_inputs,
-        )
-        self.payload = payload
-        self.fail = fail
-
-    async def work(self, state: CapabilityBaseState) -> dict:
-        if self.fail:
-            return self._emit_failure(f"{self.spec.name} broke")
-        return self._emit_success({"echo": self.payload})
-
-    def render_context(self, result: CapabilityResult) -> str | None:
-        return f"# {self.spec.name}\n{result['data']['echo']}"
-
-    def build(self):
-        g = self.state_graph(CapabilityBaseState)
-        g.add_node("work", self.work)
-        g.set_entry_point("work")
-        g.add_edge("work", END)
-        return g.compile()
+def EchoCapability(name: str, payload: str, **kwargs) -> SlowEcho:  # noqa: N802
+    return SlowEcho(name, payload=payload, description=f"echoes {payload}", **kwargs)
 
 
 async def test_two_capabilities_to_final_answer(checkpointer, store):

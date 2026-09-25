@@ -11,24 +11,23 @@ Three layers, tested where each one actually decides something:
   not know what is behind the port. If a test here needs a disk, the
   capability has learned something it should not know.
 
-And, at the end, the loop the issue is about: a job writes a report, a second
-job names that report, and the second job actually reads it.
+And the loop: a job writes a report, a second job names it and reads it.
+What `read_files` shares with `prior_jobs` is in `test_references.py`. → 0060
 """
 from __future__ import annotations
 
 import pytest
-from conftest import FakeLLM, ScriptedChatModel, plan_json
+from conftest import FakeLLM, plan_json
 from langchain_core.messages import AIMessage
-from langgraph.checkpoint.memory import MemorySaver
-from support import launch_call, make_manager
+from support import chat_turn, launch_call, make_manager
 
 from jobsmith.agents.base import AgentContext
 from jobsmith.agents.default import DefaultResources, default_capabilities, readable_roots
-from jobsmith.agents.default.read_files import ReadFilesCapability, named_files
+from jobsmith.agents.default.read_files import ReadFilesCapability
 from jobsmith.agents.default.sources import Document, DocumentUnavailable, LocalFileReader
 from jobsmith.app import build_app
 from jobsmith.app.providers import KeywordChatModel, KeywordLLM
-from jobsmith.chat import ChatRunner, ChatSession, JobStarted
+from jobsmith.chat import JobStarted
 from jobsmith.core.builder import build_agent
 from jobsmith.core.deps import Deps
 from jobsmith.core.paths import PathRefused, resolve_within, safe_name
@@ -228,22 +227,6 @@ async def test_only_the_first_files_are_read():
     assert reader.asked == ["0.md", "1.md"]
 
 
-def test_a_request_that_named_nothing_drops_the_step():
-    capability = ReadFilesCapability(FakeReader())
-    assert capability.is_applicable({"query": "q", "inputs": {"source_files": ["a.md"]}})
-    # the key being present is not enough — it has to name something
-    assert not capability.is_applicable({"query": "q", "inputs": {"source_files": []}})
-    assert not capability.is_applicable({"query": "q", "inputs": {}})
-    assert not capability.is_applicable({"query": "q"})
-
-
-def test_a_single_reference_is_read_as_generously_as_a_list():
-    assert named_files({SOURCE_FILES_INPUT_KEY: "a.md"}) == ["a.md"]
-    assert named_files({SOURCE_FILES_INPUT_KEY: [" a.md ", "", None]}) == ["a.md", "None"]
-    assert named_files({SOURCE_FILES_INPUT_KEY: 7}) == []
-    assert named_files(None) == []
-
-
 async def test_the_planner_drops_it_when_the_request_names_no_file(checkpointer):
     """End to end: registered, offered to the planner, and dropped as
     inapplicable — never planned as a step that can only report emptiness."""
@@ -343,36 +326,15 @@ async def test_the_files_a_job_will_open_are_shown_before_it_opens_them(
     it starts — same list, same moment, one fewer question.
     """
     manager = make_manager(store, checkpointer, tmp_path)
-    model = ScriptedChatModel(responses=[
+    events, model, session_id = await chat_turn(manager, [
         launch_call("summarise the attached report", "several steps",
                     source_files=["artifacts/abc.md", "  "]),
         AIMessage(content="Done."),
-    ])
-    session = ChatSession(manager, model, checkpointer=MemorySaver())
-    runner = ChatRunner(session.build())
-
-    events = [e async for e in runner.stream(session.session_id, "summarise it")]
+    ], "summarise it")
 
     (started,) = [e for e in events if isinstance(e, JobStarted)]
     assert started.sources == ["artifacts/abc.md"]   # blanks dropped
-    (job,) = await manager.list_jobs(session_id=session.session_id)
+    (job,) = await manager.list_jobs(session_id=session_id)
     assert job.inputs[SOURCE_FILES_INPUT_KEY] == ["artifacts/abc.md"]
 
 
-async def test_a_launch_that_names_no_file_carries_no_key(store, checkpointer, tmp_path):
-    """Absent, not empty: the planner drops the step instead of planning one
-    that can only report that nothing was given."""
-    manager = make_manager(store, checkpointer, tmp_path)
-    model = ScriptedChatModel(responses=[
-        launch_call("analyse the alpha data", "several steps"),
-        AIMessage(content="Done."),
-    ])
-    session = ChatSession(manager, model, checkpointer=MemorySaver())
-    runner = ChatRunner(session.build())
-
-    events = [e async for e in runner.stream(session.session_id, "analyse it")]
-
-    (started,) = [e for e in events if isinstance(e, JobStarted)]
-    assert started.sources == []
-    (job,) = await manager.list_jobs(session_id=session.session_id)
-    assert SOURCE_FILES_INPUT_KEY not in job.inputs

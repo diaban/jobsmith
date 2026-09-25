@@ -1,26 +1,23 @@
-"""A follow-up references the JOB, not the file it wrote (#74).
+"""A follow-up references the JOB, not the file it wrote. → 0074
 
-Three layers, one property each: the adapter turns a stored run into the
-port's vocabulary, the capability turns that into material the run can use,
-and `research` reads it — because material that reaches only the final
-generator is the defect #81 was opened for.
+The adapter turns a stored run into the port's vocabulary, the capability
+turns that into material, and `research` reads it (→ 0081). What `prior_jobs`
+shares with `read_files` is in `test_references.py`.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
-from conftest import FakeLLM, ScriptedChatModel
+from conftest import FakeLLM
 from langchain_core.messages import AIMessage
-from langgraph.checkpoint.memory import MemorySaver
-from support import PACK_SCRIPT, launch_call, make_manager, notes_call
+from support import PACK_SCRIPT, chat_turn, launch_call, make_manager, notes_call
 
 import jobsmith.agents.default.prior_jobs as prior_jobs_module
-from jobsmith.agents.default.prior_jobs import PriorJobsCapability, referenced_jobs
+from jobsmith.agents.default.prior_jobs import PriorJobsCapability
 from jobsmith.agents.default.research import ResearchCapability
 from jobsmith.app import build_app
 from jobsmith.app.providers import KeywordChatModel, KeywordLLM
-from jobsmith.chat import ChatRunner, ChatSession
 from jobsmith.chat.runner import JobStarted
 from jobsmith.core.prior_jobs import PriorJob, PriorJobUnavailable, PriorStep
 from jobsmith.core.state import FROM_JOBS_INPUT_KEY
@@ -189,24 +186,6 @@ async def test_only_so_many_jobs_are_read_and_the_rest_are_named():
     assert len(result["data"]["unavailable"]) == 3
 
 
-def test_a_request_that_references_no_job_drops_the_step():
-    """`requires_inputs` gets the key; the key being present is not the same
-    as referencing something (`read_files` overrides `is_applicable` for the
-    same reason)."""
-    capability = PriorJobsCapability(FakePriorJobs())
-    assert capability.spec.requires_inputs == (FROM_JOBS_INPUT_KEY,)
-    assert capability.is_applicable({"query": "q", "inputs": {}}) is False
-    assert capability.is_applicable({"query": "q", "inputs": {FROM_JOBS_INPUT_KEY: []}}) is False
-    assert capability.is_applicable({"query": "q", "inputs": {FROM_JOBS_INPUT_KEY: ["j"]}})
-
-
-def test_a_single_id_where_a_list_was_documented_is_read_generously():
-    assert referenced_jobs({FROM_JOBS_INPUT_KEY: "j1"}) == ["j1"]
-    assert referenced_jobs({FROM_JOBS_INPUT_KEY: [" j1 ", ""]}) == ["j1"]
-    assert referenced_jobs({FROM_JOBS_INPUT_KEY: 3}) == []
-    assert referenced_jobs(None) == []
-
-
 async def test_the_report_names_the_runs_it_read_and_never_a_path():
     source = FakePriorJobs({"aaaaaaaa1111": prior()})
     result = await run(PriorJobsCapability(source), "aaaaaaaa1111")
@@ -251,15 +230,11 @@ async def test_a_reference_is_resolved_against_this_session_and_becomes_an_id(
     earlier = await manager.run_job(
         (await manager.create_job("the first task", session_id="s-mine")).job_id)
 
-    model = ScriptedChatModel(responses=[
+    await chat_turn(manager, [
         launch_call("make a one-pager out of the earlier comparison", "builds on it",
                     from_jobs=[earlier.job_id[:8], "  "]),
         AIMessage(content="Done."),
-    ])
-    session = ChatSession(manager, model, session_id="s-mine", checkpointer=MemorySaver())
-    runner = ChatRunner(session.build())
-
-    [e async for e in runner.stream(session.session_id, "one-pager out of that")]
+    ], "one-pager out of that", session_id="s-mine")
 
     launched = next(j for j in await manager.list_jobs(session_id="s-mine")
                     if j.job_id != earlier.job_id)
@@ -274,15 +249,11 @@ async def test_a_job_referenced_twice_is_handed_over_once(store, checkpointer, t
     first = await manager.create_job("the first task", session_id="s-mine")
     second = await manager.create_job("the second task", session_id="s-mine")
 
-    model = ScriptedChatModel(responses=[
+    events, _, _ = await chat_turn(manager, [
         launch_call("compare them", "builds on both",
                     from_jobs=[second.job_id[:8], first.job_id, second.job_id]),
         AIMessage(content="Done."),
-    ])
-    session = ChatSession(manager, model, session_id="s-mine", checkpointer=MemorySaver())
-    runner = ChatRunner(session.build())
-
-    events = [e async for e in runner.stream(session.session_id, "compare them")]
+    ], "compare them", session_id="s-mine")
 
     launched = next(j for j in await manager.list_jobs(session_id="s-mine")
                     if j.job_id not in (first.job_id, second.job_id))
@@ -299,37 +270,14 @@ async def test_another_sessions_job_is_not_referenceable(store, checkpointer, tm
     theirs = await manager.run_job(
         (await manager.create_job("their task", session_id="s-theirs")).job_id)
 
-    model = ScriptedChatModel(responses=[
+    _, model, _ = await chat_turn(manager, [
         launch_call("build on that", "builds on it", from_jobs=[theirs.job_id]),
         AIMessage(content="I could not find that job."),
-    ])
-    session = ChatSession(manager, model, session_id="s-mine", checkpointer=MemorySaver())
-    runner = ChatRunner(session.build())
-
-    [e async for e in runner.stream(session.session_id, "build on that")]
+    ], "build on that", session_id="s-mine")
 
     assert await manager.list_jobs(session_id="s-mine") == []      # nothing ran
     refusal = model.calls[-1][-1].content
     assert "NOT launched" in refusal and theirs.job_id[:8] in refusal
-
-
-async def test_a_launch_that_references_no_job_carries_no_key(
-    store, checkpointer, tmp_path
-):
-    """Absent, not empty: the planner drops the step rather than planning one
-    that can only report that nothing was referenced."""
-    manager = make_manager(store, checkpointer, tmp_path)
-    model = ScriptedChatModel(responses=[
-        launch_call("analyse the alpha data", "several steps"),
-        AIMessage(content="Done."),
-    ])
-    session = ChatSession(manager, model, checkpointer=MemorySaver())
-    runner = ChatRunner(session.build())
-
-    [e async for e in runner.stream(session.session_id, "analyse it")]
-
-    (job,) = await manager.list_jobs(session_id=session.session_id)
-    assert FROM_JOBS_INPUT_KEY not in job.inputs
 
 
 # ---------------- the loop this issue is about ----------------

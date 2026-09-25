@@ -11,12 +11,12 @@ from types import SimpleNamespace
 
 import pytest
 from conftest import FakeLLM, plan_json
-from langgraph.constants import END
+from support import OneStep
 
 from jobsmith.app.providers import KeywordLLM
 from jobsmith.clients import AnthropicLLMClient, OpenAILLMClient
 from jobsmith.core.builder import build_agent
-from jobsmith.core.capability import Capability, CapabilityBaseState, CapabilitySpec
+from jobsmith.core.capability import CapabilityBaseState
 from jobsmith.core.deps import Deps
 from jobsmith.core.registry import CapabilityRegistry
 from jobsmith.core.usage import (
@@ -167,11 +167,11 @@ class MeteredLLM(FakeLLM):
 CALL_COST = (MeteredLLM.IN * 5.0 + MeteredLLM.OUT * 25.0) / 1_000_000
 
 
-class Metered(Capability):
+class Metered(OneStep):
     """Capability whose single node makes one or more LLM calls."""
 
     def __init__(self, name: str, llm, *, calls: int = 1, fail: bool = False):
-        self.spec = CapabilitySpec(name=name, description=f"{name} capability")
+        super().__init__(name)
         self.llm = llm
         self.calls = calls
         self.fail = fail
@@ -186,13 +186,6 @@ class Metered(Capability):
 
     def render_context(self, result):
         return f"# {self.spec.name}"
-
-    def build(self):
-        g = self.state_graph(CapabilityBaseState)
-        g.add_node("work", self.work)
-        g.set_entry_point("work")
-        g.add_edge("work", END)
-        return g.compile()
 
 
 def make_manager(store, checkpointer, tmp_path, caps_spec, *, fail=()):
@@ -464,9 +457,9 @@ async def test_two_jobs_running_at_once_never_bill_each_other(store, checkpointe
 
     from jobsmith.jobs.manager import JobManager
 
-    class Burner(Capability):
+    class Burner(OneStep):
         def __init__(self, name: str, tokens: int):
-            self.spec = CapabilitySpec(name=name, description=name)
+            super().__init__(name)
             self.tokens = tokens
 
         async def work(self, state):
@@ -478,12 +471,6 @@ async def test_two_jobs_running_at_once_never_bill_each_other(store, checkpointe
         def render_context(self, result):
             return str(result["data"]["burned"])
 
-        def build(self):
-            g = self.state_graph(CapabilityBaseState)
-            g.add_node("work", self.work)
-            g.set_entry_point("work")
-            g.add_edge("work", END)
-            return g.compile()
 
     def manager_for(name: str, tokens: int) -> JobManager:
         capability = Burner(name, tokens)
