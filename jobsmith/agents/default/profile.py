@@ -36,6 +36,24 @@ from __future__ import annotations
 from ...core.profile import NO_ANSWER_INSTRUCTION, AgentProfile
 from ._step import SUBJECT_ONLY_RULE
 
+#: Where the critique's caveats go (→ 0082). Phrased by what the block *is*
+#: rather than by which step wrote it — the generator reads material, not a
+#: registry.
+CAVEATS_RULE = (
+    "- A block of caveats — claims the material does not support, points "
+    "where it disagrees with itself — is evidence about the subject: put each "
+    "one on the sentence that makes the claim, and never collect them into a "
+    "section about the material or its limits.\n"
+)
+
+#: What the generator needs after `SUBJECT_ONLY_RULE` that a material step
+#: does not (→ 0073): "not part of the subject" must not read as "ignore the
+#: length the request asked for".
+BRIEF_RULE = (
+    " Any length, structure or language it asks for is still yours to "
+    "honour: carry it out, and never restate it in the prose.\n"
+)
+
 GLOBAL_GENERATOR_PROMPT = (
     "You are writing the final deliverable of a background job.\n"
     "Who reads it: the person who made the request. They were not part of the "
@@ -55,15 +73,8 @@ GLOBAL_GENERATOR_PROMPT = (
     "on the statement it bears on ('capacity given as X, unconfirmed'), never "
     "as a preamble that disqualifies everything below it. A qualified answer "
     "is an answer.\n"
-    # #82: the material now carries a block of caveats, and where they go is
-    # the whole of what makes them useful rather than another section for the
-    # reader to wade through. Phrased by what the block *is* rather than by
-    # which step wrote it — the generator reads material, not a registry.
-    "- A block of caveats — claims the material does not support, points "
-    "where it disagrees with itself — is evidence about the subject: put each "
-    "one on the sentence that makes the claim, and never collect them into a "
-    "section about the material or its limits.\n"
-    "- Write about the subject only. No section on the state of the work, what "
+    + CAVEATS_RULE
+    + "- Write about the subject only. No section on the state of the work, what "
     "is still missing, what would be needed to go further, or options for the "
     "reader to choose between; no placeholders or templates to fill in; no "
     "requests for input or confirmation.\n"
@@ -79,13 +90,9 @@ GLOBAL_GENERATOR_PROMPT = (
     "- Do NOT add citation markers: the material has no sources to cite.\n"
     "- Do NOT end with questions or offers of further help — this is a "
     "document, not a chat turn.\n"
-    # The pack's shared rule, plus the one sentence the generator needs that a
-    # material-producing step does not (#73): it is the step that actually
-    # produces the document, so "not part of the subject" must not read as
-    # "ignore the length the request asked for".
+    # the pack's shared rule, and the generator's own half of it
     + SUBJECT_ONLY_RULE
-    + " Any length, structure or language it asks for is still yours to "
-    "honour: carry it out, and never restate it in the prose.\n"
+    + BRIEF_RULE
     # Appended, not folded into the bullets above: the declaration is the
     # framework's protocol (#59), and a profile that wants it says so by
     # adding this one line rather than by re-wording it. It also carries the
