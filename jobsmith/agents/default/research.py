@@ -39,6 +39,15 @@ class ResearchState(CapabilityBaseState, total=False):
     grounded_on: list[str]
 
 
+#: `read_files`' rule, one step earlier (→ 0081): a refusal is material, so a
+#: file that could not be opened is declared, never written up from memory.
+UNREADABLE_RULE = (
+    "A document listed as impossible to read was asked for and never opened: "
+    "name it in the notes as a gap in the material, and never write it up "
+    "from your own knowledge as though it had been read."
+)
+
+
 class ResearchCapability(Capability):
     """Break the request into key aspects and write research notes."""
 
@@ -177,11 +186,8 @@ class ResearchCapability(Capability):
         "line and add what you know yourself, marked as your own knowledge. "
         "Mark doubt only where the material is thin on a point or its "
         "documents disagree — never as a general warning, and never on a "
-        "point the material states plainly. A document listed as impossible "
-        "to read was asked for and never opened: name it in the notes as a "
-        "gap in the material, and never write it up from your own knowledge "
-        "as though it had been read."
-    )
+        "point the material states plainly. "
+    ) + UNREADABLE_RULE
 
     def __init__(self, llm: LLMClient, *, max_aspects: int = 5,
                  max_material_chars: int | None = None):
