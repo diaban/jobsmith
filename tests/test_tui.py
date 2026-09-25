@@ -657,7 +657,10 @@ async def test_a_refresh_in_flight_is_joined_rather_than_cancelled_or_dropped():
 async def test_the_screen_follows_a_job_while_it_runs(store, checkpointer, tmp_path):
     """Driven only by `subscribe()` — no keystroke, no F5, no poll: the job
     appears, its plan before any step lands, then `done`."""
-    caps = [SlowEcho(name, delay=0.4) for name in ("alpha", "beta")]
+    # `alpha` is held until the plan has been seen — a 0.4 s sleep made "before
+    # any step landed" a window of wall clock that a GC pause closed (#113)
+    alpha = Gate("alpha")
+    caps = [alpha, SlowEcho("beta", delay=0.4)]
     llm = FakeLLM(
         {"planner": plan_json("alpha", "beta", deps={"beta": ["alpha"]})},
         default="A sufficiently long final answer for the job test.",
@@ -688,6 +691,7 @@ async def test_the_screen_follows_a_job_while_it_runs(store, checkpointer, tmp_p
         # "no plan yet" for the whole of the first step.
         assert await until(pilot, lambda: "alpha" in dag_now() and "0 of 2" in meta_now()), \
             "the plan was not on screen until a step had finished"
+        alpha.open.set()                      # only now may the first step land
         assert await until(pilot, lambda: "done" in meta_now()), "the end never arrived"
 
         steps = str(app.query_one("#detail-steps", Static).content)
