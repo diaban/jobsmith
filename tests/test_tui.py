@@ -1,23 +1,10 @@
-"""The terminal UI: what it draws, and what it does with a turn.
+"""The terminal UI: what it draws, and what it does with a turn. → 0048
 
-Three kinds of test, and they are deliberately not the same test:
-
-* **layout** — an SVG snapshot of a screen, in ONE theme. A snapshot pins
-  where things are, not what colour they are, so a second theme's snapshot
-  would only be another file to regenerate.
-* **colour** — one test that mounts every registered theme, ours and
-  Textual's, and forces a full render. It costs the same for 23 themes as
-  for 2, and it is the only thing that catches the failure mode `themes.py`
-  is written around: a stylesheet naming a variable the theme does not
-  define does not look wrong, it fails to parse and the app never starts.
-* **behaviour** — the streamed turn and the approval round trip, driven
-  through the real `LocalAgentService` with the scripted chat model, because
-  what is being checked is that the UI renders the port's flow rather than
-  its own idea of one.
-
-The canned service below answers with real `Job` records: the shapes come
-from `jobs/models.py` and only the timestamps are frozen, so a change to what
-`get_job` returns reaches these tests instead of passing them.
+* **layout** — an SVG snapshot, in one theme; the facts a pane states are
+  asserted by name before the picture, never left to the snapshot.
+* **colour** — representative themes mounted and rendered for real (→ 0109).
+* **behaviour** — asserted on what the screen shows (prompt placeholder,
+  activity line, tab bar, bubbles, cards), never on the app's private state.
 """
 from __future__ import annotations
 
@@ -29,17 +16,23 @@ import time
 from typing import Any
 
 import pytest
-from conftest import FakeLLM, ScriptedChatModel, plan_json
+from conftest import FakeLLM, plan_json
 from langchain_core.messages import AIMessage
-from langgraph.checkpoint.memory import MemorySaver
-from support import Gate, SlowEcho, launch_call, make_manager, planned_manager
+from support import (
+    Gate,
+    SlowEcho,
+    launch_call,
+    make_manager,
+    planned_manager,
+    planned_service,
+    service_over,
+)
 from textual.content import Content
 from textual.widgets import Input, ListView, Static
 
-from jobsmith.chat import ChatSession
 from jobsmith.core.usage import Usage
 from jobsmith.jobs.models import Job, JobOutput, JobStatus
-from jobsmith.service import AgentService, LocalAgentService, ServiceUnavailable
+from jobsmith.service import AgentService, ServiceUnavailable
 from jobsmith.tui import MISSING, TuiUnavailable
 from jobsmith.tui.app import (
     LIVE_LOST,
@@ -242,28 +235,58 @@ async def settle(pilot: Any) -> None:
     await pilot.pause()
 
 
+async def say(pilot: Any, text: str) -> None:
+    """Type a message, send it, and let the turn finish."""
+    await pilot.press(*text)
+    await pilot.press("enter")
+    await settle(pilot)
+
+
+async def until(pilot: Any, condition: Any, timeout: float = 5.0) -> bool:
+    """Let the UI breathe until it says something, or give up saying so."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        await pilot.pause()
+        if condition():
+            return True
+        await asyncio.sleep(0.02)
+    return False
+
+
+# What the screen shows — the only state these tests read.
+IDLE, PROPOSING = "message the agent…", "launch it? [y/N]"
+
+
+def placeholder(app: JobsmithApp) -> str:
+    return app.query_one("#prompt", Input).placeholder
+
+
+def activity(app: JobsmithApp) -> str:
+    return str(app.query_one("#activity", Static).content)
+
+
+def tabs(app: JobsmithApp) -> str:
+    return str(app.query_one("#tabs", Static).content)
+
+
+def job_rows(app: JobsmithApp) -> int:
+    return len(app.query_one("#job-list", ListView))
+
+
 # ------------------------------------------------------------------- layout
 
 
 def test_the_jobs_screen_looks_like_this(snap_compare):
-    """Job list on the left, the plan and the step table on the right.
-
-    A snapshot blesses whatever it is shown, including a field that renders
-    empty — the outputs pane printed no filename at all and this test passed,
-    because the baseline had been generated from the same bug. So the facts a
-    pane must state are asserted next to it, by name, and the snapshot is
-    left to do the one thing it is good at: where things are.
-    """
+    """Job list on the left, the plan, steps and files on the right."""
     async def before(pilot):
         await settle(pilot)
         await pilot.press("f3")
         await settle(pilot)
-        # Checked BEFORE the picture is taken, so `--snapshot-update` cannot
-        # re-freeze a blank field: this is exactly how the missing filename
-        # survived — the baseline was generated from the bug.
+        # before the picture, so `--snapshot-update` cannot re-freeze a blank field
         outputs = str(pilot.app.query_one("#detail-outputs", Static).content)
         assert "sixel-matrix.svg" in outputs, outputs
         assert "/tmp/a/sixel-matrix.svg" in outputs, "the file is not located"
+        assert "from web_search" in outputs, "an annex does not say which step made it"
         assert "on this machine" in outputs, "the pane does not say whose disk that is"
 
     assert snap_compare(canned_app(), terminal_size=(126, 38), run_before=before)
@@ -274,9 +297,7 @@ def test_the_chat_screen_looks_like_this(snap_compare):
     """A streamed turn that ended on a proposal, waiting to be answered."""
     async def before(pilot):
         await settle(pilot)
-        await pilot.press(*"look into sixel support")
-        await pilot.press("enter")
-        await settle(pilot)
+        await say(pilot, "look into sixel support")
 
     assert snap_compare(canned_app(), terminal_size=(126, 38), run_before=before)
 
@@ -285,13 +306,7 @@ def test_the_chat_screen_looks_like_this(snap_compare):
 
 
 async def test_every_theme_is_registered():
-    """The registration half of the colour test, and it costs almost nothing.
-
-    `test_every_registered_theme_resolves` below only renders a *sample* of
-    the picker, so this one checks the picker itself still holds all of it:
-    ours (`THEMES`) and Textual's full 21 — registration happens in
-    `on_mount`, so this still needs one mount, just no render loop after it.
-    """
+    """Ours and Textual's built-ins are all in the picker (one mount, no render)."""
     app = canned_app()
     async with app.run_test():
         themes = list(app.available_themes)
@@ -299,48 +314,17 @@ async def test_every_theme_is_registered():
     assert len(themes) >= 20, "the built-in themes went missing"
 
 
-# #109: rendering all 25 registered themes cost the same 12s regardless of how
-# many actually carry distinct risk, so this list keeps only those that do —
-# see docs/decisions/0109-faster-suite.md for the reasoning and the themes
-# ruled out (21 built-ins minus the two below, all sharing one variable set
-# with `textual-dark`, so a break in it breaks every one of them alike):
-#   * our four (`ember-*`, `tide-*`) — the only ones we author, so the only
-#     ones a typo in `themes.py` itself can break;
-#   * `ansi-dark`/`ansi-light` — the two built-ins with a reduced variable set
-#     (`ANSI_GAP` below), the one case the standard-roles-only rule has an
-#     exception for;
-#   * `textual-dark` — one built-in, standing in for the other 20: they all
-#     define the same variable set Textual ships, so one is what "a foreign
-#     theme parses and resolves" actually needs to prove.
+# Ours (the only ones a typo in themes.py can break), the two ansi themes
+# (reduced variable set) and one built-in for the 20 that share textual-dark's. → 0109
 REPRESENTATIVE_THEMES = [*THEMES, "ansi-dark", "ansi-light", "textual-dark"]
 
 
 @pytest.mark.slow
 @pytest.mark.parametrize("name", REPRESENTATIVE_THEMES)
 async def test_every_registered_theme_resolves(name):
-    """Mount both panes under one theme and render them for real.
-
-    This is the test `themes.py` exists for, and it asks two questions that
-    are not the same one.
-
-    *Does the app start?* A stylesheet naming a variable the theme does not
-    define raises `UnresolvedVariableError` at parse time — measured: the app
-    never composes. `export_screenshot()` is a full render of every widget on
-    screen, so it answers that for the theme.
-
-    *Is the colour the one that was asked for?* A different question, because
-    an undefined variable in **content markup** does not raise — it is
-    dropped and the text renders unstyled. So the roles are checked by name
-    as well. Both `ansi-*` themes really are short one of them: they generate
-    a reduced variable set (no `$foreground-disabled`, and `$surface-active`
-    is spelt `$surface-actrive` there), which is why the exception below is
-    written down rather than papered over. Under those two, queued steps and
-    rules lose their dimming and read as ordinary foreground — cosmetic, and
-    the price the issue already accepted for standard roles.
-
-    Parametrized (rather than one loop over `REPRESENTATIVE_THEMES`) so a
-    failure names the theme in the test id, not just in the assertion text.
-    """
+    """The app starts under the theme (an undefined CSS variable fails at parse
+    time) and every markup role resolves (an undefined one is silently
+    dropped) — `ANSI_GAP` is the one measured exception. → 0048"""
     app = canned_app(theme=name)
     async with app.run_test(size=(126, 38)) as pilot:
         await settle(pilot)
@@ -393,14 +377,8 @@ async def test_the_detail_pane_follows_the_highlighted_row():
 
 
 async def test_cancelling_asks_twice_and_only_where_the_job_is_shown():
-    """The row `_selected` defaults to is the newest job, and `list_jobs`
-    sorts newest first — so from the chat pane one keystroke would have
-    stopped the job the user had just launched, without ever showing which.
-
-    Note where the first press happens: the prompt has focus, which is the
-    case the key choice turns on (`Input` claims ctrl+x, ctrl+k, ctrl+w and
-    ctrl+u for editing, so a binding on any of those never reaches the app).
-    """
+    """F8 arms, a second F8 cancels — and only on the jobs pane, where the job
+    is shown (the prompt claims the ctrl keys; → 0048)."""
     service = CannedService(events=PROPOSAL_TURN)
     app = JobsmithApp(service, SESSION)
     async with app.run_test(size=(126, 38)) as pilot:
@@ -442,24 +420,15 @@ async def test_moving_off_the_row_drops_an_armed_cancel():
 
 def make_service(store, checkpointer, tmp_path, responses, *, approval=False):
     manager = make_manager(store, checkpointer, tmp_path)
-    model = ScriptedChatModel(responses=responses)
-    saver = MemorySaver()
-    service = LocalAgentService(manager, lambda session_id=None: ChatSession(
-        manager, model, session_id=session_id, checkpointer=saver,
-        approval_required=approval))
-    return service, manager
+    return service_over(manager, responses, approval=approval), manager
 
 
 ANSWER = "A reasonably long answer that no single chunk should ever carry whole."
 
 
 async def test_the_answer_is_drawn_as_it_arrives(store, checkpointer, tmp_path, monkeypatch):
-    """Not "the answer appears" — that a *block* would satisfy too.
-
-    Every state the answer bubble passes through is recorded: a turn rendered
-    on arrival leaves several, each a growing prefix of the last. A turn
-    rendered when it is over leaves exactly one.
-    """
+    """The bubble passes through several states, each a prefix of the next —
+    a turn drawn when it is over leaves exactly one."""
     seen: list[str] = []
     original = Bubble.add
 
@@ -474,9 +443,7 @@ async def test_the_answer_is_drawn_as_it_arrives(store, checkpointer, tmp_path, 
     app = JobsmithApp(service, session_id)
     async with app.run_test(size=(100, 30)) as pilot:
         await settle(pilot)
-        await pilot.press(*"hello")
-        await pilot.press("enter")
-        await settle(pilot)
+        await say(pilot, "hello")
 
     assert len(seen) > 1, "the answer landed in one block: nothing was streamed"
     assert seen[-1] == ANSWER
@@ -488,13 +455,8 @@ async def test_the_answer_is_drawn_as_it_arrives(store, checkpointer, tmp_path, 
 async def test_the_job_notice_says_what_will_run_and_how_to_stop_it(
     store, checkpointer, tmp_path
 ):
-    """The nominal path on screen (#83): a card that is read, not answered.
-
-    It carries the three guarantees the approval used to — the reformulated
-    query, the files it may open, the document it will write — plus the job
-    id and how to stop it, because cancellation is the undo the gate was. The
-    prompt is NOT put into approval mode: nothing is waiting on the user.
-    """
+    """The nominal path: a card that is read, not answered — query, files,
+    document, job id and how to stop it; the prompt stays idle. → 0083"""
     service, manager = make_service(store, checkpointer, tmp_path, [
         launch_call("survey sixel support", "it needs the web",
                     source_files=["/notes/sixel.md"], document_name="sixel",
@@ -506,9 +468,7 @@ async def test_the_job_notice_says_what_will_run_and_how_to_stop_it(
     app = JobsmithApp(service, session_id)
     async with app.run_test(size=(100, 30)) as pilot:
         await settle(pilot)
-        await pilot.press(*"look into sixel")
-        await pilot.press("enter")
-        await settle(pilot)
+        await say(pilot, "look into sixel")
 
         (notice,) = app.query(JobNoticeCard)
         shown = str(notice.content)
@@ -519,8 +479,7 @@ async def test_the_job_notice_says_what_will_run_and_how_to_stop_it(
         assert "stops it" in shown, "the undo is not offered anywhere"
         assert "builds on" not in shown, "a run that references no job names one"
         assert not app.query(ProposalCard), "the nominal path still asked"
-        assert not app._awaiting_approval
-        assert app.query_one("#prompt").placeholder == "message the agent…"
+        assert placeholder(app) == IDLE
 
         (job,) = await manager.list_jobs()
         assert job.job_id[:8] in shown, "the card cannot name the job to stop"
@@ -540,23 +499,17 @@ async def test_the_card_names_the_jobs_a_run_builds_on(
     manager = make_manager(store, checkpointer, tmp_path)
     first = await manager.create_job("compare [b]both[/b] chairs", session_id="s-tui")
     second = await manager.create_job("price the standing desk", session_id="s-tui")
-    model = ScriptedChatModel(responses=[
+    service = service_over(manager, [
         launch_call("a one-pager out of both", "several steps",
                     from_jobs=[first.job_id[:8], second.job_id[:8]]),
         AIMessage(content="Saved."),
-    ])
-    saver = MemorySaver()
-    service = LocalAgentService(manager, lambda session_id=None: ChatSession(
-        manager, model, session_id=session_id, checkpointer=saver,
-        approval_required=approval))
+    ], approval=approval)
     session_id = await service.new_session("s-tui")
 
     app = JobsmithApp(service, session_id)
     async with app.run_test(size=(100, 30)) as pilot:
         await settle(pilot)
-        await pilot.press(*"one-pager out of both")
-        await pilot.press("enter")
-        await settle(pilot)
+        await say(pilot, "one-pager out of both")
 
         (card,) = app.query(ProposalCard if approval else JobNoticeCard)
         # the text as drawn, not the markup: an unescaped `[b]` would be
@@ -570,19 +523,13 @@ async def test_the_card_names_the_jobs_a_run_builds_on(
 async def test_the_plan_is_on_the_activity_line_while_the_task_runs(
     store, checkpointer, tmp_path
 ):
-    """#86 in the TUI: while the turn waits on the run, the activity line says
-    the plan instead of `… running the task`, and says it before the run is
-    over (the first step is held until it has). The conversation — the notice
-    card, the answer — does not carry it: the jobs pane is where the DAG is
-    drawn exactly, and the activity line is where "right now" is said."""
+    """The plan is said on the activity line while the run is held, and never in
+    the conversation. → 0086"""
 
     gate = Gate("web_search")
     manager = planned_manager(store, checkpointer, tmp_path, gate=gate)
-    model = ScriptedChatModel(responses=[launch_call("analyse it", "several steps"),
-                                         AIMessage(content="Done.")])
-    saver = MemorySaver()
-    service = LocalAgentService(manager, lambda session_id=None: ChatSession(
-        manager, model, session_id=session_id, checkpointer=saver))
+    service = planned_service(manager, responses=[launch_call("analyse it", "several steps"),
+                                                  AIMessage(content="Done.")])
     session_id = await service.new_session()
 
     app = JobsmithApp(service, session_id)
@@ -590,13 +537,8 @@ async def test_the_plan_is_on_the_activity_line_while_the_task_runs(
         await settle(pilot)
         await pilot.press(*"analyse it")
         await pilot.press("enter")
-        activity = app.query_one("#activity", Static)
-        for _ in range(500):
-            if "→" in str(activity.content):
-                break
-            await pilot.pause(0.01)
-        shown = str(activity.content)
-        assert shown == "… running the task: web_search + documents → research → analysis"
+        assert await until(pilot, lambda: "→" in activity(app)), "the plan was never said"
+        assert activity(app) == "… running the task: web_search + documents → research → analysis"
         (job,) = await manager.list_jobs()
         assert job.status is JobStatus.RUNNING, "the plan was shown only once it was over"
 
@@ -606,71 +548,40 @@ async def test_the_plan_is_on_the_activity_line_while_the_task_runs(
         drawn = [str(w.content) for w in app.query(JobNoticeCard)] + [
             b.text for b in app.query(Bubble)]
         assert not any("→" in text for text in drawn), "the plan leaked into the conversation"
-        assert str(activity.content) == "", "the plan outlived the turn on the activity line"
+        assert activity(app) == "", "the plan outlived the turn on the activity line"
 
 
 @pytest.mark.slow  # drives a real job through the graph
-async def test_a_proposal_is_approved_through_the_ui(store, checkpointer, tmp_path):
-    """The round trip: the interrupt becomes a card, `y` resumes the graph,
-    and a job exists on the other side of it.
-
-    Behind `$JOBSMITH_APPROVE_JOBS` since #83 — the mechanism is kept, so its
-    UI is kept, and this is what stops the card rotting.
-    """
+@pytest.mark.parametrize(("key", "launched"), [("y", ["survey sixel support"]), ("n", [])])
+async def test_a_proposal_is_answered_through_the_ui(
+    store, checkpointer, tmp_path, key, launched
+):
+    """The gate path (`$JOBSMITH_APPROVE_JOBS`, → 0083): a card to answer, and
+    a job only on `y`."""
     service, manager = make_service(store, checkpointer, tmp_path, [
         launch_call("survey sixel support", "it needs the web"),
         AIMessage(content=ANSWER),
     ], approval=True)
-    session_id = await service.new_session()
-
-    app = JobsmithApp(service, session_id)
+    app = JobsmithApp(service, await service.new_session())
     async with app.run_test(size=(100, 30)) as pilot:
         await settle(pilot)
-        await pilot.press(*"look into sixel")
-        await pilot.press("enter")
+        await say(pilot, "look into sixel")
+        (card,) = app.query(ProposalCard)
+        assert "survey sixel support" in str(card.content)
+        assert placeholder(app) == PROPOSING
+        assert not await manager.list_jobs(), "a job was created before the answer"
+
+        await pilot.press(key, "enter")
         await settle(pilot)
-        card = app.query(ProposalCard)
-        assert len(card) == 1, "the proposal was not shown as something to answer"
-        assert "survey sixel support" in str(card.first().content)
-        assert app.query_one("#prompt").placeholder == "launch it? [y/N]"
-        assert not await manager.list_jobs(), "a job was created before approval"
+        assert placeholder(app) == IDLE
 
-        await pilot.press("y", "enter")
-        await settle(pilot)
-        assert app.query_one("#prompt").placeholder == "message the agent…"
-
-    jobs = await manager.list_jobs()
-    assert [job.query for job in jobs] == ["survey sixel support"]
-
-
-@pytest.mark.slow  # drives a real job through the graph
-async def test_declining_a_proposal_creates_nothing(store, checkpointer, tmp_path):
-    service, manager = make_service(store, checkpointer, tmp_path, [
-        launch_call("survey sixel support", "it needs the web"),
-        AIMessage(content="fine, not now"),
-    ], approval=True)
-    session_id = await service.new_session()
-
-    app = JobsmithApp(service, session_id)
-    async with app.run_test(size=(100, 30)) as pilot:
-        await settle(pilot)
-        await pilot.press(*"look into sixel")
-        await pilot.press("enter")
-        await settle(pilot)
-        await pilot.press("n", "enter")
-        await settle(pilot)
-
-    assert await manager.list_jobs() == []
+    assert [job.query for job in await manager.list_jobs()] == launched
 
 
 @pytest.mark.slow  # a full streamed turn, keystroke by keystroke
 async def test_a_second_message_cannot_cut_the_turn_being_written():
-    """`@work(exclusive=True)` meant a second Enter cancelled the first turn
-    mid-sentence: half an answer on screen with nothing saying it was cut,
-    the activity line stuck, and — if the cancelled turn was about to
-    propose a job — a thread left interrupted in the checkpointer that the
-    next message would not have answered. It is refused instead, and the
-    typed text stays in the box rather than vanishing."""
+    """A second Enter during a turn is refused and its text kept; the first turn
+    finishes. → 0048"""
     gate = asyncio.Event()
     service = CannedService(events=PROPOSAL_TURN, stream_gate=gate)
     app = JobsmithApp(service, SESSION)
@@ -680,7 +591,7 @@ async def test_a_second_message_cannot_cut_the_turn_being_written():
             await pilot.press(*"first")
             await pilot.press("enter")
             await pilot.pause()
-            assert app._streaming, "the turn is not in flight; the gate did not hold"
+            assert activity(app), "the turn is not in flight; the gate did not hold"
 
             await pilot.press(*"second")
             await pilot.press("enter")
@@ -691,8 +602,7 @@ async def test_a_second_message_cannot_cut_the_turn_being_written():
         finally:
             gate.set()      # a failed assert must not leave the app mid-turn
         await settle(pilot)
-        assert not app._streaming
-        assert str(app.query_one("#activity", Static).content) == ""
+        assert activity(app) == ""
         answer = "".join(e["text"] for e in PROPOSAL_TURN if e["type"] == "token")
         assert answer in [b.text for b in app.query(Bubble)], "the turn did not finish"
 
@@ -706,37 +616,22 @@ async def test_a_message_during_a_proposal_is_not_read_as_a_refusal():
     app = JobsmithApp(service, SESSION)
     async with app.run_test(size=(100, 30)) as pilot:
         await settle(pilot)
-        await pilot.press(*"look into sixel")
-        await pilot.press("enter")
-        await settle(pilot)
-        assert app._awaiting_approval
+        await say(pilot, "look into sixel")
+        assert placeholder(app) == PROPOSING
 
-        await pilot.press(*"actually narrow it to macOS")
-        await pilot.press("enter")
-        await settle(pilot)
-        assert app._awaiting_approval, "an ordinary message answered the proposal"
+        await say(pilot, "actually narrow it to macOS")
+        assert placeholder(app) == PROPOSING, "an ordinary message answered the proposal"
         assert app.query_one("#prompt", Input).value == "actually narrow it to macOS"
 
         app.query_one("#prompt", Input).value = ""
         await pilot.press("enter")               # bare Enter: the N in [y/N]
         await settle(pilot)
-        assert not app._awaiting_approval
+        assert placeholder(app) == IDLE
 
 
 async def test_a_refresh_in_flight_is_joined_rather_than_cancelled_or_dropped():
-    """Two things at once, and the second only became load-bearing here.
-
-    A refresh is three calls against a daemon, and events arrive faster than
-    that when a wave lands. Left to `exclusive=True` every one would cancel
-    the previous worker, so the list would never repopulate — and a
-    cancellation landing on `clear()` leaves it empty.
-
-    Skipping alone is what the poll used to make safe: a request dropped
-    because a refresh was running came back two seconds later. Nothing
-    re-arms now, so a dropped request is a screen that stays wrong until the
-    *next* job moves — and the event most likely to be dropped is the last
-    one, the one that says the job is done. It is remembered instead.
-    """
+    """Events during a refresh neither cancel it nor get lost: one more refresh
+    runs after it. → 0048"""
     gate = asyncio.Event()
     service = CannedService(list_gate=gate)
     app = JobsmithApp(service, SESSION)
@@ -758,37 +653,17 @@ async def test_a_refresh_in_flight_is_joined_rather_than_cancelled_or_dropped():
 # --------------------------------------------------------------- live updates
 
 
-async def until(pilot: Any, condition: Any, timeout: float = 5.0) -> bool:
-    """Let the UI breathe until it says something, or give up saying so."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        await pilot.pause()
-        if condition():
-            return True
-        await asyncio.sleep(0.02)
-    return False
-
-
 @pytest.mark.slow  # a real job with real (slowed) steps, followed live
 async def test_the_screen_follows_a_job_while_it_runs(store, checkpointer, tmp_path):
-    """The claim of this whole step, and only a real run can make it.
-
-    A job is created and started on the manager — not through the UI — and
-    nothing is typed afterwards: no keystroke, no F5, no poll. What moves the
-    screen is `subscribe()`, so the plan appears while the first step is
-    still running (the manager publishes when the plan lands, precisely so a
-    DAG is not held back until a step does), the steps land one by one, and
-    the job reaches `done` on screen on its own.
-    """
+    """Driven only by `subscribe()` — no keystroke, no F5, no poll: the job
+    appears, its plan before any step lands, then `done`."""
     caps = [SlowEcho(name, delay=0.4) for name in ("alpha", "beta")]
     llm = FakeLLM(
         {"planner": plan_json("alpha", "beta", deps={"beta": ["alpha"]})},
         default="A sufficiently long final answer for the job test.",
     )
     manager = make_manager(store, checkpointer, tmp_path, caps=caps, llm=llm)
-    service = LocalAgentService(manager, lambda session_id=None: ChatSession(
-        manager, ScriptedChatModel(responses=[]), session_id=session_id,
-        checkpointer=MemorySaver()))
+    service = service_over(manager, [])
 
     def dag_now() -> str:
         return str(app.query_one("#detail-dag", Static).content)
@@ -821,25 +696,6 @@ async def test_the_screen_follows_a_job_while_it_runs(store, checkpointer, tmp_p
         assert job.job_id in files, "the deliverable the run produced was never shown"
 
 
-async def test_the_files_a_finished_job_produced_are_named_and_located():
-    """The artifacts pane, on the two things the port actually promises.
-
-    `list_outputs` is the only call that carries a filename (`get_job` is
-    `asdict`, which drops the property), and a path is a locator on the
-    machine that ran the job — so the pane says whose disk it is.
-    """
-    service = CannedService()
-    app = JobsmithApp(service, SESSION)
-    async with app.run_test(size=(126, 38)) as pilot:
-        await settle(pilot)
-        await pilot.press("f3")
-        await settle(pilot)
-        files = str(app.query_one("#detail-outputs", Static).content)
-        assert "sixel-matrix.svg" in files, files
-        assert "from web_search" in files, "an annex does not say which step made it"
-        assert "on this machine" in files, "the pane does not say where the file is"
-
-
 async def test_a_file_that_is_no_longer_there_is_not_offered():
     """`find_output` probes rather than trusting the record, on both
     backings. A pane that ignored that answer would draw a path to nothing."""
@@ -849,25 +705,21 @@ async def test_a_file_that_is_no_longer_there_is_not_offered():
         await settle(pilot)
         await pilot.press("f3")
         await settle(pilot)
-        assert "gone from disk" in str(app.query_one("#detail-outputs", Static).content)
+        files = str(app.query_one("#detail-outputs", Static).content)
+        assert "gone from disk" in files and "sixel-matrix.svg" in files
 
 
 async def test_a_stream_that_ends_is_said_on_the_screen_that_took_the_terminal():
-    """`DaemonClient` prints it on stderr, which is right for a command and
-    unreachable here — this app owns the screen. So the end of the stream
-    travels on the queue (`None`, the port's marker) and is said where a
-    reader is looking: a screen that stopped following must not look like
-    one that is up to date."""
+    """The end of the event stream (`None` on the queue) is said in the tab bar."""
     service = CannedService()
     app = JobsmithApp(service, SESSION)
     async with app.run_test(size=(126, 38)) as pilot:
         await settle(pilot)
         assert service.queues, "nothing subscribed"
-        assert LIVE_LOST not in str(app.query_one("#tabs", Static).content)
+        assert LIVE_LOST not in tabs(app)
 
         service.queues[0].put_nowait(None)           # the daemon went away
-        assert await until(pilot, lambda: app._live_lost), "the end went unnoticed"
-        assert LIVE_LOST in str(app.query_one("#tabs", Static).content)
+        assert await until(pilot, lambda: LIVE_LOST in tabs(app)), "the end went unnoticed"
 
 
 class GoneService(CannedService):
@@ -914,55 +766,42 @@ class GoneService(CannedService):
 
 
 async def test_a_backing_that_raises_does_not_take_the_screen_down():
-    """The defect this fixes: kill the daemon, press F5, and Textual reraises
-    the failed `reload` worker into the app — which exits while the user is
-    looking at it, taking the conversation and everything on screen with it.
-
-    A daemon that went away is not one pane's error, so the answer is #57's
-    state and not a per-call message: the app keeps what it read, and the
-    chrome says it is no longer being kept true. Asserted by name, because a
-    snapshot would bless a screen that had stopped saying anything.
-    """
+    """A daemon gone mid-session: the app stays up, keeps what it read, and the
+    tab bar says it cannot reach the agent. → 0064"""
     service = GoneService()
     app = JobsmithApp(service, SESSION)
     async with app.run_test(size=(126, 38)) as pilot:
         await settle(pilot)
-        rows = len(app._jobs)
-        assert rows and UNREACHABLE not in str(app.query_one("#tabs", Static).content)
+        rows = job_rows(app)
+        assert rows and UNREACHABLE not in tabs(app)
 
         service.gone = True                       # the daemon was killed
         await pilot.press("f5")
         await settle(pilot)
 
         assert app.is_running, "the app went down with the backing"
-        assert app._unreachable, "the screen did not notice it cannot reach the agent"
-        assert UNREACHABLE in str(app.query_one("#tabs", Static).content)
-        assert len(app._jobs) == rows, "what it had already read was thrown away"
+        assert UNREACHABLE in tabs(app), "the screen did not notice it cannot reach the agent"
+        assert job_rows(app) == rows, "what it had already read was thrown away"
 
 
 async def test_a_screen_that_can_reach_the_agent_again_stops_saying_it_cannot():
-    """The other half of honesty: the note is a fact about the last call, so
-    it is cleared by a call that got through. It does NOT clear the
-    end-of-stream state — nothing resubscribed, so the screen is up to date
-    at this instant and still not following, which is what the tab bar then
-    says."""
+    """A call that gets through clears "cannot reach"; it does not clear "live
+    updates stopped", since nothing resubscribed."""
     service = GoneService()
     app = JobsmithApp(service, SESSION)
     async with app.run_test(size=(126, 38)) as pilot:
         await settle(pilot)
-        service.gone = True
+        service.queues[0].put_nowait(None)        # the stream ended...
+        service.gone = True                       # ...and the daemon is gone
         await pilot.press("f5")
         await settle(pilot)
-        assert app._unreachable
+        assert UNREACHABLE in tabs(app)
 
-        service.gone = False                      # the daemon came back
-        app._live_lost = True                     # ...and nothing resubscribed
+        service.gone = False                      # it came back; nothing resubscribed
         await pilot.press("f5")
         await settle(pilot)
-        assert not app._unreachable
-        tabs = str(app.query_one("#tabs", Static).content)
-        assert UNREACHABLE not in tabs
-        assert LIVE_LOST in tabs, "a screen that stopped following must keep saying so"
+        assert UNREACHABLE not in tabs(app)
+        assert LIVE_LOST in tabs(app), "a screen that stopped following must keep saying so"
 
 
 async def test_a_turn_against_a_backing_that_is_gone_is_answered_in_the_conversation():
@@ -975,14 +814,12 @@ async def test_a_turn_against_a_backing_that_is_gone_is_answered_in_the_conversa
         await settle(pilot)
         service.gone = True
         await pilot.click("#prompt")
-        await pilot.press(*"hello")
-        await pilot.press("enter")
-        await settle(pilot)
+        await say(pilot, "hello")
 
         assert app.is_running, "the app went down with the backing"
         said = [b.text for b in app.query(Bubble)]
         assert any("cannot reach the agent at http://daemon" in t for t in said), said
-        assert not app._streaming, "the turn was left looking like it is still running"
+        assert activity(app) == "", "the turn was left looking like it is still running"
 
 
 async def test_the_subscription_is_released_with_the_app():
@@ -1074,44 +911,18 @@ def test_a_request_cannot_open_a_tag():
     assert "\\[b]not bold\\[/b]" in row, "the request was not escaped"
 
 
-def test_the_outputs_pane_names_the_file():
-    """`Job.to_dict()` is `asdict`, which drops `JobOutput.name` — it is a
-    property. Reading that key gave a blank where the filename belongs, on
-    every job, in the one pane whose job is to say what was produced. So the
-    pane is fed by `list_outputs`, the call that carries one."""
-    job = canned_jobs()[0].to_dict()
-    assert "name" not in job["outputs"][0], "the shape this guards against changed"
-
-    outputs = [dataclasses.asdict(o) | {"name": o.name} for o in canned_jobs()[0].outputs]
-    block = outputs_block(outputs)
-    assert "sixel-matrix.svg" in block
-    assert "annex" in block and "from web_search" in block
-    assert "/tmp/a/sixel-matrix.svg" in block, "the file is not located at all"
-
-
-def test_a_file_is_located_and_never_offered():
-    """A path is where the file is, on the machine that ran the job — which
-    is the reader's own only when the service is embedded. The pane says
-    which, because a daemon's path is true and unopenable from here."""
+def test_the_outputs_pane_names_each_file_and_says_whose_disk_it_is_on():
+    """Fed by `list_outputs` — `to_dict()` is `asdict`, which drops `JobOutput.name`."""
+    assert "name" not in canned_jobs()[0].to_dict()["outputs"][0], "the guarded shape changed"
     outputs = [dataclasses.asdict(o) | {"name": o.name} for o in canned_jobs()[0].outputs]
     job_id = canned_jobs()[0].job_id
 
     here = outputs_block(outputs, where=where_files_are("embedded", job_id))
-    assert "on this machine" in here
-
+    assert "sixel-matrix.svg" in here and "annex" in here and "from web_search" in here
+    assert "/tmp/a/sixel-matrix.svg" in here and "on this machine" in here
     there = outputs_block(outputs, where=where_files_are("daemon", job_id))
     assert "the machine running the daemon" in there
     assert f"/jobs/{job_id}/outputs/<name>" in there, "no way to fetch the bytes"
-
-
-def test_a_file_that_is_gone_is_said_to_be_gone():
-    """`find_output` answers None for a file deleted since the job finished
-    — on both backings, which is the whole point of it probing rather than
-    trusting the record. Drawn as a path, that answer would be a lie."""
-    outputs = [dataclasses.asdict(o) | {"name": o.name} for o in canned_jobs()[0].outputs]
-    block = outputs_block(outputs, missing={"sixel-matrix.svg"})
-    assert "gone from disk" in block
-    assert "sixel-matrix.svg" in block, "the file is still what the line is about"
 
 
 def test_the_step_table_shows_what_each_step_spent():
@@ -1124,14 +935,8 @@ def test_the_step_table_shows_what_each_step_spent():
 
 
 async def test_only_a_missing_textual_is_reported_as_a_missing_extra(monkeypatch):
-    """`except ImportError` around `from .app import ...` would catch the whole
-    transitive import of this package and everything it reads — so a symbol
-    renamed in `service.py` would be reported as a missing dependency, and
-    whoever read that message would install something that was never absent.
-
-    `sys.modules[name] = None` is the documented way to make an import of
-    `name` raise `ImportError`, which is what lets both halves be asked.
-    """
+    """A missing `textual` is `TuiUnavailable`; a broken import inside the UI is
+    not dressed as one."""
     from jobsmith.tui import run_tui
 
     monkeypatch.setitem(sys.modules, "textual", None)
@@ -1165,14 +970,8 @@ async def test_the_ui_command_says_what_to_install(monkeypatch, capsys):
 async def test_took_measures_a_real_step_not_the_end_of_the_run(
     store, checkpointer, tmp_path
 ):
-    """`took` is an upper bound on a step's own time — but a bound, not zero.
-
-    Driven from a real run rather than a canned record, because what broke
-    this column (#53) was the record: every step was stamped at the instant
-    the *last* one landed, so the window between a step's dependencies
-    landing and the step landing collapsed and the whole column read `0.0s`.
-    The canned jobs above cannot catch that — they are written by hand.
-    """
+    """From a real run: each dependent step's `took` is about its own sleep, not
+    `0.0s`. → 0053"""
     from conftest import FakeLLM, plan_json
 
     delay = 0.2
