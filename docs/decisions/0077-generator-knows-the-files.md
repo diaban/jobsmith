@@ -115,16 +115,26 @@ and (c) has no excerpt — so the source is not the excerpt; both are the
 prompt's own bullet. At this rate the end-to-end comparison is not significant
 on its own (2/49 vs 0/54).
 
-**Generator-only A/B: planned, not run.** The end-to-end rate is too low to
-separate the arms on its own, so the plan was to replay the generator's real
-inputs (runs with no file) under the old prompt without the list and under the
-new prompt with it, three times each. The first attempt lost its materials to a
-session limit; the second (2026-09-25) could not reach the model — the OpenAI
-account had no credit left (`insufficient_quota`). The script is ready to
-re-run once it has. Until then the decision rests on what does not need a
-model: the two before-hits paraphrase the removed bullet word for word ("a
-slide deck … alongside this document"), the excerpt provably never reaches the
-generator, and after the change 0 of 54 planned answers named a file.
+**Generator-only A/B**, to get power on the variable that changed (run
+2026-09-25, after a first attempt lost its materials to a session limit and a
+second found the OpenAI account out of credit). Twelve silent requests (six EN,
+six FR) run for real; the ten that planned and delivered no file gave their
+generator input (`merged_context`); each was sent to the generator three times
+under the old prompt with no list, and three times under the new prompt with
+the list ("none"). Scored with `FILE_KINDS`, the same rule as the eval check.
+
+| arm | invented / answers |
+|---|---|
+| old prompt, no list | 4 / 30 (13 %) |
+| new prompt + list | 0 / 30 |
+
+One-sided Fisher exact p ≈ 0.06 — borderline on its own. What settles it is
+the text of the four hits: each is the removed bullet restated —
+*"A slide deck is delivered alongside this document; it contains supporting
+visuals but is not reproduced here"*, *"Un fichier complémentaire (par exemple
+un slide deck) a été produit et livré séparément … sans être reproduit ici"* —
+none of the ten materials mentioned a deck. The old prompt seeds the claim;
+the new one does not produce it.
 
 **Falsification** — each break made, the suite run, the file restored:
 
