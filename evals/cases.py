@@ -253,8 +253,8 @@ GOLDEN_CASES: tuple[EvalCase, ...] = (
     EvalCase(
         id="plan_file_is_the_subject",
         query=(
-            "compare how ext4 and btrfs store a file on disk, and recommend "
-            "one for a developer laptop"
+            "research how ext4 and btrfs store a file on disk, compare them, "
+            "and recommend one for a developer laptop"
         ),
         expect_route="plan",
         min_steps=1,

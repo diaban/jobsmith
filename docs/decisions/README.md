@@ -93,6 +93,7 @@ current and writes the records a merged PR forgot, marked as reconstructed.
 | 0109 | [Fewer themes, fewer hammer rounds, a `slow` marker](0109-faster-suite.md) | the colour test renders 7 representative themes, not 25; the SQLite hammer runs 10 rounds, not 150; `make test-fast` skips tests marked `slow` | accepted |
 | 0110 | [Tests are organised by purpose and share builders through one module](0110-tests-by-purpose.md) | one file per component or rule, never per issue; builders in `tests/support.py`, no test imports another; data-only variants parametrized; docstrings state the property | accepted (first step: the document cluster) |
 | 0121 | [The scribe runs every ~10 merges, not every ~3](0121-scribe-every-ten-merges.md) | each pass is a CI-gated PR; ~10 merges or the CLAUDE.md budget, no per-batch trigger | accepted; partially supersedes 0102 |
+| 0125 | [A file asked for in words is a document asked for](0125-a-file-asked-for-in-words.md) | `FILE_REQUEST_RULE` in the document step's prompt: "save it to a file" is `requested` whatever else the request asks; a file it is only about is not | accepted |
 
 ### Issues cited without a record of their own
 
