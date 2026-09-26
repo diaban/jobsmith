@@ -1,6 +1,6 @@
 # 0126 — An answer written to a file is that file, not a text about it
 
-- **Issue:** #126 · **PR:** (this one)
+- **Issue:** #126 · **PR:** #127
 - **Status:** accepted · partially supersedes [0077](0077-generator-knows-the-files.md)
 - **Rule in `CLAUDE.md`:** "The generator is told which files the run delivers … When the list names the answer itself, `ANSWER_FILE_RULE` says that entry is the text being written" (Agents)
 
