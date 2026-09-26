@@ -2,7 +2,7 @@
 
 - **Issue:** #125 · **PR:** #TBD
 - **Status:** accepted
-- **Rule in `CLAUDE.md`:** "A file asked for in words is asked for: "save it to a file" is `requested` whatever else the request asks, a file it is only about is not (`FILE_REQUEST_RULE`)" (Graph flow, under Document intent)
+- **Rule in `CLAUDE.md`:** "A file asked for in words is asked for" (Graph flow, under Document intent)
 
 ## Context
 
@@ -117,7 +117,7 @@ quote.
 | how do I export a pandas dataframe to a CSV file? | no file | 0/79 | 0/50 |
 | what is the maximum file size on FAT32? | no file | 0/40 | 0/50 |
 | compare JSON and YAML as file formats for configuration | no file | 0/40 | 0/50 |
-| golden `plan_file_is_the_subject` (ext4/btrfs store a file) | no file | 0/20 | 0/50 |
+| compare how ext4 and btrfs store a file on disk, and recommend one … (the subject case's first wording) | no file | 0/20 | 0/50 |
 | summarise the file I sent you and list its main points | no file | 0/40 | 1/50 |
 | just answer here, no file: what is the capital of Peru? | none | 0/79 | 0/50 |
 
@@ -133,7 +133,20 @@ quote.
 - "export it" names no file and the rule does not claim it; it is shown for
   what it is.
 
-The llm tier on the three new golden cases, 5 repeats each: EVAL_TABLE
+End to end, the issue's own probe (its three requests × 5, full jobs on the
+default agent, `document_formats` read back from the final state):
+`formats: null` in 2 of 15 before (the issue's table) and 0 of 15 after; 14 of
+the 15 wrote a file, and the 15th ended `planner_fail` with `markdown` already
+chosen.
+
+The llm tier on the three new golden cases, 5 repeats each, with `main`'s
+prompt swapped in and then the fix: `document_as_requested` 14/15 → 15/15.
+The one before is a run that ended `user_error` without writing anything, not
+a miss the probe would count; five repeats cannot see 6% → 1% and are not
+offered as the measurement, only as the cases running green. The subject case
+first read "compare how ext4 and btrfs…", which the router answered directly
+2 times in 5; it now starts "research…" and was planned 5/5 on both prompts,
+with no file 5/5 on both.
 
 The structural tier: 220/220 on 17 runs (was 15 runs before the two new
 structural cases).
@@ -149,7 +162,12 @@ tier (29/30).
 - A request that names a file now gets one on every door, in the deployment's
   default format, whichever route answers it; on the direct route that reply
   is written as the document (0080).
-- Seen, left open: the controls' ~0.7% false positives (a compound
+- Seen, left open: on the plan route, `trivial_fact_saved_to_a_file` failed
+  `report_answers_request` in 3 of its 5 runs after the fix — the steps' material
+  was about saving a file (`echo`, bash, PowerShell) rather than the leap
+  year. The file request leaking into the subject is #126's family, not the
+  document step's; the case now makes it visible on the llm tier.
+- Also seen, left open: the controls' ~0.7% false positives (a compound
   research/compare request read as `"requested"`) are #96's leak and predate
   this; and a request for "a file" is sometimes answered `"named"` with both
   offered formats, so the main output is html where the default is markdown
