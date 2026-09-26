@@ -14,6 +14,7 @@ from support import SlowEcho, make_manager
 
 from jobsmith.core.deps import Deps
 from jobsmith.core.document import DocumentIntent
+from jobsmith.core.profile import FILE_REQUEST_RULE
 from jobsmith.jobs.models import JobStatus
 from jobsmith.jobs.runner import FormatsChosen, GraphRunner, PlanReady
 
@@ -82,6 +83,14 @@ async def test_a_provider_that_blows_up_is_silence():
 def test_the_prompt_offers_only_what_this_deployment_can_render():
     prompt = node("", formats=("html", "markdown")).system_prompt()
     assert "- html" in prompt and "- markdown" in prompt and "- pdf" not in prompt
+
+
+async def test_a_file_asked_for_in_words_is_a_document_asked_for():
+    """"save it to a file" names no format and still asks for one, whatever
+    else the request asks; the word alone asks for nothing (→ 0125)."""
+    llm = FakeLLM({"document step": NAMED_HTML})
+    await node("", llm=llm).run({"query": "summarise X, and save that as a file"})
+    assert FILE_REQUEST_RULE in asked(llm)[0]["messages"][0]["content"]
 
 
 # ------------------------------------------------------------ asked nothing

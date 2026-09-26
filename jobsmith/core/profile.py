@@ -60,6 +60,20 @@ Rules:
   Use it only to resolve what the request refers to; plan for the request.
 - Return ONLY the JSON object, no prose, no markdown fences."""
 
+#: A file asked for in so many words is a document asked for (→ 0125). The
+#: request names no format, so it is "requested" — but nothing in the prompt
+#: said "a file", "unspecified" is where an unsure model goes, and the
+#: summary rule below reads "summarise X and save that as a file" as an
+#: answer. So it wins over whatever else the request asks for. Its second
+#: sentence is #96's side of it: the word alone ("how do I save a file",
+#: "the file I sent") asks for nothing to be left behind.
+FILE_REQUEST_RULE = """- Asking for the answer to be saved, written or put in a file — "save it to
+  a file", "write that to a file", "as a file" — is asking for a document,
+  whatever else the request asks for: that is "requested", or "named" if it
+  names a format above. A file the request is only about, or gives you to
+  read, is not one.
+"""
+
 DEFAULT_DOCUMENT_INTENT_TEMPLATE = """You are the document step of an assistant agent.
 Read the user's request and say what FILE it asked to be left behind — nothing
 else about it. You are not writing anything and not deciding what the answer
@@ -75,8 +89,8 @@ Return ONLY a JSON object, no prose, no markdown fences, in one of four shapes:
     order the request implies — the first one is the document itself.
 {{"document": "requested"}}
     the request asked for a document to keep, send or print — "write me a
-    report", "put it in a document", "something I can print" — but named none
-    of the formats above.
+    report", "put it in a document", "save it to a file", "something I can
+    print" — but named none of the formats above.
 {{"document": "none"}}
     the request EXPLICITLY asked for no file: it says the answer should stay
     here, or that nothing is to be written.
@@ -87,7 +101,7 @@ Return ONLY a JSON object, no prose, no markdown fences, in one of four shapes:
 Rules:
 - Only the words of the request decide. Never infer a file from the subject,
   the length of the task, or how useful a file would be.
-- Asking for "a summary", "a comparison", "an analysis" or "a recommendation"
+""" + FILE_REQUEST_RULE + """- Asking for "a summary", "a comparison", "an analysis" or "a recommendation"
   is asking for an answer, not for a file: that is "unspecified".
 - Asking for "a report" or "a document" without a format is "requested".
 - A format that is not in the list above does not exist here; do not name it,

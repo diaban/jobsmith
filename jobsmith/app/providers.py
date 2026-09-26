@@ -142,7 +142,9 @@ class KeywordLLM:
     # shape that still gets a file without naming one, now that silence gets
     # none. Recognised the same crude way, and deliberately narrow: "the
     # attached quarterly report" is material, not a request for a report.
-    DOCUMENT_WORDS = ("a report", "a document")
+    # "to a file" / "as a file" are the file as a DESTINATION (#125), never
+    # the bare word: "store a file on disk" is a subject, not a request.
+    DOCUMENT_WORDS = ("a report", "a document", "to a file", "as a file")
     MODEL = "fake-keyword-llm"
 
     @staticmethod
