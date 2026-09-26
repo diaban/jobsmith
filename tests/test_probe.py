@@ -5,9 +5,11 @@ exceed that budget and must tally what the node actually wrote.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from evals.probe import meets, probe, render
+from evals.probe import main, meets, probe, render
 
 
 async def test_it_tallies_what_the_node_wrote_against_the_expectation():
@@ -39,3 +41,20 @@ async def test_it_refuses_a_probe_over_the_budget_before_composing_anything():
 ])
 def test_an_expectation_is_truthy_falsy_or_a_value(value, expect, ok):
     assert meets(value, expect) is ok
+
+
+def test_compare_prints_before_and_after_without_calling_anything(tmp_path, capsys):
+    """`make probe` runs both sides apart, then asks this mode for one table."""
+    before, after = tmp_path / "before.json", tmp_path / "after.json"
+    before.write_text(json.dumps({"c": {"counts": {"null": 3}, "n": 3, "passed": 1, "errors": 0}}))
+    after.write_text(json.dumps({"c": {"counts": {'["md"]': 2, "null": 1}, "n": 3,
+                                       "passed": 2, "errors": 1}}))
+    assert main(["--compare", str(before), str(after)]) == 0
+    line = capsys.readouterr().out.strip()
+    assert line.startswith("c ") and "1/3 -> 2/3" in line
+    assert '["md"] x2, null x1' in line and "(1 errors)" in line
+
+
+def test_a_probe_needs_a_node_and_a_key_unless_it_compares():
+    with pytest.raises(SystemExit):
+        main(["-q", "hello"])

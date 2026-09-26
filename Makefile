@@ -34,7 +34,7 @@ WT_DIR    := $(subst /,-,$(B))
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install install-all hooks test test-fast snapshots coverage lint fix types check probe combo leak-check eval eval-llm \
+.PHONY: help install install-all hooks test test-fast snapshots coverage lint fix types check probe mutate combo leak-check eval eval-llm \
         worktree worktree-rm \
         serve chat ui jobs \
         chat-banking serve-banking demo-banking clean
@@ -87,6 +87,9 @@ check: ## Everything CI would run, in parallel: lint + types + leakage gate + te
 probe: ## A prompt at its node, main vs working tree, in parallel: NODE= READ= CASES=evals/probes/<node>.json [GREP= N=10 BASE=main LLM=]
 	@NODE="$(NODE)" READ="$(READ)" CASES="$(CASES)" GREP="$(GREP)" N="$(N)" BASE="$(BASE)" LLM="$(LLM)" \
 		scripts/probe-compare.sh
+
+mutate: ## Mutation testing on the lines HEAD changed since main, against the tests that should catch it: TESTS="tests/test_x.py" [BASE=main]
+	@TESTS="$(TESTS)" BASE="$(BASE)" scripts/mutate.sh
 
 combo: ## Several open PRs merged onto origin/main in a scratch worktree, then tests + structural tier: PRS="127 128"
 	@PRS="$(PRS)" scripts/combo.sh
