@@ -1,6 +1,6 @@
 # 0130 — Effort is proportionate to the risk, with a budget and a node probe
 
-- **Issue:** #130 · **PR:** #NN
+- **Issue:** #130 · **PR:** #131
 - **Status:** accepted
 - **Rule in `CLAUDE.md`:** "Effort is proportionate to the risk" (Working on this repo)
 
