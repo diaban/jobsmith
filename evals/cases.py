@@ -222,6 +222,50 @@ GOLDEN_CASES: tuple[EvalCase, ...] = (
 
     # ---------------- the shape of the deliverable ----------------
     EvalCase(
+        id="plan_summary_saved_as_a_file",
+        query=(
+            "research how teams choose between optimistic and pessimistic "
+            "locking, summarise the trade-offs, and save that as a file"
+        ),
+        expect_route="plan",
+        min_steps=1,
+        expect_document=True,
+        note=(
+            "a file asked for in so many words, no format named, next to a "
+            "'summarise' that on its own asks for an answer (#125): the "
+            "document step read the pair as 'unspecified' and the run left "
+            "no file, with nothing on the record to say one was asked for"
+        ),
+    ),
+    EvalCase(
+        id="trivial_fact_saved_to_a_file",
+        query="how many days are there in a leap year? save the answer to a file",
+        expect_document=True,
+        tiers=(LLM,),
+        note=(
+            "the issue's own request (#125): a fact the router may answer "
+            "directly, asked for as a file. No route is claimed — the "
+            "document step runs before triage, so the file is owed on either "
+            "route. Once, with no file written, the reply told the user to "
+            "run `echo 366 > leap_year_days.txt` themselves (#80)"
+        ),
+    ),
+    EvalCase(
+        id="plan_file_is_the_subject",
+        query=(
+            "compare how ext4 and btrfs store a file on disk, and recommend "
+            "one for a developer laptop"
+        ),
+        expect_route="plan",
+        min_steps=1,
+        expect_document=False,
+        note=(
+            "the mirror of the two above (#125): a file the request is ABOUT "
+            "is not a file it asked to be left behind, so the rule that reads "
+            "'save it to a file' must not fire on the word alone (#96)"
+        ),
+    ),
+    EvalCase(
         id="plan_html_page_requested",
         query=(
             "compare two ways of scheduling recurring background work, "
