@@ -34,7 +34,7 @@ WT_DIR    := $(subst /,-,$(B))
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install install-all test test-fast snapshots coverage lint fix types check leak-check eval eval-llm \
+.PHONY: help install install-all hooks test test-fast snapshots coverage lint fix types check probe combo leak-check eval eval-llm \
         worktree worktree-rm \
         serve chat ui jobs \
         chat-banking serve-banking demo-banking clean
@@ -45,17 +45,20 @@ help: ## List available commands
 $(VENV):
 	uv venv --python 3.12 $(VENV)
 
-install: $(VENV) ## Create the venv and install dev + API deps (fake LLMs work out of the box)
+install: $(VENV) hooks ## Create the venv and install dev + API deps (fake LLMs work out of the box)
 	uv pip install -p $(PY) -e ".[dev,api]"
+
+hooks: ## Point git at .githooks/ (ruff + uv lock --check at commit time); shared by every worktree
+	@git config core.hooksPath .githooks
 
 install-all: $(VENV) ## Same + every provider and persistence backend
 	uv pip install -p $(PY) -e ".[dev,api,tui,web,pdf,pptx,anthropic,openai,chat-anthropic,chat-openai,sqlite,postgres]"
 
 test: ## Run the test suite (T=<keyword> to filter, e.g. make test T=router)
-	$(PY) -m pytest tests/ -q $(TEST_ARGS)
+	$(PY) -m pytest tests/ -q -n auto $(TEST_ARGS)
 
 test-fast: ## The inner loop: skip what's marked `slow` (#109) — full suite once before a PR
-	$(PY) -m pytest tests/ -q -m "not slow" $(TEST_ARGS)
+	$(PY) -m pytest tests/ -q -n auto -m "not slow" $(TEST_ARGS)
 
 snapshots: ## Re-accept the TUI layout snapshots after an intentional layout change
 	$(PY) -m pytest tests/test_tui.py -q --snapshot-update
@@ -78,7 +81,15 @@ leak-check: ## Domain-leakage gate: shared code, the default agent and the eval 
 		jobsmith/agents/default jobsmith/agents/base.py evals \
 		&& echo "leak-check: OK (shared code is domain-clean)"
 
-check: lint types leak-check test ## Everything CI would run: lint + types + leakage gate + tests
+check: ## Everything CI would run, in parallel: lint + types + leakage gate + tests
+	@$(MAKE) --no-print-directory -j4 --output-sync=target lint types leak-check test
+
+probe: ## A prompt at its node, main vs working tree, in parallel: NODE= READ= CASES=evals/probes/<node>.json [GREP= N=10 BASE=main LLM=]
+	@NODE="$(NODE)" READ="$(READ)" CASES="$(CASES)" GREP="$(GREP)" N="$(N)" BASE="$(BASE)" LLM="$(LLM)" \
+		scripts/probe-compare.sh
+
+combo: ## Several open PRs merged onto origin/main in a scratch worktree, then tests + structural tier: PRS="127 128"
+	@PRS="$(PRS)" scripts/combo.sh
 
 eval: ## Score the prompts on the golden set — deterministic tier, no API key (ARGS='--repeat 3')
 	$(PY) -m evals $(EVAL_LLM) $(AGENT_FLAG) $(ARGS)

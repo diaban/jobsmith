@@ -19,7 +19,7 @@ async def test_it_tallies_what_the_node_wrote_against_the_expectation():
                                n=2, provider="fake")
     assert (asks.passed, asks.n, asks.counts) == (2, 2, {'["markdown"]': 2})
     assert (silent.passed, silent.n) == (2, 2)
-    assert "0/2 -> 2/2" in render([asks], {"asks": {"passed": 0, "n": 2}})
+    assert "0/2 -> 2/2" in render({"asks": asks.summary()}, {"asks": {"passed": 0, "n": 2}})
 
 
 async def test_grep_tallies_a_match_instead_of_the_value():

@@ -1,0 +1,12 @@
+[
+  {"id": "save_answer_to_file", "query": "how many days are there in a leap year? save the answer to a file", "expect": "truthy"},
+  {"id": "summarise_save_as_file", "query": "summarise the difference between TCP and UDP, and save that as a file", "expect": "truthy"},
+  {"id": "named_pdf", "query": "compare REST and GraphQL for a small team, as a PDF", "expect": "truthy"},
+  {"id": "a_report", "query": "write me a report on the trade-offs of microservices", "expect": "truthy"},
+  {"id": "keep_in_a_file", "query": "explain the CAP theorem; keep it in a file for me", "expect": "truthy"},
+  {"id": "summarise_bare", "query": "summarise the difference between TCP and UDP", "expect": "falsy"},
+  {"id": "compare_recommend", "query": "compare hexagonal and layered architectures, then recommend one for a team of three", "expect": "falsy"},
+  {"id": "file_is_the_subject", "query": "how do I save a file in vim?", "expect": "falsy"},
+  {"id": "file_is_material", "query": "summarise the file I sent you and list its main points", "expect": "falsy"},
+  {"id": "greeting", "query": "hello there", "expect": "falsy"}
+]
