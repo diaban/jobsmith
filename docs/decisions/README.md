@@ -97,6 +97,7 @@ current and writes the records a merged PR forgot, marked as reconstructed.
 | 0126 | [An answer written to a file is that file, not a text about it](0126-answer-is-the-file.md) | when the list of delivered files names the answer, `ANSWER_FILE_RULE` says that entry is the text being written; "delivered separately" is scoped to the other files; `SUBJECT_ONLY_RULE` names a file to save in; `answer_is_the_file` scores it | accepted; partially supersedes 0077 |
 | 0130 | [Effort is proportionate to the risk](0130-proportionate-effort.md) | a budget per issue (≤45 min, node probe ≤300 calls with `evals/probe.py`, one variant, record ≤20 lines); small fixes done directly | accepted |
 | 0133 | [The PR protocol runs as commands, not by hand](0133-protocol-as-commands.md) | `make probe` (main vs branch, parallel), `make combo`, `make hooks`, parallel `make check` with `pytest -n auto`, repo auto-merge, a test for the index and `→ NNNN` | accepted |
+| 0134 | [Mutation testing on the diff replaces falsifying by hand](0134-mutation-on-the-diff.md) | `make mutate TESTS=…`: cosmic-ray + `cr-filter-git` on a scratch worktree, only the changed lines, survivors listed by line | accepted |
 
 ### Issues cited without a record of their own
 

@@ -689,6 +689,7 @@ make help          # every target
 make check         # lint + types + domain-leakage gate + tests, in parallel
 make hooks         # ruff + uv lock --check at commit time (run by make install)
 make combo PRS="127 128"   # several open PRs merged in a scratch tree, then tests
+make mutate TESTS=tests/test_probe.py   # mutants on the lines this branch changed
 make types         # pyright over jobsmith/
 make test T=router # one keyword's worth
 make coverage      # per-module coverage report
