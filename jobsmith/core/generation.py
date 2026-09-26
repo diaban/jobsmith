@@ -96,6 +96,23 @@ _NO_OTHER_FILE = (
 )
 
 
+#: What the list adds when it names the answer itself (#126). The entry says
+#: "this answer itself, written to a file", and nothing said that the file
+#: and the text being written are one thing: read beside a rule about listed
+#: files being delivered separately (right for a deck), a request that said
+#: "save the answer to a file" came back as a text ABOUT that file — "provided
+#: separately … not reproduced here", a "File saving note", `echo 366 > …`.
+#: Said here, in the note, because every route that writes the answer to a
+#: file reads it: the generator whatever its profile, the refiner, the direct
+#: reply.
+ANSWER_FILE_RULE = (
+    "\"This answer itself\" is the text you are writing now: it is saved, "
+    "exactly as you write it, as that file. Write it as the document itself "
+    "and say nothing about the file — not that it is saved, how, where or in "
+    "what format: that is done."
+)
+
+
 def delivered_files(state: AgentState) -> list[str]:
     """The files this run delivers, as far as generation time can know.
 
@@ -135,6 +152,9 @@ def delivered_files_note(state: AgentState) -> str:
     real model it did, in the prompt's own words. Stated always, the list
     turns an invented file into a contradiction of something the model can
     see, and "no file" is said as plainly as a list of two.
+
+    When the list names the answer itself, `ANSWER_FILE_RULE` follows it
+    (#126): that entry is the text being written, not a file beside it.
     """
     files = delivered_files(state)
     if not files:
@@ -143,9 +163,10 @@ def delivered_files_note(state: AgentState) -> str:
             "nothing attached to it or delivered alongside it. " + _NO_OTHER_FILE
         )
     listed = "\n".join(f"- {f}" for f in files)
+    answer_file = f"{ANSWER_FILE_RULE}\n" if state.get("document_formats") else ""
     return (
         f"{FILES_HEADING} — the complete list:\n"
-        f"{listed}\n{_NO_OTHER_FILE}"
+        f"{listed}\n{answer_file}{_NO_OTHER_FILE}"
     )
 
 
@@ -236,7 +257,8 @@ class DirectResponder:
         reply that promises or denies a file contradicts something the model
         could see. `DIRECT_DOCUMENT_RULE` follows only when the list names
         the answer itself, which is the one case where this reply is read as
-        a document rather than as a turn.
+        a document rather than as a turn — and where the note already carries
+        `ANSWER_FILE_RULE`, which this rule's last sentence agrees with (#126).
         """
         prompt = (
             self.prompt_template.format(capabilities=self._capabilities_text())

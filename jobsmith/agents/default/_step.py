@@ -35,10 +35,17 @@ from ...core.state import CapabilityResult
 #: that must still *obey* them, so `GLOBAL_GENERATOR_PROMPT` appends one
 #: sentence saying so — this rule bans writing about the document, not
 #: honouring what it asks for.
+#:
+#: "A file to save it in" is named because a step did not read "save the
+#: answer to a file" as a document at all (#126): `analysis` wrote a section
+#: of `echo 366 > leap_year_days.txt`, and the generator, told to use what
+#: the material holds, delivered it — inside the very file it explained how
+#: to make.
 SUBJECT_ONLY_RULE = (
     "\nThe request may also say what document is wanted — a report, a deck, a "
-    "page, a language. That is not part of the subject: work on the subject "
-    "alone, and never design or advise on the document itself."
+    "page, a file to save it in, a language. That is not part of the "
+    "subject: work on the subject alone, and never design or advise on the "
+    "document itself, nor on how to save it."
 )
 
 
