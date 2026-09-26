@@ -1,6 +1,6 @@
 # 0133 — The PR protocol runs as commands, not by hand
 
-- **Issue:** #133 · **PR:** #NN · **Status:** accepted
+- **Issue:** #133 · **PR:** #135 · **Status:** accepted
 - **Rule in `CLAUDE.md`:** "The protocol runs as commands, not by hand" (Working on this repo)
 
 **Context.** On 2026-09-26 most of the tokens and time went to steps Claude did by hand: probe scripts written again for each issue (4 that day), CI watched with polling loops, two PRs combined in a worktree made by hand, the index and `→ NNNN` checked by reading. Each step printed long output.
