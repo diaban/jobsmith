@@ -271,6 +271,10 @@ def test_a_clean_observation_passes_everything():
         # a run that planned no deck, delivering a text that says one exists (#77)
         ("answer_invents_no_file", {
             "final_answer": ANSWER + "\n\nA slide deck exists alongside this document."}),
+        # the file the request asked for, writing about itself (#126)
+        ("answer_is_the_file", {
+            "final_answer": ANSWER + "\n\nDelivery note — the answer file is provided "
+                                     "separately. It is not reproduced here."}),
         # a refusal that turned into the work plan it was told not to write (#73)
         ("refusal_is_bare", {
             "terminal_kind": "unanswered",
@@ -316,6 +320,56 @@ def test_answer_invents_no_file_does_not_read_ordinary_words_as_files():
     obs = _obs(final_answer=f"{ANSWER}\n\nLes travaux annexes varient; the slides "
                             "of the price curve are steep.")
     assert _status(PLAN_CASE, obs, "answer_invents_no_file") == "pass"
+
+
+@pytest.mark.parametrize("said", [
+    # the shapes that opened #126, verbatim
+    "Save-to-file options (to store the answer):\n"
+    "- Windows (Command Prompt): `echo 366 > leap_year_days.txt`",
+    "- Python (cross-platform): `open('leap_year_days.txt', 'w', encoding='utf-8')`",
+    "Delivery note — The answer file is provided separately as a markdown file "
+    "with this run. It is not reproduced here.",
+    "File saving note — The answer is saved to a file as markdown, accompanying "
+    "this answer.",
+    # ...and two the probe found: one born in the material, one in the answer
+    "- To save this as a file, copy the content above into a file named "
+    "tcp_vs_udp.md.",
+    "Note about file-saving - This content is prepared to be saved as a file "
+    "named tcp_vs_udp_notes.md.",
+])
+def test_answer_is_the_file_catches_the_shapes_that_opened_it(said):
+    """→ 0126: the file the reader opened says how to save it, or that it is elsewhere."""
+    case = EvalCase(id="c", query="how many days are in a leap year? save the answer "
+                                  "to a file", expect_document=True)
+    obs = _obs(query=case.query, final_answer=f"{ANSWER}\n\n{said}")
+    assert _status(case, obs, "answer_is_the_file") == "fail"
+
+
+@pytest.mark.parametrize(("said", "changed"), [
+    # an annex named as delivered apart is #77's rule, not this defect —
+    # under a "delivery note" heading too, as the real model writes it
+    ("The slide deck is delivered separately as a PowerPoint file; its contents "
+     "are not reproduced here.", {"output_formats": ("markdown", "pptx")}),
+    ("Delivery note: a separate deck file named \"TCP vs UDP\" (pptx) is "
+     "delivered alongside this document.", {"output_formats": ("markdown", "pptx")}),
+    # ordinary words about the subject
+    ("How to save energy: insulate first. The report is written weekly.", {}),
+    # the request asked for the command: then it is the answer
+    ("Run `echo 366 > days.txt` in a terminal.",
+     {"query": "how do I write 366 into days.txt with echo > in a shell?"}),
+])
+def test_answer_is_the_file_leaves_an_annex_or_a_requested_command_alone(said, changed):
+    """→ 0126: a deck named as delivered apart, or a command the request asked for, is fine."""
+    obs = _obs(final_answer=f"{ANSWER}\n\n{said}", **changed)
+    assert _status(PLAN_CASE, obs, "answer_is_the_file") == "pass"
+
+
+def test_answer_is_the_file_skips_a_run_asked_for_no_file():
+    """→ 0126: it reads the answer of a run that wrote one, and no other."""
+    silent = EvalCase(id="c", query="q", expect_route="plan", expect_document=False)
+    obs = _obs(final_answer=f"{ANSWER}\n\nDelivery note: the answer file is attached.",
+               report_path=None, report_text=None, deliverable_expected=False)
+    assert _status(silent, obs, "answer_is_the_file") == "skip"
 
 
 def test_document_format_scores_the_format_the_request_asked_for():

@@ -54,6 +54,21 @@ BRIEF_RULE = (
     "honour: carry it out, and never restate it in the prose.\n"
 )
 
+#: How the generator reads the list of files its request carries (→ 0077,
+#: 0126). What it says of a listed file — delivered separately, never
+#: reproduced — is true of a deck and false of the answer's own file, which
+#: IS this text: scoped to the others, or a request that asked for "a file"
+#: gets a text about that file ("provided separately … not reproduced here").
+#: What the answer's own entry means is said beside the list itself
+#: (`ANSWER_FILE_RULE`), where every profile's generator reads it.
+DELIVERED_FILES_RULE = (
+    "- The request is followed by the files this run delivers, and that list "
+    "is complete. Any file on it other than this answer itself is delivered "
+    "separately, not inside this text: mention it if that helps the reader, "
+    "and never reproduce or summarise its contents section by section. Never "
+    "mention a file that is not on it; when it says none, there is none.\n"
+)
+
 GLOBAL_GENERATOR_PROMPT = (
     "You are writing the final deliverable of a background job.\n"
     "Who reads it: the person who made the request. They were not part of the "
@@ -82,12 +97,8 @@ GLOBAL_GENERATOR_PROMPT = (
     # alongside this document", and a run that produced no file came back
     # saying, in those words, that a slide deck existed alongside it. The
     # example is gone and the bullet points at the list the request carries.
-    "- The request is followed by the files this run delivers, and that list "
-    "is complete. A file on it is delivered separately, not inside this "
-    "text: mention it if that helps the reader, and never reproduce or "
-    "summarise its contents section by section. Never mention a file that is "
-    "not on it; when it says none, there is none.\n"
-    "- Do NOT add citation markers: the material has no sources to cite.\n"
+    + DELIVERED_FILES_RULE
+    + "- Do NOT add citation markers: the material has no sources to cite.\n"
     "- Do NOT end with questions or offers of further help — this is a "
     "document, not a chat turn.\n"
     # the pack's shared rule, and the generator's own half of it

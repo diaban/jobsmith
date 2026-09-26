@@ -1,8 +1,8 @@
 """The default pack: research → analysis → critique, and what each step reads.
 
 A prompt is asserted only through the named rule it must carry
-(`SUBJECT_ONLY_RULE`, `CAVEATS_RULE`, `BRIEF_RULE`, `UNREADABLE_RULE`) — never
-by its wording, which the evals judge (→ 0003, 0110).
+(`SUBJECT_ONLY_RULE`, `CAVEATS_RULE`, `BRIEF_RULE`, `DELIVERED_FILES_RULE`,
+`UNREADABLE_RULE`) — never by its wording, which the evals judge (→ 0003, 0110).
 """
 from __future__ import annotations
 
@@ -15,7 +15,12 @@ from jobsmith.agents.default import default_capabilities
 from jobsmith.agents.default._step import SUBJECT_ONLY_RULE
 from jobsmith.agents.default.analysis import AnalysisCapability
 from jobsmith.agents.default.critique import CritiqueCapability
-from jobsmith.agents.default.profile import BRIEF_RULE, CAVEATS_RULE, GLOBAL_GENERATOR_PROMPT
+from jobsmith.agents.default.profile import (
+    BRIEF_RULE,
+    CAVEATS_RULE,
+    DELIVERED_FILES_RULE,
+    GLOBAL_GENERATOR_PROMPT,
+)
 from jobsmith.agents.default.read_files import ReadFilesCapability
 from jobsmith.agents.default.research import UNREADABLE_RULE, ResearchCapability
 from jobsmith.agents.default.sources import Document
@@ -114,6 +119,11 @@ async def test_every_material_step_carries_the_subject_only_rule():
 
 def test_the_generator_carries_the_rule_and_still_obeys_the_brief():
     assert SUBJECT_ONLY_RULE + BRIEF_RULE in GLOBAL_GENERATOR_PROMPT
+
+
+def test_the_generator_says_how_to_read_the_files_it_is_listed():
+    """→ 0077, 0126: a listed file other than the answer is delivered apart."""
+    assert DELIVERED_FILES_RULE in GLOBAL_GENERATOR_PROMPT
 
 
 # ------------------------------------------------------------ the critique → 0082

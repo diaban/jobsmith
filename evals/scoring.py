@@ -785,6 +785,71 @@ def check_answer_invents_no_file(case: EvalCase, obs: Observation) -> Check:
                   f"names files the run did not produce: {', '.join(invented)}")
 
 
+#: How an answer written to a file talks about that file instead of being it
+#: (#126), in the two shapes observed on the real model — instructions for
+#: saving it by hand, and a note about its own delivery — each with the words
+#: that make it a fair answer when the REQUEST uses them ("how do I write it
+#: with echo?"). Named narrowly, and kept apart from `PRODUCER_FACING_MARKERS`,
+#: which is a floor about register: these are about one fact, that the text
+#: the reader opened IS the file. A deck named as delivered separately is
+#: #77's correct behaviour and matches neither, so nothing here says
+#: "separately".
+SELF_DELIVERY_MARKERS: tuple[tuple[str, re.Pattern[str], re.Pattern[str]], ...] = (
+    ("how to save it", re.compile(
+        r"save[- ]to[- ]file"
+        r"|how to save (?:it|this|the (?:answer|result|file|text|document))"
+        r"|\bto save (?:it|this) (?:as|to|in|into) (?:a|the) (?:[\w-]+ )?file\b"
+        r"|\bcopy (?:it|this|the \w+)[^.]{0,40} into a (?:[\w-]+ )?file\b"
+        # bounded: `normalize` puts the whole answer on one line
+        r"|\becho\s[^>]{1,60}>{1,2}\s*[\w./\\-]+\.\w{1,5}\b|\bout-file\b|\bset-content\b"
+        r"|\bopen\([^)]{0,80}['\"][wa]b?['\"]"),
+     re.compile(r"\becho\b|out-file|set-content|\bopen\(|how (?:do i|to|can i) (?:save|write)")),
+    ("a note on its own file", re.compile(
+        # "delivery note" alone is not one: the note is as often about a deck
+        r"\bsaving note\b|\bnote (?:on|about) (?:the )?(?:file[- ])?saving\b|\banswer file\b"
+        r"|\b(?:this|the) (?:answer|document|text|summary|report|content)(?: itself)? "
+        r"(?:is|has been|was|will be) (?:\w+ ){0,3}(?:saved|written|stored|provided|delivered)"
+        r"[^.\n]{0,40}\bfile\b"),
+     re.compile(r"\bsaving note\b|\banswer file\b")),
+)
+
+
+def check_answer_is_the_file(case: EvalCase, obs: Observation) -> Check:
+    """An answer written to a file is that document, not a text about it (#126).
+
+    Asked to "save the answer to a file", the run wrote the file — and the
+    file said how to save it (`echo 366 > leap_year_days.txt`), or that "the
+    answer file is provided separately … not reproduced here". Every other
+    check was green: the file existed, in the right format, with the answer
+    in it.
+
+    Gated like the checks that read the file, so a direct reply written as
+    one is held to it too (`DIRECT_DOCUMENT_RULE` says the same thing). A
+    shape the **request** asks about is not scored — "how do I write it with
+    echo?" makes `echo … >` the answer — but the material is no exemption: a
+    material step that worked on the saving instead of the subject is where
+    the observed instructions came from, and it is held to the same rule
+    (`SUBJECT_ONLY_RULE`).
+
+    Two limits, both deliberate. A request about writing files in code that
+    names no command would be scored on the code it rightly gets. And a
+    sentence that merely restates the request ("saving the comparison to a
+    file is not covered") is not caught: no marker tells it from the words
+    of the request itself, which the keyword fake echoes back verbatim.
+    """
+    name = "answer_is_the_file"
+    if (s := _report_applies(case, obs, name)) is not None:
+        return s
+    answer = normalize(obs.final_answer or "").lower()
+    request = obs.query.lower()
+    found = [
+        f"{shape} ({m.group(0)!r})"
+        for shape, pattern, asked in SELF_DELIVERY_MARKERS
+        if (m := pattern.search(answer)) is not None and not asked.search(request)
+    ]
+    return _check(name, not found, f"writes about its own file: {', '.join(found)}")
+
+
 #: A refusal has a shape (#73): what was asked, what the material did and did
 #: not support, what is known anyway — short, and nothing else. These are the
 #: three things it must not turn into, taken from the run that opened the
@@ -886,6 +951,7 @@ CHECKS: tuple[Callable[[EvalCase, Observation], Check], ...] = (
     check_refusal_declared,
     check_refusal_is_bare,
     check_answer_invents_no_file,
+    check_answer_is_the_file,
 )
 
 CHECK_NAMES: tuple[str, ...] = (
@@ -914,6 +980,7 @@ CHECK_NAMES: tuple[str, ...] = (
     "refusal_declared",
     "refusal_is_bare",
     "answer_invents_no_file",
+    "answer_is_the_file",
 )
 
 

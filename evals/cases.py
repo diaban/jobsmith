@@ -242,6 +242,24 @@ GOLDEN_CASES: tuple[EvalCase, ...] = (
         ),
     ),
     EvalCase(
+        id="plan_answer_saved_as_a_file",
+        query=(
+            "compare TCP and UDP for a real-time multiplayer game, and save "
+            "the answer to a markdown file"
+        ),
+        expect_route="plan",
+        min_steps=1,
+        expect_document=True,
+        expect_format="markdown",
+        note=(
+            "a file asked for in words on a planned request: the text the "
+            "reader opens IS that file, so it must not explain how to save "
+            "itself or say it is delivered separately (#126, "
+            "`answer_is_the_file`). The format is named so the fake can read "
+            "it; the same shape without one is a document-intent question"
+        ),
+    ),
+    EvalCase(
         id="plan_printable_one_pager",
         query=(
             "research how teams roll out feature flags safely, compare the "
