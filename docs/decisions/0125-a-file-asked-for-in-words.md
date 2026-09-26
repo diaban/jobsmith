@@ -1,6 +1,6 @@
 # 0125 — A file asked for in words is a document asked for
 
-- **Issue:** #125 · **PR:** #TBD
+- **Issue:** #125 · **PR:** #128
 - **Status:** accepted
 - **Rule in `CLAUDE.md`:** "A file asked for in words is asked for" (Graph flow, under Document intent)
 
