@@ -95,6 +95,7 @@ current and writes the records a merged PR forgot, marked as reconstructed.
 | 0121 | [The scribe runs every ~10 merges, not every ~3](0121-scribe-every-ten-merges.md) | each pass is a CI-gated PR; ~10 merges or the CLAUDE.md budget, no per-batch trigger | accepted; partially supersedes 0102 |
 | 0125 | [A file asked for in words is a document asked for](0125-a-file-asked-for-in-words.md) | `FILE_REQUEST_RULE` in the document step's prompt: "save it to a file" is `requested` whatever else the request asks; a file it is only about is not | accepted |
 | 0126 | [An answer written to a file is that file, not a text about it](0126-answer-is-the-file.md) | when the list of delivered files names the answer, `ANSWER_FILE_RULE` says that entry is the text being written; "delivered separately" is scoped to the other files; `SUBJECT_ONLY_RULE` names a file to save in; `answer_is_the_file` scores it | accepted; partially supersedes 0077 |
+| 0130 | [Effort is proportionate to the risk](0130-proportionate-effort.md) | a budget per issue (≤45 min, node probe ≤300 calls with `evals/probe.py`, one variant, record ≤20 lines); small fixes done directly | accepted |
 
 ### Issues cited without a record of their own
 
