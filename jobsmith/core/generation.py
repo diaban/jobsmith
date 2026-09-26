@@ -186,6 +186,24 @@ class Generator:
             return {"errors": [err]}
 
 
+# What the direct route is told when its reply is also the document the
+# request asked for (#80). The template asks for a chat turn, and that is
+# right for the turn; but #84 honours a file asked for in words whichever
+# route answered, and a chat turn written to disk ends "would you like…",
+# leaves `[Team Name]` to fill in, or explains how to save it with `echo`
+# (all three measured on the real model). The register is the generator's,
+# said in the few lines a reply with no material needs. Only when a file is
+# delivered: a greeting stays a greeting.
+DIRECT_DOCUMENT_RULE = (
+    "Your reply is also written to that file, and read there later, apart "
+    "from this conversation, by the person who asked for it: write it as "
+    "that document. Open with the content itself. Ask nothing back and offer "
+    "nothing further. Leave no placeholders or blank fields to fill in: "
+    "where a detail is not known, write around it. Never explain how to "
+    "save or create the file — it is done."
+)
+
+
 class DirectResponder:
     """Answers the user's message with no capability run (router route "direct").
 
@@ -211,14 +229,28 @@ class DirectResponder:
         lines = [f"- {spec.name}: {spec.description}" for spec in self.registry.specs()]
         return "\n".join(lines) if lines else NO_CAPABILITIES_TEXT
 
-    def system_prompt(self) -> str:
-        return self.prompt_template.format(capabilities=self._capabilities_text())
+    def system_prompt(self, state: AgentState) -> str:
+        """The profile's template, then what the run delivers (#77, #80).
+
+        The list of files is stated always, as it is to the generator: a
+        reply that promises or denies a file contradicts something the model
+        could see. `DIRECT_DOCUMENT_RULE` follows only when the list names
+        the answer itself, which is the one case where this reply is read as
+        a document rather than as a turn.
+        """
+        prompt = (
+            self.prompt_template.format(capabilities=self._capabilities_text())
+            + "\n\n" + delivered_files_note(state)
+        )
+        if state.get("document_formats"):
+            prompt += "\n" + DIRECT_DOCUMENT_RULE
+        return prompt
 
     async def run(self, state: AgentState) -> dict:
         try:
             answer = await self.deps.llm.chat(
                 messages=[
-                    {"role": "system", "content": self.system_prompt()},
+                    {"role": "system", "content": self.system_prompt(state)},
                     {"role": "user", "content": state["query"]},
                 ],
                 temperature=self.temperature,

@@ -102,12 +102,18 @@ def test_the_answer_is_scored_on_more_runs_than_the_file(structural_run):
     fell from 7 applicable runs to 2 and nothing failed. "Every check applies
     somewhere" (above) cannot see that — it held at 2 — so this pins the
     shape instead: the checks that read the ANSWER apply to every planned run
-    that answered, and those are strictly more than the runs with a file."""
+    that answered, and those are strictly more than the runs with a file.
+    `report_reader_facing` also scores the direct replies written as a file
+    (→ 0080)."""
     cases, result = structural_run
     answered = [c for c in cases
                 if c.expect_route == "plan" and c.expect_terminal == "answer"]
-    for name in ("report_reader_facing", "report_answers_request"):
-        assert result.checks[name]["applicable"] == len(answered), name
+    direct_files = [c for c in cases
+                    if c.expect_route == "direct" and c.expect_document]
+    assert direct_files, "no golden case asks the direct route for a file"
+    for name, extra in (("report_reader_facing", direct_files),
+                        ("report_answers_request", [])):
+        assert result.checks[name]["applicable"] == len(answered) + len(extra), name
         assert (result.checks[name]["applicable"]
                 > result.checks["report_written"]["applicable"]), name
     # ...and the golden set still carries silent requests AND requests for a
@@ -384,11 +390,23 @@ def test_the_answer_checks_read_the_answer_whether_or_not_a_file_was_written(nam
 def test_the_answer_checks_skip_a_reply_that_had_no_plan():
     """#80's guard, which falls out of re-gating on the answer: a direct
     reply is a chat turn by construction, and scoring it for a deliverable's
-    register is the confusion #80 names — even when a file WAS asked for."""
-    direct = EvalCase(id="c", query="q", expect_route="direct", expect_document=True)
-    obs = _obs(route="direct", plan_steps=[], results={},
+    register is the confusion #80 names."""
+    direct = EvalCase(id="c", query="q", expect_route="direct", expect_document=False)
+    obs = _obs(route="direct", plan_steps=[], results={}, report_path=None,
+               report_text=None, deliverable_expected=False,
                final_answer="Let me know if you would like more.")
     assert _status(direct, obs, "report_reader_facing") == "skip"
+    assert _status(direct, obs, "report_answers_request") == "skip"
+
+
+def test_a_direct_reply_written_as_a_file_is_held_to_the_register():
+    """The one plan-less run `report_reader_facing` scores: a direct reply its
+    prompt was told is the document (→ 0080). There is still no material for
+    it to answer from, so `report_answers_request` keeps skipping it."""
+    direct = EvalCase(id="c", query="q", expect_route="direct", expect_document=True)
+    obs = _obs(route="direct", plan_steps=[], results={}, report_path="/r/c.md",
+               final_answer="Let me know if you would like more.")
+    assert _status(direct, obs, "report_reader_facing") == "fail"
     assert _status(direct, obs, "report_answers_request") == "skip"
 
 

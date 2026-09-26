@@ -111,6 +111,18 @@ GOLDEN_CASES: tuple[EvalCase, ...] = (
         expect_document=False,
     ),
     EvalCase(
+        id="direct_capabilities_as_file",
+        query="what can you do? put the answer in a markdown file",
+        expect_route="direct",
+        expect_document=True,
+        expect_format="markdown",
+        note=(
+            "the direct route keeps a question about the assistant — it alone "
+            "is shown the registry — and the file asked for is written; that "
+            "reply is then a document, read apart from the turn (#80)"
+        ),
+    ),
+    EvalCase(
         id="direct_thanks",
         query="thanks, that is all I needed for now",
         expect_route="direct",
