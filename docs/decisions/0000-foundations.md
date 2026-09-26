@@ -5,6 +5,7 @@
 - **Source:** migrated verbatim from `CLAUDE.md` at `8326b98` (#102). The text is the original; only the headings (which section of `CLAUDE.md` it lived in) and the links were added. The scribe moved the `providers.py` bullet here verbatim from `CLAUDE.md` on 2026-09-25 (from "The composition root (`app/`)"), to hold the budget (→ `tests/test_claude_md_budget.py`); `CLAUDE.md` keeps a one-line rule for it with `→ 0000`.
 - **Note (scribe, 2026-09-24):** the "Commands" passage below says a promoted run ends in "a synthesis + report path on a later turn" — since [0085](0085-answer-in-the-conversation.md) (#85) the answer comes back verbatim, not synthesised, and since [0096](0096-no-document-unless-asked.md) (#96) there is a report path only if the request asked for one. Flagged, not fixed, in #103; marked here rather than rewritten.
 - **Note (scribe, 2026-09-25):** the scribe moved the `cli/client.py` bullet here verbatim from `CLAUDE.md` (from "CLI + daemon"), to hold the budget (→ `tests/test_claude_md_budget.py`); `CLAUDE.md` keeps a one-line rule for it with `→ 0000`.
+- **Note (scribe, 2026-09-26):** the scribe moved the worktree Gotchas paragraph here verbatim from `CLAUDE.md` (from "Working on this repo"), and condensed several other bullets in place (CI extras, `uv.lock`'s "bitten three times", `/bg`'s provider detail, `providers.py`, `agents/default`'s `_step.py` note, `cli/client.py`'s stderr-banner note, `runner.py`'s stream-shape note, the output/result vocabulary) rather than moving them, because their full detail already lives here or in the record each already points to (proved by `scripts/check_moved.py`, condensed list in the PR body); to hold the budget (→ `tests/test_claude_md_budget.py`).
 
 ## From “Commands”
 
@@ -17,6 +18,8 @@ This exists because green checks on a stale base do not mean the merge is green.
 **`uv.lock` is committed** and must be regenerated (`uv lock`) in the same commit as any dependency change. This project has already been bitten by version drift (`create_react_agent` deprecation, the removed `llm_input_messages` channel, checkpoint-sqlite's `isolation_level`), which is exactly what the lockfile prevents across sessions.
 
 `make coverage` reports per-module coverage (89% overall; `jobs/` and most of `core/` at 100%). The thin areas are still the interactive layers — `cli/main.py` 51%, `cli/repl.py` 72%, `chat/tools.py` 78% — so a change landing there needs its tests written *with* it, not after. `cli/repl.py` is only that high because #50's rendering arrived with its tests; the argparse entrypoint has none of that. **These figures are undated**: no commit records when they were measured, and the scribe has not re-run `make coverage` to refresh them (2026-09-24).
+
+Gotchas, both verified: a venv is **path-specific** (its shebangs are absolute), so a worktree needs its own — never symlink or copy one; and `.env`, `agent.db`, `artifacts/` are gitignored, so a fresh worktree has **no API key** until it is copied (the `make worktree` target does it). `.claude/worktrees/` is gitignored, which is also where Claude Code's own `EnterWorktree` puts them.
 
 ## From “CLI + daemon (`cli/`) — where jobs actually run”
 

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **This file holds the rules; `docs/decisions/` holds why.** A rule that came out of a decision ends with `→ NNNN`, meaning `docs/decisions/NNNN-*.md`: the measurements, the alternatives that lost and why. Read the record before changing the rule; the index is `docs/decisions/README.md`. → 0102
 
-**Size budget: 40 000 characters** (≈ 10k tokens), enforced by `tests/test_claude_md_budget.py`. Every session carries this file through every turn; at 174k it was the largest fixed cost of a delegated task and went stale unowned. 40k — under a quarter — fits the code map and the rules, not narrative. When the test fails, move history into a record; do not raise the number. → 0102
+**Size budget: 40 000 characters** (≈ 10k tokens), enforced by `tests/test_claude_md_budget.py`. 40k — under a quarter of the pre-migration size — fits the code map and the rules, not narrative. When the test fails, move history into a record; do not raise the number. → 0102
 
 ## Project overview
 
@@ -33,7 +33,7 @@ jobsmith --agent banking chat | serve                       # any agent, same sh
 .venv/bin/python -m jobsmith.agents.banking.demo            # scripted banking demo (fakes)
 ```
 
-`/bg <text>` in the REPL runs a task in the background without waiting. One provider choice serves both stacks (`--llm=anthropic|openai|fake`, else by key: Anthropic, OpenAI, then the `KeywordLLM` fake); the engine's adapters are `jobsmith/clients.py` (they raise `RuntimeError` on refusals and drop `temperature`), the chat's are LangChain's. → 0000
+`/bg <text>` in the REPL runs a task in the background without waiting. One provider choice serves both stacks (`--llm=anthropic|openai|fake`, else by key: Anthropic, OpenAI, then the `KeywordLLM` fake). → 0000
 
 ### Working on this repo
 
@@ -41,13 +41,13 @@ jobsmith --agent banking chat | serve                       # any agent, same sh
 - **Run the `scribe` agent** (`.claude/agents/scribe.md`) every ~10 merges, or when this file nears its budget: it writes missing records, keeps the index, fixes stale claims and writes a brief in `docs/briefs/` covering `main` since the last one. Each pass is a PR paying a full CI round. → 0121
 - **Effort is proportionate to the risk, never to the rules' maximum**: ≤ 45 min per issue, ≤ 15 min measuring; measure a prompt at its node with `evals/probe.py` (≈10 phrasings, half controls, n=10, before/after, ≤ 300 calls), one variant, full-job evals only if that is inconclusive; record ≤ 20 lines; a small fix is done directly, not delegated; over budget → stop and report. → 0130
 - **Falsify with the targeted test** (file or `-k`), not the whole suite: `make test-fast` (`-m "not slow"`) while iterating, the full suite once before the PR — a delegated task that re-runs everything per falsification pays the slow tests' cost every time. → 0109
-- **One short-lived branch per issue**, off `main`: `feat/<n>-<slug>`, `fix/<n>-<slug>`, `chore/<slug>` (`gh issue develop <n>` creates one already linked). Open a PR, let CI run, merge, delete. **No `develop` branch**: there are no releases yet, so it would only add a merge — the PR + CI is the integration point it used to provide. Releases, when they come, are tags.
-- `main` stays green. CI (`.github/workflows/ci.yml`) runs what `make check` runs — lint, **types**, the leakage gate, tests — on push and PR across Python 3.11 and 3.12, plus `uv lock --check` so the lockfile cannot silently drift from pyproject. CI installs **every** extra, so it is the stricter reading: the optional providers' imports resolve there and are type-checked, where a plain `make install` (`.[dev,api]`) leaves them unresolved.
-- **The type gate (`make types`, pyright)** is the only check that sees a signature that lies; pyright rather than mypy because Pylance is pyright, so `[tool.pyright]` configures editor and gate at once. → 0031
+- **One short-lived branch per issue**, off `main`: `feat/<n>-<slug>`, `fix/<n>-<slug>`, `chore/<slug>` (`gh issue develop <n>` creates one already linked). Open a PR, let CI run, merge, delete. **No `develop` branch** (no releases yet; PR + CI is the integration point). Releases, when they come, are tags.
+- `main` stays green. CI (`.github/workflows/ci.yml`) runs what `make check` runs — lint, **types**, the leakage gate, tests — on push and PR across Python 3.11 and 3.12, plus `uv lock --check` so the lockfile cannot silently drift from pyproject. CI installs **every** extra — the stricter reading, since optional providers only resolve and type-check there.
+- **The type gate (`make types`, pyright)** is the only check that sees a signature that lies; `[tool.pyright]` configures editor and gate at once. → 0031
   - **`reportTypedDictNotRequiredAccess` is on**: `query` is `Required[str]` (guaranteed at entry); every other state key is guaranteed only by graph order and is read with `.get()` plus a default, next to a comment naming the node that guarantees it. **Never blanket-`# pyright: ignore` it** — a site where neither is honest is a finding about the graph. → 0031
-  - `reportMissingImports` is a **warning**, not an error (lazy optional extras); scope is `jobsmith/` only, `typeCheckingMode: basic`; pyright needs `node` on `PATH` (silently downloaded on first run if missing, which is why a fresh machine's first `make types` is slow). → 0031
+  - `reportMissingImports` is a **warning**, not an error (lazy optional extras); scope is `jobsmith/` only, `typeCheckingMode: basic`. → 0031
 - **`main` is protected**: PR required, the three checks must pass, admins included, no force-push. **Status checks are strict** — a branch must contain the current `main` before it can merge, so CI validates the *post-merge* state rather than a stale snapshot. When several PRs are in flight, each merge invalidates the rest: bring them up to date with `gh pr update-branch <n>` (or a rebase) and let CI re-run. Green checks on a stale base do not mean the merge is green. → 0000
-- **`uv.lock` is committed**; regenerate it (`uv lock`) in the same commit as any dependency change — version drift has bitten this project three times. → 0000
+- **`uv.lock` is committed**; regenerate it (`uv lock`) in the same commit as any dependency change. → 0000
 - **Parallel sessions use git worktrees**, one per issue — separate checkouts of the same repo, so two sessions never fight over the working tree or the current branch:
 
   ```bash
@@ -57,7 +57,7 @@ jobsmith --agent banking chat | serve                       # any agent, same sh
   make worktree-rm B=feat/1-grounding   # after the PR is merged
   ```
 
-  Gotchas, both verified: a venv is **path-specific** (its shebangs are absolute), so a worktree needs its own — never symlink or copy one; and `.env`, `agent.db`, `artifacts/` are gitignored, so a fresh worktree has **no API key** until it is copied (the `make worktree` target does it). `.claude/worktrees/` is gitignored, which is also where Claude Code's own `EnterWorktree` puts them.
+  **Gotchas** (verified): a venv is path-specific — never symlink or copy one across worktrees; `.env`/`agent.db`/`artifacts/` are gitignored, so a fresh worktree has no API key until `make worktree` copies it. → 0000
 - `make coverage`: the interactive layers (`cli/`, `chat/tools.py`) are the thin ones — a change there brings its tests with it. → 0000
 
 Domain-leakage gate (`make leak-check`, must return nothing): `grep -ri --include="*.py" "banking\|banquier\|votre\|analyste" jobsmith/core jobsmith/jobs jobsmith/chat jobsmith/api jobsmith/app jobsmith/cli jobsmith/tui jobsmith/agents/default jobsmith/agents/base.py` — note it scans `agents/default` and `agents/base.py`, **not** `agents/banking`, which is allowed to be as domain-specific as it likes.
@@ -74,14 +74,14 @@ Domain-leakage gate (`make leak-check`, must return nothing): `grep -ri --includ
 
 - **Live progress and produced files are on the port**: `subscribe`/`unsubscribe`, `list_outputs`, `find_output`. `DaemonClient.subscribe` drops on a full queue like `InProcessEvents`; **`None` on the queue means the stream is over** and is never dropped. `tests/test_service.py` asserts identical answers from both backings. → 0048
 - **The port throws exactly `BinaryDeliverable`, `ChatStreamError`, `ServiceUnavailable`** — that list is the whole contract; a 500 or an unparsable body is a defect, never translated. Front-ends catch `ServiceUnavailable` **by name**, never a broad `except`. → 0064
-- **A turn is a flow**: `stream`/`stream_approval` are abstract; `send`/`approve` are `terminal_of(self.stream(...))`. Seven events (`job_started`/`job_planned` since #83/#86). **`Message.content` is the concatenation of the turn's `Token`s**, never the model's last message. Terminals: `{"type": "message", "content"}`, `{"type": "proposal", "query", "rationale", "sources"}`. → 0050, 0083, 0086
+- **A turn is a flow**: `stream`/`stream_approval` are abstract; `send`/`approve` are `terminal_of(self.stream(...))`. Seven events. **`Message.content` is the concatenation of the turn's `Token`s**, never the model's last message. Terminals: `{"type": "message", "content"}`, `{"type": "proposal", "query", "rationale", "sources"}`. → 0050, 0083, 0086
 - **The chat stream never drops a token**: no queue on the path (runner generator → `StreamingResponse` → `aiter_lines`); an undecodable SSE line or a stream with no terminal raises `ChatStreamError`. `/events` is the opposite and sheds. → 0050
 
 ### CLI + daemon (`cli/`) — where jobs actually run
 
 The point of this layer: **a job must outlive the command that launched it**. `jobsmith serve` is a long-lived process owning the JobManager; every other command is a *client*.
 
-- `cli/client.py` — two backings for that one port: `DaemonClient` (HTTP) and `EmbeddedClient` (nothing but `LocalAgentService`). `open_client()` probes `GET /health` and falls back to embedded, printing the trade-off on stderr. → 0000
+- `cli/client.py` — two backings for that one port: `DaemonClient` (HTTP) and `EmbeddedClient` (nothing but `LocalAgentService`). `open_client()` probes `GET /health`, falls back to embedded. → 0000
 - **All diagnostics go to stderr** (banners, tool activity); stdout stays pipeable and carries the answer's tokens; both are flushed per write. → 0000
 - The REPL renders the flow with no fallback branch and never prints the terminal (the tokens delivered it); a mid-turn `ChatStreamError` is said on stderr and the loop continues. → 0050
 - **The job notice is on stdout**, one `job_lines` renderer for notice and proposal, ending `stop it : /cancel <id>`. → 0083
@@ -93,7 +93,7 @@ The point of this layer: **a job must outlive the command that launched it**. `j
 
 ### Agents (`agents/`) — what an agent *is*
 
-An agent is **a capability pack + a profile (+ an optional chat persona, + whatever it needs open)**, and nothing else — `AgentDefinition` in `agents/base.py`. The runtime, job engine, chat, CLI and API are shared by all of them, so **adding an agent touches no shared code**: define the capabilities, register the definition in `agents/__init__.py`, done. `tests/test_agents.py` pins that property (it composes a third-party agent from scratch).
+An agent is **a capability pack + a profile (+ an optional chat persona, + whatever it needs open)**, and nothing else — `AgentDefinition` in `agents/base.py`. The runtime, job engine, chat, CLI and API are shared by all of them, so **adding an agent touches no shared code**: define the capabilities, register the definition in `agents/__init__.py`, done. `tests/test_agents.py` pins that property.
 
 ```python
 AgentDefinition(
@@ -105,7 +105,7 @@ AgentDefinition(
 
 - `open_resources` gets `build_app`'s `AsyncExitStack`; teardown is reverse order on `AgentApp.aclose()`, even after a failed startup. Several capabilities on one backend share a **pool**, never a fat client. → 0000
 
-- `agents/default/`: `read_files`/`prior_jobs`/`documents`/`web_search` → `research` → `analysis` → `critique`, plus `slide_deck`. `analysis` and `critique` subclass `SingleStepCapability` (`_step.py`, first-match over `UPSTREAM`, degrading to the bare request); `critique` overrides `_material` to read both. → 0000
+- `agents/default/`: `read_files`/`prior_jobs`/`documents`/`web_search` → `research` → `analysis` → `critique`, plus `slide_deck`. `analysis`/`critique` subclass `SingleStepCapability` (`_step.py`); `critique` overrides `_material` to read both. → 0000
   - **`documents` is the grounding step**, over the `DocumentSource` port (`sources.py`; `LocalFiles` is keyword ranking, no key, no network). → 0000
   - **`read_files` reads a named file** (`documents` searches): port `DocumentReader`, path in `inputs["source_files"]` (`SOURCE_FILES_INPUT_KEY`), never parsed from the query; dropped when nothing was named; no model call; **a refusal is material, not silence**. → 0060
   - **`prior_jobs` reads an earlier RUN, not its file**: `inputs["from_jobs"]`, port `PriorJobSource`; no model call; refusal is material; bounded at 24 000 characters, ≤ 3 jobs; session scope enforced in `chat/tools.py`. → 0074
@@ -113,7 +113,7 @@ AgentDefinition(
   - **`web_search`** = `DocumentsCapability` over `TavilySource`: page over snippet, `$TAVILY_SEARCH_DEPTH` default `advanced`, `max_chars=8_000` per document, cut written into the text. `TavilySource`'s client is closed on the app's stack; an HTTP error raises. → 0075
   - **A capability nothing can serve stays out of the registry** — every conditional step is registered only when something backs it (`open_default_resources`); an empty registry is then answered directly. → 0000, 0038
   - **`slide_deck` is a generation, not a report format**: deck structure is asked of the model; only `pptx_deck.py` imports `python-pptx`; 16:9; refused without a job before the LLM call; non-JSON salvaged as `meta["via_fallback"]`; a failed write declares nothing; the deck is an `annex`. **Its description says what it is NOT.** → 0035, 0061
-  - **The deliverable is written for its reader**, and **answers**: the prompts that produce it name the reader, rule out the state of the work, and oblige the answer first, from the material, with doubt marked where it bears; `SUBJECT_ONLY_RULE` is on every material prompt and the generator; `NO_ANSWER_INSTRUCTION` sets a high bar and a shape for a refusal. → 0058, 0073
+  - **The deliverable is written for its reader**, and **answers**: the prompts that produce it name the reader and oblige the answer first, from the material, doubt marked where it bears; `SUBJECT_ONLY_RULE` is on every material prompt and the generator; `NO_ANSWER_INSTRUCTION` sets a high bar and a shape for a refusal. → 0058, 0073
   - **The generator is told which files the run delivers** (`delivered_files_note`: requested formats + declared annexes, or "none") and names no other; no prompt offers a file by example. When the list names the answer itself, `ANSWER_FILE_RULE` says that entry **is** the text being written — never described, saved by hand or "delivered separately". → 0077, 0126
   - Retrieved passages carry a **quotable id** (`path#chunk`); `render_context` gives the model the material, `render_report` gives the human the provenance only.
   - **`research` reads every retrieval step's material** (`GROUNDING`, not first-match) and `read_files`' refusals (`REFUSALS`), in its own prompt, bounded at 32 000 characters, and says so in `meta["grounded_on"]`. → 0081
@@ -124,12 +124,12 @@ AgentDefinition(
 ### The composition root (`app/`)
 
 Wiring only, no content — everything here is domain-neutral:
-- `providers.py`: `pick_provider` (one `--llm=` flag / key auto-detect for both stacks), `make_llm`/`make_chat_model`, `load_dotenv`, and the keyless fakes — `KeywordLLM`, `KeywordChatModel` (runs a job on analysis-ish keywords, synchronous by default). → 0000
+- `providers.py`: `pick_provider` (one `--llm=` flag / key auto-detect for both stacks), `make_llm`/`make_chat_model`, `load_dotenv`, and the keyless fakes `KeywordLLM`/`KeywordChatModel`. → 0000
 - `agent.py`: `build_app(agent=..., **overrides) -> AgentApp` composes ONE agent on one `AsyncExitStack`. **`reports_dir` is resolved once, to an absolute path** (`pick_reports_dir`); `AgentContext(readable_roots=(reports_dir,))`; one `StoreJobRepository` serves both the manager and the `PriorJobSource`. → 0063
 - `persistence.py`: `pick_db()` (arg > `--db=` > `$JOBSMITH_DB` > `<data dir>/jobs.db`) + `open_persistence(spec, stack)` → `(checkpointer, store)`, teardown on the caller's `AsyncExitStack`.
   - **Default: a SQLite file under `data_dir()`**, never the cwd; SQLite is a core dependency. **`memory` must be asked for by name**: tests, `evals/harness.py` and the demo pass `db="memory"`; `conftest.sandboxed_data_dir` fails the run if the suite wrote to the data dir. → 0063
   - **Every SQLite writer takes the lock up front** (`_ImmediateBegin`), so a contended batch waits rather than fails "database is locked". → 0063
-  - Backends: `memory`, a SQLite path (the default, or any path you name), or a Postgres DSN (`.[postgres]`, one shared `AsyncConnectionPool` for saver + store, `autocommit/prepare_threshold=0/dict_row` as those backends require). Chat sessions share the job graph's checkpointer, so conversations persist too (namespaced by `thread_id`: `session_id` vs `job_id`).
+  - Backends: `memory`, a SQLite path (the default, or any path you name), or a Postgres DSN (`.[postgres]`, one shared `AsyncConnectionPool` for saver + store, `autocommit`/`prepare_threshold=0`/`dict_row`). Chat sessions share the job graph's checkpointer (`thread_id`: `session_id` vs `job_id`).
 
 **`build_app` is async**: real backends must open in the loop that uses them — `jobsmith serve` runs `await uvicorn.Server(config).serve()`, never `uvicorn.run()`. **SQLite gotcha**: never run a stray `PRAGMA` on the live connections (deadlock); the store needs `isolation_level=None`, the saver keeps the default. → 0000
 - **Interrupted jobs**: `JobManager.recover_interrupted()` (in `build_app`) marks FAILED a RUNNING record whose owner is provably gone; a live owner's job is left alone; QUEUED stays runnable. → 0010
@@ -192,13 +192,13 @@ Capability `build()` MUST use `self.state_graph(PrivateState)` (which sets `outp
 
 Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `repository=`/`runner=`/`events=` to swap one. `tests/test_job_seams.py` drives the whole lifecycle with **no graph and no store** — if that stops being possible, a responsibility has leaked back in.
 
-- **Only `runner.py` knows LangGraph's stream shape**; it yields `PlanReady`/`StepFinished`/`NodeErrors`/`Terminal`, for `stream()` and `resume()` alike. Graph nodes stay job-agnostic: **new persistence goes in the manager or the repository, never in a node.** → 0000
-  - `PlanReady` persists a summary, so the stream says the job moved as soon as the plan exists. **Which step finished is read from the `cap_*` node name**, never from `results` (the whole channel). → 0048, 0053
+- **Only `runner.py` knows LangGraph's stream shape**; it yields `PlanReady`/`StepFinished`/`NodeErrors`/`Terminal`. Graph nodes stay job-agnostic: **new persistence goes in the manager or the repository, never in a node.** → 0000
+  - `PlanReady` persists a summary as soon as the plan exists. **Which step finished is read from the `cap_*` node name**, never from `results`. → 0048, 0053
 - **Only `repository.py` knows the schema**: `("jobs","index")/job_id` → summary; `("jobs",job_id,"meta")` → plan/errors; `("jobs",job_id,"results")/cap_name` → per-capability result. Fine-grained state stays in the checkpointer under `thread_id == job_id`. Moving job records to SQL is another implementation of this port.
 - **`jobs/prior.py`** (`RepositoryPriorJobs`) is the only place that knows how a finished run's material is reached. → 0074
 - **Ownership is on the record** (`jobs/ownership.py`, `("jobs", id, "control")`): a lease written **before** RUNNING, heartbeat 2 s, TTL 30 s; **a cancel is a request the owner acts on**, never a status written over its run. Events stay in-process (#100). → 0010
 - **Resume** re-enters with `None`, gated on CANCELLED/FAILED **and** non-empty `runner.pending()`; seeds usage; `_begin_resume` clears `job.error` and `job.announced`. No partial re-run of a finished DAG. → 0005
-- **Vocabulary**: an **output** is what the job produces for the human (`Job.outputs`, role `main`|`alternate`|`annex`); a **result** is a capability's payload (`results`). `Job.report_path` is the main output's path. → 0000
+- **Vocabulary**: an **output** is what the job produces for the human (`Job.outputs`, role `main`|`alternate`|`annex`); a **result** is a capability's payload (`results`). `Job.report_path` = the main output's path. → 0000
 - **Reporters** (`jobs/report.py`): `build_document` → `JobDocument` → `FileReporter` subclasses (`render`, or `serialize` for bytes); `is_binary_format`. → 0009
 - **Exactly one output is `role="main"`** (the first format; the rest `alternate`, never `annex`); `compose_reporters` refuses two Reporters on one extension. `pick_report_formats()` only says *which* file when one is wanted and none was named. A failed write leaves the job DONE with `job.error`. → 0028, 0096
 - **An annex is a file a step declared** via `ArtifactStore` + `artifact_meta(...)`, collected in plan order at **every** terminal, assigned never appended; a declared-but-absent file goes in `job.error`. → 0035, 0041
