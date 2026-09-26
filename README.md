@@ -686,7 +686,10 @@ jobsmith --db memory chat                                             # keep not
 
 ```bash
 make help          # every target
-make check         # lint + types + domain-leakage gate + tests
+make check         # lint + types + domain-leakage gate + tests, in parallel
+make hooks         # ruff + uv lock --check at commit time (run by make install)
+make combo PRS="127 128"   # several open PRs merged in a scratch tree, then tests
+make mutate TESTS=tests/test_probe.py   # mutants on the lines this branch changed
 make types         # pyright over jobsmith/
 make test T=router # one keyword's worth
 make coverage      # per-module coverage report
@@ -724,6 +727,8 @@ make eval                     # deterministic tier — fakes, no API key, runs i
 make eval-llm                 # the same golden set against a real provider (opt-in)
 make eval ARGS='--repeat 3'   # sample the same cases repeatedly to see the variance
 make eval ARGS='--report-format html'   # score the other deliverable format
+make probe NODE=document_intent READ=document_formats \
+  CASES=evals/probes/document_intent.json   # one prompt at its node, main vs branch
 python -m evals --list        # what the golden set contains
 ```
 

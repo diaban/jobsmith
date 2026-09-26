@@ -57,7 +57,7 @@ jobs:
       - name: Tests
         # No API key is available here: the deterministic fakes are what make
         # the suite runnable in CI at all.
-        run: .venv/bin/python -m pytest tests/ -q
+        run: .venv/bin/python -m pytest tests/ -q -n auto
 
   lockfile:
     # A stale lockfile is worse than none: it silently stops matching pyproject.
