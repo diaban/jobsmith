@@ -9,16 +9,22 @@ shapes it has: no file, the requested document, and a file a step declared.
 
 The direct route is told the same list, and — only when that list names the
 answer itself — that its reply is that document (#80).
+
+When the list names the answer itself, it also says that this entry IS the
+text being written, on every route that writes it (→ 0126).
 """
 from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from conftest import FakeLLM
 
+from jobsmith.agents.default.profile import DEFAULT_APP_PROFILE
 from jobsmith.core.artifacts import ArtifactRef, artifact_meta
 from jobsmith.core.deps import Deps
 from jobsmith.core.generation import (
+    ANSWER_FILE_RULE,
     DIRECT_DOCUMENT_RULE,
     FILES_HEADING,
     DirectResponder,
@@ -76,6 +82,17 @@ def test_a_file_a_step_declared_is_listed_by_its_title():
     assert "- this answer itself" in note and "- Heating options (pptx)" in note
 
 
+@pytest.mark.parametrize(("state", "told"), [
+    (_state(document_formats=["markdown"]), True),
+    (_deck_state(document_formats=["markdown"]), True),
+    (_deck_state(), False),
+    (_state(document_formats=None), False),
+], ids=["answer", "answer and deck", "deck alone", "none"])
+def test_only_a_list_naming_the_answer_says_the_answer_is_that_file(state, told):
+    """→ 0126: "this answer itself" is the text being written, not a file beside it."""
+    assert (ANSWER_FILE_RULE in delivered_files_note(state)) is told
+
+
 async def test_the_generator_sees_the_list_between_the_request_and_the_material():
     llm = FakeLLM(default="the answer")
     await Generator(Deps(llm=llm), AgentProfile()).run(_state())
@@ -84,14 +101,23 @@ async def test_the_generator_sees_the_list_between_the_request_and_the_material(
     assert user.index("Query:") < user.index(FILES_HEADING) < user.index("Context:")
 
 
+@pytest.mark.parametrize("profile", [AgentProfile(), DEFAULT_APP_PROFILE],
+                         ids=["core default", "default pack"])
+async def test_every_generator_is_told_its_answer_is_the_file(profile):
+    """→ 0126: said beside the list, so no profile's prompt has to say it."""
+    llm = FakeLLM(default="the answer")
+    await Generator(Deps(llm=llm), profile).run(_state(document_formats=["markdown"]))
+    assert ANSWER_FILE_RULE in llm.calls[0]["messages"][1]["content"]
+
+
 async def test_the_refiner_sees_the_same_list():
     llm = FakeLLM(default="the answer")
     await Refiner(Deps(llm=llm), AgentProfile()).run(
-        _deck_state(draft_answer="draft", validation_issues=["x"]))
+        _deck_state(document_formats=["markdown"], draft_answer="draft",
+                    validation_issues=["x"]))
     user = llm.calls[0]["messages"][1]["content"]
     assert "- Heating options (pptx)" in user
-
-
+    assert ANSWER_FILE_RULE in user
 
 
 async def _direct_prompt(**extra: Any) -> str:
@@ -111,4 +137,4 @@ async def test_a_direct_reply_asked_for_as_a_file_is_written_as_that_document():
     """→ 0080: the direct route keeps the request, and writes for the file's reader."""
     prompt = await _direct_prompt(document_formats=["markdown"])
     assert "- this answer itself, written to a file as markdown" in prompt
-    assert DIRECT_DOCUMENT_RULE in prompt
+    assert ANSWER_FILE_RULE in prompt and DIRECT_DOCUMENT_RULE in prompt

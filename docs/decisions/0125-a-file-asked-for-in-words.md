@@ -166,7 +166,12 @@ tier (29/30).
   `report_answers_request` in 3 of its 5 runs after the fix — the steps' material
   was about saving a file (`echo`, bash, PowerShell) rather than the leap
   year. The file request leaking into the subject is #126's family, not the
-  document step's; the case now makes it visible on the llm tier.
+  document step's; the case now makes it visible on the llm tier. Merged
+  together with 0126, the leak is gone (llm tier, 5 runs of the four new
+  cases: 1 miss on `report_answers_request`, about the calendar, not saving).
+- Also left open: 2 of the 7 misses remaining were `"named"` with no format
+  listed, which the node reads as silence; reading them as `"requested"`
+  would also turn "as a docx" into markdown, which 0090 ruled out.
 - Also seen, left open: the controls' ~0.7% false positives (a compound
   research/compare request read as `"requested"`) are #96's leak and predate
   this; and a request for "a file" is sometimes answered `"named"` with both
