@@ -6,6 +6,9 @@ words, since that prompt talked about a produced file by example and never
 said which files the run actually produced. These pin the list the generator
 (and the refiner, which restates the same contract) now sees, in the three
 shapes it has: no file, the requested document, and a file a step declared.
+
+The direct route is told the same list, and — only when that list names the
+answer itself — that its reply is that document (#80).
 """
 from __future__ import annotations
 
@@ -16,13 +19,16 @@ from conftest import FakeLLM
 from jobsmith.core.artifacts import ArtifactRef, artifact_meta
 from jobsmith.core.deps import Deps
 from jobsmith.core.generation import (
+    DIRECT_DOCUMENT_RULE,
     FILES_HEADING,
+    DirectResponder,
     Generator,
     Refiner,
     delivered_files,
     delivered_files_note,
 )
 from jobsmith.core.profile import AgentProfile
+from jobsmith.core.registry import CapabilityRegistry
 
 
 def _state(**extra: Any) -> dict[str, Any]:
@@ -86,3 +92,23 @@ async def test_the_refiner_sees_the_same_list():
     assert "- Heating options (pptx)" in user
 
 
+
+
+async def _direct_prompt(**extra: Any) -> str:
+    llm = FakeLLM(default="hello")
+    await DirectResponder(Deps(llm=llm), CapabilityRegistry([]), AgentProfile()).run(
+        _state(**extra))
+    return llm.calls[0]["messages"][0]["content"]
+
+
+async def test_a_direct_reply_is_told_there_is_no_file_and_stays_a_turn():
+    prompt = await _direct_prompt(document_formats=None)
+    assert f"{FILES_HEADING}: none." in prompt
+    assert DIRECT_DOCUMENT_RULE not in prompt
+
+
+async def test_a_direct_reply_asked_for_as_a_file_is_written_as_that_document():
+    """→ 0080: the direct route keeps the request, and writes for the file's reader."""
+    prompt = await _direct_prompt(document_formats=["markdown"])
+    assert "- this answer itself, written to a file as markdown" in prompt
+    assert DIRECT_DOCUMENT_RULE in prompt

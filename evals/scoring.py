@@ -628,11 +628,19 @@ def check_report_reader_facing(case: EvalCase, obs: Observation) -> Check:
     either way, and the name keeps its `report_` prefix only so stored runs
     stay comparable.
 
+    One run with no plan is held to it too (#80): a direct reply that was
+    also written as the document the request asked for. The chat turn is
+    exempt because its prompt asks for a turn; that one is told it is a
+    document (`DIRECT_DOCUMENT_RULE`), so the file's reader is owed the same
+    register — and this is the only instrument that would see it slip.
+
     Honest about its limit: a marker list catches what it lists. It is a floor
     under the prompts, not a proof of good register.
     """
     name = "report_reader_facing"
-    if (s := _answer_applies(case, obs, name)) is not None:
+    direct_document = bool(obs.report_path) and not obs.plan_steps
+    applies = _report_applies if direct_document else _answer_applies
+    if (s := applies(case, obs, name)) is not None:
         return s
     answer = normalize(obs.final_answer or "").lower()
     hits = [m for m in PRODUCER_FACING_MARKERS if m in answer]

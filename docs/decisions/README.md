@@ -79,6 +79,7 @@ current and writes the records a merged PR forgot, marked as reconstructed.
 | 0075 | [web_search grounds on the page, not the snippet](0075-web-pages-not-snippets.md) | Tavily's `raw_content` over the snippet, `advanced` depth by default, 8 000 characters per document | accepted |
 | 0076 | [Nested lists nest in the HTML and PDF deliverables](0076-nested-lists.md) | one level every two spaces, depth clamped to the open-list stack, a nested list opened inside its item | accepted |
 | 0077 | [The generator is told which files the run delivers](0077-generator-knows-the-files.md) | the generator and refiner get the list of delivered files (or "none") and no prompt offers a file by example; `answer_invents_no_file` checks the answer against `Job.outputs` | accepted |
+| 0080 | [A direct reply asked for as a file is written as that document](0080-direct-answer-as-document.md) | `DirectResponder` gets the delivered-files note always and `DIRECT_DOCUMENT_RULE` when a file is written; the request stays on the direct route; `report_reader_facing` scores that file | accepted |
 | 0081 | [The grounding reaches the reasoning](0081-grounding-reaches-reasoning.md) | `research` reads every retrieval step's material (bounded), says so in `meta["grounded_on"]`, and an eval checks it | accepted |
 | 0082 | [critique reviews the material, not the run](0082-critique-checks-the-subject.md) | `critique` checks claims against their sources, at most 8 bullets, and feeds the generator again | accepted; partially supersedes 0073; partially supersedes 0058 |
 | 0083 | [A task runs synchronously by default; the background is a promotion](0083-synchronous-by-default.md) | `launch_job` starts the job and waits `$JOBSMITH_SYNC_TIMEOUT`; the answer is written into the turn; the approval card became a notice | accepted; partially superseded by 0085 |
@@ -103,7 +104,7 @@ current and writes the records a merged PR forgot, marked as reconstructed.
 - **#49** — a PR (the remote client hears the same events) — see [0048](0048-terminal-ui.md) and [0074](0074-prior-job-references.md)
 - **#57** — a PR (#48 step 3, the TUI follows a job) — recorded in [0048](0048-terminal-ui.md) and [0064](0064-service-unavailable.md)
 - **#62** — decks are 16:9 — recorded in [0035](0035-capability-artifacts-and-slide-deck.md)
-- **#80** — open: `report_reader_facing` scores a chat turn — see [0096](0096-no-document-unless-asked.md)
+- **#80** — the plan guard landed with [0096](0096-no-document-unless-asked.md); the direct reply written as a file is [0080](0080-direct-answer-as-document.md)
 - **#84** — a run leaves a document because the request asked — its narrative was replaced by [0096](0096-no-document-unless-asked.md), which supersedes it; PR #89
 - **#89** — the PR for #84 — see [0090](0090-document-intent-node.md) and [0096](0096-no-document-unless-asked.md)
 - **#100** — open: cross-process job events — the decision to keep them in-process is in [0010](0010-cross-process-ownership.md)
