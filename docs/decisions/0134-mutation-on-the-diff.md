@@ -1,6 +1,6 @@
 # 0134 — Mutation testing on the diff replaces falsifying by hand
 
-- **Issue:** #134 · **PR:** #NN · **Status:** accepted
+- **Issue:** #134 · **PR:** #136 · **Status:** accepted
 - **Rule in `CLAUDE.md`:** "The protocol runs as commands" (`make mutate`)
 
 **Context.** "Break the fix, watch the test fail, restore it" was done by hand: an edit, a run, a revert, for each test. It covered only the one break someone thought of, and it had already left files half-reverted.
