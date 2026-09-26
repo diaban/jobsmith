@@ -1,6 +1,6 @@
 # 0080 — A direct reply asked for as a file is written as that document
 
-- **Issue:** #80 · **PR:** #NN
+- **Issue:** #80 · **PR:** #124
 - **Status:** accepted
 - **Rule in `CLAUDE.md`:** "A direct reply is told the files the run delivers; asked for as a file, it is written as that document (`DIRECT_DOCUMENT_RULE`)"
 
