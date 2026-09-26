@@ -1,0 +1,12 @@
+[
+  {"id": "greeting", "query": "hello there", "expect": "direct"},
+  {"id": "capabilities", "query": "what can you do?", "expect": "direct"},
+  {"id": "thanks", "query": "thanks, that is all I needed for now", "expect": "direct"},
+  {"id": "identity", "query": "who are you, and how do you work?", "expect": "direct"},
+  {"id": "capabilities_as_file", "query": "what can you do? put the answer in a markdown file", "expect": "direct"},
+  {"id": "compare_recommend", "query": "compare hexagonal and layered architectures, then recommend one for a team of three", "expect": "plan"},
+  {"id": "research_summary", "query": "summarise the main approaches to retrieval-augmented generation and where each fails", "expect": "plan"},
+  {"id": "tradeoff_analysis", "query": "analyse the trade-offs between in-process background work and a dedicated worker", "expect": "plan"},
+  {"id": "web_current", "query": "what changed in the latest Python release, and does it matter for asyncio code?", "expect": "plan"},
+  {"id": "deck", "query": "make a short slide deck comparing TCP and UDP", "expect": "plan"}
+]

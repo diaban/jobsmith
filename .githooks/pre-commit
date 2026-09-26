@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Fast checks at commit time (`make hooks` points git here). CI stays the gate;
+# this only moves the two cheapest failures from 2 minutes later to now.
+set -eo pipefail
+root=$(git rev-parse --show-toplevel)
+mapfile -t py < <(git diff --cached --name-only --diff-filter=ACMR -- '*.py')
+if [ ${#py[@]} -gt 0 ] && [ -x "$root/.venv/bin/ruff" ]; then
+  "$root/.venv/bin/ruff" check -q "${py[@]}"
+fi
+if git diff --cached --name-only | grep -qxE 'pyproject\.toml|uv\.lock'; then
+  uv lock --check -q
+fi

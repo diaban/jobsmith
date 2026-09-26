@@ -4,8 +4,10 @@ The cheap instrument for a prompt change. A full-job eval pays for every node
 of every run to observe one decision; this calls only the node that owns the
 prompt, composed exactly as `build_app` composes it (same registry, same
 formats, same profile), and tallies what it wrote. Run it on the branch and on
-`main` (a worktree, or `--baseline` with the summary of the other run) and
-compare. It is what the budget in CLAUDE.md is measured with.
+`main` and compare: `make probe NODE=… READ=… CASES=…` does both, in
+parallel, from a scratch worktree of `main` (`scripts/probe-compare.sh`).
+Versioned case sets live in `evals/probes/<node>.json`. It is what the budget
+in CLAUDE.md is measured with.
 
     python -m evals.probe --node document_intent --read document_formats \\
         --cases cases.json -n 10 --out after.json --baseline before.json
@@ -136,24 +138,26 @@ async def probe(
     return tallies
 
 
-def render(tallies: list[Tally], baseline: dict[str, Any] | None = None) -> str:
+def render(after: dict[str, Any], before: dict[str, Any] | None = None) -> str:
+    """One line per case from two `--out` summaries: `before -> after`, top values."""
     lines = []
-    for t in tallies:
-        before = (baseline or {}).get(t.case_id)
-        score = f"{t.passed}/{t.n}" if t.expect is not None else "-"
-        if before and before.get("passed") is not None:
-            score = f"{before['passed']}/{before['n']} -> {score}"
-        seen = ", ".join(f"{k} x{v}" for k, v in t.counts.most_common(3))
-        errors = f"  ({t.errors} errors)" if t.errors else ""
-        lines.append(f"{t.case_id:<28} {score:>12}  {seen}{errors}")
+    for case_id, now in after.items():
+        was = (before or {}).get(case_id)
+        score = f"{now['passed']}/{now['n']}" if now.get("passed") is not None else "-"
+        if was and was.get("passed") is not None:
+            score = f"{was['passed']}/{was['n']} -> {score}"
+        top = sorted(now["counts"].items(), key=lambda kv: -kv[1])[:3]
+        seen = ", ".join(f"{k} x{v}" for k, v in top)
+        errors = f"  ({now['errors']} errors)" if now.get("errors") else ""
+        lines.append(f"{case_id:<28} {score:>12}  {seen}{errors}")
     return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m evals.probe",
                                      description=__doc__.splitlines()[0])
-    parser.add_argument("--node", required=True, help="graph node to call (e.g. document_intent)")
-    parser.add_argument("--read", required=True, help="state key the node writes, to tally")
+    parser.add_argument("--node", help="graph node to call (e.g. document_intent)")
+    parser.add_argument("--read", help="state key the node writes, to tally")
     parser.add_argument("--grep", help="tally whether the read key matches this regex instead")
     parser.add_argument("--cases", help="JSON file of cases")
     parser.add_argument("-q", "--query", action="append", default=[], help="an ad-hoc case")
@@ -164,7 +168,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-calls", type=int, default=MAX_CALLS)
     parser.add_argument("--out", help="write the per-case summary here (JSON)")
     parser.add_argument("--baseline", help="a previous --out, shown as 'before -> after'")
+    parser.add_argument("--compare", nargs=2, metavar=("BEFORE", "AFTER"),
+                        help="only print two --out summaries side by side (no call made)")
     args = parser.parse_args(argv)
+    if args.compare:
+        before, after = (json.loads(Path(f).read_text(encoding="utf-8")) for f in args.compare)
+        print(render(after, before))
+        return 0
+    if not (args.node and args.read):
+        parser.error("--node and --read are required unless --compare is given")
     try:
         cases = load_cases(args.cases, args.query)
         tallies = asyncio.run(probe(
@@ -173,11 +185,11 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as e:
         print(f"probe: {e}", file=sys.stderr)
         return 2
+    summaries = {t.case_id: t.summary() for t in tallies}
     baseline = json.loads(Path(args.baseline).read_text()) if args.baseline else None
-    print(render(tallies, baseline))
+    print(render(summaries, baseline))
     if args.out:
-        Path(args.out).write_text(json.dumps(
-            {t.case_id: t.summary() for t in tallies}, indent=1), encoding="utf-8")
+        Path(args.out).write_text(json.dumps(summaries, indent=1), encoding="utf-8")
     return 0
 
 
