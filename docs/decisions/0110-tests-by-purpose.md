@@ -1,7 +1,7 @@
 # 0110 — Tests are organised by purpose, share builders through one module, and state properties rather than history
 
 - **Issue:** #110 · **PR:** (this one)
-- **Status:** accepted — first step: the shared module and the document cluster
+- **Status:** accepted — all 5 steps landed (#117–#120, #122)
 - **Rule in `CLAUDE.md`:** "Tests are organised by purpose, never by issue" and "Shared builders live in `tests/support.py`"
 
 ## Context
