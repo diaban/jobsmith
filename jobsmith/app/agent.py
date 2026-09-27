@@ -200,7 +200,8 @@ async def build_app(
         # notifies (#138); memory keeps the in-process fan-out, polls nothing.
         events: WatchedEvents | None = None
         if (watched := sqlite_file(db_spec)) is not None:
-            events = SqliteWatchEvents(watched, lambda: repository.load_all(limit=200))
+            events = SqliteWatchEvents(
+                watched, lambda since: repository.load_all(updated_since=since))
         elif (dsn := postgres_dsn(db_spec)) is not None:
             events = PostgresNotifyEvents(dsn, repository.load)
         if events is not None:

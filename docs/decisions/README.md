@@ -101,6 +101,7 @@ current and writes the records a merged PR forgot, marked as reconstructed.
 | 0133 | [The PR protocol runs as commands, not by hand](0133-protocol-as-commands.md) | `make probe` (main vs branch, parallel), `make combo`, `make hooks`, parallel `make check` with `pytest -n auto`, repo auto-merge, a test for the index and `→ NNNN` | accepted |
 | 0134 | [Mutation testing on the diff replaces falsifying by hand](0134-mutation-on-the-diff.md) | `make mutate TESTS=…`: cosmic-ray + `cr-filter-git` on a scratch worktree, only the changed lines, survivors listed by line | accepted |
 | 0138 | [Job events cross processes on Postgres, by LISTEN/NOTIFY](0138-postgres-notify-events.md) | `PostgresNotifyEvents`: NOTIFY on publish, LISTEN while subscribed, both on connections off the pool; `WatchedEvents` shares the rest with SQLite | accepted |
+| 0141 | [Complete queries filter in the store; human listings cut after ordering](0141-complete-queries-at-scale.md) | `load_all` is complete (filters in the store, one query, no cut); `list_jobs` newest first then cut; `limit=None` for what must see everything | accepted |
 
 ### Issues cited without a record of their own
 

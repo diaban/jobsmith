@@ -835,14 +835,18 @@ class JobManager:
         *,
         status: JobStatus | None = None,
         session_id: str | None = None,
-        limit: int = 50,
+        limit: int | None = 50,
     ) -> list[Job]:
-        jobs = await self.repo.load_all(limit=limit)
-        if status is not None:
-            jobs = [j for j in jobs if j.status is status]
-        if session_id is not None:
-            jobs = [j for j in jobs if j.session_id == session_id]
-        return sorted(jobs, key=lambda j: j.created_at, reverse=True)
+        """The matching jobs, newest first; `limit=None` for every one of them.
+
+        Selected by the store, then ordered, and only then cut: a listing for
+        humans shows the most recent, and a caller that must see everything
+        (an announcement, an id to resolve, an orphan to settle) passes
+        `limit=None` — never a big number, which is the same bug later (#141).
+        """
+        jobs = await self.repo.load_all(status=status, session_id=session_id)
+        jobs.sort(key=lambda j: j.created_at, reverse=True)
+        return jobs if limit is None else jobs[:limit]
 
     async def recover_interrupted(self) -> list[Job]:
         """Settle jobs left RUNNING by a process that died (persistent stores).
@@ -866,7 +870,7 @@ class JobManager:
         purpose, so a resume settles through `_drive`, which collects. Nothing
         is lost here that the next attempt cannot record.
         """
-        running = [j for j in await self.list_jobs(status=JobStatus.RUNNING, limit=1000)
+        running = [j for j in await self.list_jobs(status=JobStatus.RUNNING, limit=None)
                    if j.job_id not in self._tasks]
         if self.repo.shared:
             # On a shared store "not in this process" is not "dead": another
@@ -917,8 +921,9 @@ class JobManager:
         `_begin_resume`, so picking one back up does not cost the
         conversation its ending.
         """
-        jobs = await self.list_jobs(session_id=session_id, limit=100)
-        return [j for j in jobs if j.status in ANNOUNCEABLE and not j.announced]
+        jobs = await self.repo.load_all(session_id=session_id, announced=False)
+        jobs.sort(key=lambda j: j.created_at, reverse=True)
+        return [j for j in jobs if j.status in ANNOUNCEABLE]
 
     async def mark_announced(self, job_id: str) -> None:
         job = await self.get_job(job_id)
