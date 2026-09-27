@@ -36,6 +36,10 @@ from ...core.state import CapabilityResult
 #: sentence saying so — this rule bans writing about the document, not
 #: honouring what it asks for.
 #:
+#: The deck is named because `analysis` designed one anyway on a deck request
+#: (8/8, #129) — "never design the document" read as abstract — and the
+#: generator then pasted that outline into the written answer.
+#:
 #: "A file to save it in" is named because a step did not read "save the
 #: answer to a file" as a document at all (#126): `analysis` wrote a section
 #: of `echo 366 > leap_year_days.txt`, and the generator, told to use what
@@ -45,7 +49,9 @@ SUBJECT_ONLY_RULE = (
     "\nThe request may also say what document is wanted — a report, a deck, a "
     "page, a file to save it in, a language. That is not part of the "
     "subject: work on the subject alone, and never design or advise on the "
-    "document itself, nor on how to save it."
+    "document itself, nor on how to save it. A deck, when one is asked for, "
+    "is built by a separate step from the material: write no slides, slide "
+    "titles, slide-by-slide outline or speaker notes."
 )
 
 
