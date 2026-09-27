@@ -11,6 +11,7 @@ import asyncio
 import pytest
 
 from jobsmith.engine.events import InProcessEvents, job_event
+from jobsmith.engine.graph import GraphSpec, JobFailed
 from jobsmith.engine.manager import JobManager
 from jobsmith.engine.models import Job, JobStatus
 from jobsmith.engine.repository import StoreJobRepository
@@ -95,10 +96,9 @@ class DictRepository:
 PLAN = {"rationale": "because", "steps": [{"capability": "alpha", "depends_on": []}]}
 
 
-def ended(kind, answer=None, *, message=None, errors=(), write_error=None):
-    """What a DAG run returns, reduced to the keys the job reads of it."""
-    return Output({"terminal_kind": kind, "final_answer": answer, "user_error_message": message,
-                   "errors": list(errors), "document_error": write_error})
+def ended(answer="done."):
+    """A run that went to the end and returned this."""
+    return Output({"answer": answer})
 
 
 def make_manager(tmp_path, *updates, pending=(), on_resume=None, **kwargs):
@@ -114,37 +114,54 @@ async def test_use_cases_run_without_a_graph_or_a_store(tmp_path):
         tmp_path,
         Fact("plan", PLAN),
         Fact("step:alpha", {"ok": True, "data": {"echo": "hi"}}),
-        ended("answer", "The final answer."),
+        ended("The final answer."),
     )
-    job = await mgr.create_job("do it", {"k": "v"}, session_id="s1", formats=["markdown"])
+    job = await mgr.create_job({"query": "do it", "inputs": {"k": "v"}}, label="do it",
+                               session_id="s1")
     done = await mgr.run_job(job.job_id)
 
     assert done.status is JobStatus.DONE
-    assert done.final_answer == "The final answer."
+    assert done.result == {"answer": "The final answer."}      # what the graph returned
     assert done.facts["step:alpha"]["data"]["echo"] == "hi"
     assert done.facts_at["step:alpha"]
-    # the runner received the job's own parameters
-    [(job_id, graph_input)] = mgr.runner.calls
-    assert job_id == job.job_id and graph_input["query"] == "do it"
-    assert graph_input["inputs"] == {"k": "v"}
+    # the runner received the job's input, as given
+    assert mgr.runner.calls == [(job.job_id, {"query": "do it", "inputs": {"k": "v"}})]
     # the repository saw each fact as it came, through the port only
     assert mgr.repo.facts[(job.job_id, "plan")] == PLAN
     assert (job.job_id, "step:alpha") in mgr.repo.facts
 
 
-async def test_terminal_without_answer_fails_and_writes_no_report(tmp_path):
-    mgr = make_manager(
-        tmp_path,
-        ended("user_error", message="cannot help with that",
-              errors=[{"source": "planner", "kind": "plan_fail", "message": "nope"}]),
-    )
-    job = await mgr.create_job("q")
-    done = await mgr.run_job(job.job_id)
+async def test_a_run_that_declares_it_failed_is_failed_with_its_reason(tmp_path):
+    """`JobFailed` from the graph's `result`: FAILED, the reason as the error,
+    and what the run returned kept (→ docs/design/core-v1.md, "Ending")."""
+    def refuse(output):
+        raise JobFailed("cannot help with that", result={"kind": output["answer"]})
 
-    assert done.status is JobStatus.FAILED
-    assert done.error == "cannot help with that"
-    assert done.facts == {}
-    assert mgr.repo.errors[job.job_id][0]["kind"] == "plan_fail"
+    mgr = JobManager(GraphSpec("g", None, result=refuse), repository=DictRepository(),
+                     runner=FakeRunner(ended("user_error")))
+    done = await mgr.run_job((await mgr.create_job({"q": 1})).job_id)
+
+    assert done.status is JobStatus.FAILED and done.error == "cannot help with that"
+    assert done.result == {"kind": "user_error"}
+
+
+@pytest.mark.parametrize(("result", "says"), [
+    (lambda output: {1, 2}, "not JSON"),                   # a set is no record
+    (lambda output: output["missing"], "could not be read"),
+    (lambda output: (_ for _ in ()).throw(JobFailed("")), "declared it failed"),
+])
+async def test_failed_is_never_silent(tmp_path, result, says):
+    """Whatever went wrong with the result, FAILED comes with a reason."""
+    mgr = JobManager(GraphSpec("g", None, result=result), repository=DictRepository(),
+                     runner=FakeRunner(ended()))
+    done = await mgr.run_job((await mgr.create_job({"q": 1})).job_id)
+    assert done.status is JobStatus.FAILED and says in (done.error or "")
+
+
+async def test_a_run_that_never_returned_is_failed_and_says_so(tmp_path):
+    mgr = make_manager(tmp_path, Fact("plan", PLAN))          # no Output: it never ended
+    done = await mgr.run_job((await mgr.create_job({"q": 1})).job_id)
+    assert done.status is JobStatus.FAILED and "without returning" in (done.error or "")
 
 
 async def test_a_broken_runner_fails_the_job_rather_than_the_caller(tmp_path):
@@ -154,7 +171,7 @@ async def test_a_broken_runner_fails_the_job_rather_than_the_caller(tmp_path):
             yield  # pragma: no cover — makes this an async generator
 
     mgr = JobManager(repository=DictRepository(), runner=Exploding())
-    job = await mgr.create_job("q")
+    job = await mgr.create_job({"q": "q"})
     done = await mgr.run_job(job.job_id)
     assert done.status is JobStatus.FAILED
     assert "engine down" in done.error
@@ -164,21 +181,21 @@ async def test_resuming_goes_through_the_runner_port_too(tmp_path):
     """A resume asks the runner what is still pending and re-enters it — no
     graph, no checkpoint API, nothing the manager knows about LangGraph."""
     mgr = make_manager(tmp_path, Fact("plan", PLAN),
-                       ended("answer", "Finished on the second try."), pending=("cap_alpha",))
-    job = await mgr.create_job("resume me", formats=["markdown"])
+                       ended("Finished on the second try."), pending=("cap_alpha",))
+    job = await mgr.create_job({"q": "resume me"})
     await mgr.cancel_job(job.job_id)
 
     done = await mgr.resume_job(job.job_id)
     assert done.status is JobStatus.DONE
-    assert done.final_answer == "Finished on the second try."
+    assert done.result == {"answer": "Finished on the second try."}
     assert mgr.runner.resumed == [job.job_id]   # re-entered...
     assert mgr.runner.calls == []               # ...never re-run from the query
     assert done.facts["plan"] == PLAN           # and what it published is the job's
 
 
 async def test_resume_is_refused_when_the_runner_has_nothing_pending(tmp_path):
-    mgr = make_manager(tmp_path, ended("answer", "unreachable"))  # pending: ()
-    job = await mgr.create_job("q")
+    mgr = make_manager(tmp_path, ended("unreachable"))  # pending: ()
+    job = await mgr.create_job({"q": "q"})
     await mgr.cancel_job(job.job_id)
     with pytest.raises(ValueError, match="no checkpoint to resume from"):
         await mgr.resume_job(job.job_id)
@@ -189,10 +206,10 @@ async def test_a_resumed_attempt_bills_on_top_of_the_stopped_one(tmp_path):
     """`job.usage` is what the JOB cost, not what its last attempt cost — the
     tokens the interrupted attempt burned were spent all the same."""
     mgr = make_manager(
-        tmp_path, ended("answer", "Done at last."), pending=("cap_alpha",),
+        tmp_path, ended("Done at last."), pending=("cap_alpha",),
         on_resume=lambda: record_usage("claude-opus-5", input_tokens=10, output_tokens=5),
     )
-    job = await mgr.create_job("expensive")
+    job = await mgr.create_job({"q": "expensive"})
     await mgr.cancel_job(job.job_id)
     mgr.repo.summaries[job.job_id]["usage"] = {
         "input_tokens": 100, "output_tokens": 50, "calls": 1,
@@ -214,9 +231,9 @@ async def test_manager_refuses_to_be_built_without_a_backing(tmp_path):
 
 async def test_events_are_published_through_the_port(tmp_path):
     events = InProcessEvents()
-    mgr = make_manager(tmp_path, ended("answer", "done."), events=events)
+    mgr = make_manager(tmp_path, ended("done."), events=events)
     queue = mgr.subscribe()
-    job = await mgr.create_job("watched", session_id="s1")
+    job = await mgr.create_job({"q": "watched"}, session_id="s1")
     await mgr.run_job(job.job_id)
 
     seen = []
@@ -235,7 +252,7 @@ async def test_a_full_subscriber_is_dropped_not_awaited():
     """A stalled consumer must never block a running job."""
     events = InProcessEvents()
     queue = events.subscribe(max_queue=1)
-    job = Job(job_id="j", status=JobStatus.RUNNING, query="q")
+    job = Job(job_id="j", status=JobStatus.RUNNING, label="q")
 
     for _ in range(5):
         await asyncio.wait_for(asyncio.to_thread(events.publish, job_event(job)), timeout=1)
@@ -247,8 +264,8 @@ async def test_a_fact_is_kept_as_it_arrives_whatever_it_says(tmp_path):
     a file the run declared is one more fact (→ docs/design/core-v1.md)."""
     declared = {"path": "r.md", "format": "markdown", "role": "main"}
     mgr = make_manager(tmp_path, Fact("artifact:r.md", declared), Fact("anything", [1, 2]),
-                       ended("answer", "Done."))
-    job = await mgr.create_job("q")
+                       ended("Done."))
+    job = await mgr.create_job({"q": "q"})
     done = await mgr.run_job(job.job_id)
 
     assert done.facts == {"artifact:r.md": declared, "anything": [1, 2]}
@@ -257,21 +274,12 @@ async def test_a_fact_is_kept_as_it_arrives_whatever_it_says(tmp_path):
     assert set(mgr.repo.summaries[job.job_id]["facts_at"]) == {"artifact:r.md", "anything"}
 
 
-async def test_a_failed_report_write_leaves_the_job_done_and_persisted(tmp_path):
-    """The run answered; only the file failed. That is DONE with the error the
-    run reported — and, above all, *persisted*: a job with an answer nobody
-    could reach is what an escaping write once left behind. → 0028"""
-    mgr = make_manager(tmp_path, Fact("plan", PLAN), ended(
-        "answer", "The answer.", write_error="markdown: No space left on device"))
-    job = await mgr.create_job("q", formats=["markdown"])
-    done = await mgr.run_job(job.job_id)
-
-    assert done.status is JobStatus.DONE          # the work is not the file
-    assert done.final_answer == "The answer."
-    assert done.error == "markdown: No space left on device"
+async def test_the_result_is_persisted_with_the_ending(tmp_path):
+    """A job with a result nobody can reach is what an unpersisted ending once
+    left behind (→ 0028): the store holds status and result together."""
+    mgr = make_manager(tmp_path, Fact("plan", PLAN), ended("The answer."))
+    job = await mgr.create_job({"q": 1})
+    await mgr.run_job(job.job_id)
 
     stored = mgr.repo.summaries[job.job_id]       # what a later reader sees
-    assert stored["status"] == "done" and stored["error"] == done.error
-    assert stored["final_answer"] == "The answer."
-
-
+    assert stored["status"] == "done" and stored["result"] == {"answer": "The answer."}

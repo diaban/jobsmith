@@ -6,11 +6,15 @@ BaseStore, and it is the **only** place that knows the namespace schema:
 
 | namespace                     | key        | value                                  |
 |-------------------------------|------------|----------------------------------------|
-| ("jobs", "index")             | job_id     | summary record (status, query, ...)    |
-| ("jobs", job_id, "meta")      | "errors"   | accumulated NodeError list             |
-| ("jobs", job_id, "facts")     | fact key   | {"value": what the run published}      |
-| ("jobs", job_id, "control")   | "lease"    | the owner's claim on a running job     |
-| ("jobs", job_id, "control")   | "cancel"   | a stop requested from any process      |
+| ("jobs_v1", "index")           | job_id     | summary record (status, graph, input…) |
+| ("jobs_v1", job_id, "facts")   | fact key   | {"value": what the run published}      |
+| ("jobs_v1", job_id, "control") | "lease"    | the owner's claim on a running job     |
+| ("jobs_v1", job_id, "control") | "cancel"   | a stop requested from any process      |
+
+`jobs_v1` because the record changed shape with the core split (2026-09-27):
+records written before it, under `jobs`, are left where they are and read by
+nothing — starting clean was decided over a reading shim
+(docs/design/core-v1.md).
 
 The two `control` keys exist only on a store other processes can see
 (`shared`, #10), and each has ONE writer class, which is why they are not
@@ -31,11 +35,11 @@ from typing import Any, Protocol
 
 from langgraph.store.memory import InMemoryStore
 
-from ..dag.state import NodeError
 from .models import Job, JobStatus
 from .ownership import JobControl, Lease
 
 CONTROL = "control"
+ROOT = "jobs_v1"                    # see the schema above
 
 class JobRepository(Protocol):
     """Persistence of job records, in the domain's own vocabulary.
@@ -53,7 +57,6 @@ class JobRepository(Protocol):
         self, *, session_id: str | None = None, status: JobStatus | None = None,
         announced: bool | None = None, updated_since: str | None = None,
     ) -> list[Job]: ...
-    async def save_errors(self, job_id: str, errors: list[NodeError]) -> None: ...
     async def save_fact(self, job_id: str, key: str, value: Any) -> None: ...
     # -- control: only used when `shared` (see ownership.py) --
     async def save_lease(self, job_id: str, lease: Lease) -> None: ...
@@ -99,34 +102,31 @@ class StoreJobRepository:
     # -------- writes --------
 
     async def save_summary(self, job: Job) -> None:
-        await self._io("aput", ("jobs", "index"), job.job_id, job.summary())
-
-    async def save_errors(self, job_id: str, errors: list[NodeError]) -> None:
-        await self._io("aput", ("jobs", job_id, "meta"), "errors", list(errors))
+        await self._io("aput", (ROOT, "index"), job.job_id, job.summary())
 
     async def save_fact(self, job_id: str, key: str, value: Any) -> None:
         """A fact the run published: one key, last write wins."""
-        await self._io("aput", ("jobs", job_id, "facts"), key, {"value": value})
+        await self._io("aput", (ROOT, job_id, "facts"), key, {"value": value})
 
     # -------- control (#10) --------
 
     async def save_lease(self, job_id: str, lease: Lease) -> None:
-        await self._io("aput", ("jobs", job_id, CONTROL), "lease", lease.to_dict())
+        await self._io("aput", (ROOT, job_id, CONTROL), "lease", lease.to_dict())
 
     async def release_lease(self, job_id: str) -> None:
-        await self._io("adelete", ("jobs", job_id, CONTROL), "lease")
+        await self._io("adelete", (ROOT, job_id, CONTROL), "lease")
 
     async def request_cancel(self, job_id: str, at: str) -> None:
-        await self._io("aput", ("jobs", job_id, CONTROL), "cancel", {"requested_at": at})
+        await self._io("aput", (ROOT, job_id, CONTROL), "cancel", {"requested_at": at})
 
     async def clear_cancel(self, job_id: str) -> None:
-        await self._io("adelete", ("jobs", job_id, CONTROL), "cancel")
+        await self._io("adelete", (ROOT, job_id, CONTROL), "cancel")
 
     async def load_control(self, job_id: str) -> JobControl:
         """Lease and cancel request in ONE read — this is the heartbeat's
         round trip, paid every couple of seconds per running job."""
         items = {i.key: i.value for i in
-                 await self._io("asearch", ("jobs", job_id, CONTROL), limit=10)}
+                 await self._io("asearch", (ROOT, job_id, CONTROL), limit=10)}
         lease = items.get("lease")
         cancel = items.get("cancel") or {}
         return JobControl(
@@ -137,11 +137,11 @@ class StoreJobRepository:
     # -------- reads --------
 
     async def load(self, job_id: str) -> Job | None:
-        item = await self._io("aget", ("jobs", "index"), job_id)
+        item = await self._io("aget", (ROOT, "index"), job_id)
         if item is None:
             return None
         job = self._from_summary(job_id, item.value)
-        for fact in await self._io("asearch", ("jobs", job_id, "facts"), limit=_EVERY_ROW):
+        for fact in await self._io("asearch", (ROOT, job_id, "facts"), limit=_EVERY_ROW):
             job.facts[fact.key] = fact.value["value"]
         return job
 
@@ -170,7 +170,7 @@ class StoreJobRepository:
             where["announced"] = announced
         if updated_since is not None:       # ISO timestamps order as text
             where["updated_at"] = {"$gte": updated_since}
-        items = await self._io("asearch", ("jobs", "index"), filter=where or None,
+        items = await self._io("asearch", (ROOT, "index"), filter=where or None,
                                limit=_EVERY_ROW)
         return [self._from_summary(item.key, item.value) for item in items]
 
@@ -179,46 +179,19 @@ class StoreJobRepository:
         return Job(
             job_id=job_id,
             status=JobStatus(s["status"]),
-            query=s["query"],
-            inputs=s.get("inputs") or {},
-            document_name=s.get("document_name") or "",
-            document_title=s.get("document_title") or "",
-            formats=_stored_formats(s),
+            graph=s.get("graph") or "",
+            label=s.get("label") or "",
+            input=s.get("input"),
+            result=s.get("result"),
+            error=s.get("error"),
             session_id=s.get("session_id"),
             created_at=s.get("created_at", ""),
             updated_at=s.get("updated_at", ""),
             facts_at=s.get("facts_at") or {},
             steps=s.get("steps") or {},
-            terminal_kind=s.get("terminal_kind"),
-            final_answer=s.get("final_answer"),
-            error=s.get("error"),
-            deliverable_expected=bool(s.get("deliverable_expected", True)),
             announced=bool(s.get("announced")),
-            usage=s.get("usage") or {},      # absent on records written before #2
+            usage=s.get("usage") or {},
         )
-
-
-def _stored_formats(summary: dict[str, Any]) -> list[str] | None:
-    """`Job.formats` as it was recorded — keeping `None` apart from `[]` (#84).
-
-    The two are different asks now ("you decide" and "no document"), so the
-    obvious `list(s.get("formats") or [])` would read every silent job as one
-    that refused a file. Two vintages of record have to survive it:
-
-    - **before #55** the key is absent — `None`, which is what it meant;
-    - **between #55 and #84** it is `[]` for a job that named no format, which
-      also meant `None`. Such a record is recognised by carrying no
-      `deliverable_expected` key at all, so the empty list is read as silence
-      rather than as a refusal it could not yet express.
-
-    Anything a record written since says, it says on purpose.
-    """
-    formats = summary.get("formats")
-    if formats is None:
-        return None
-    if not formats and "deliverable_expected" not in summary:
-        return None                     # a pre-#84 record: empty meant unstated
-    return list(formats)
 
 
 __all__ = ["JobRepository", "StoreJobRepository"]

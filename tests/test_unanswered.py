@@ -18,7 +18,7 @@ from jobsmith.chat.session import JobNotificationMiddleware
 from jobsmith.dag.builder import build_agent
 from jobsmith.dag.deps import Deps
 from jobsmith.dag.generation import split_declaration
-from jobsmith.dag.jobs import DagJobs
+from jobsmith.dag.jobs import DagJobs, dag_spec
 from jobsmith.dag.registry import CapabilityRegistry
 from jobsmith.dag.report import UNANSWERED_NOTICE, MarkdownReport, build_document
 from jobsmith.dag.report_html import HtmlReport
@@ -124,7 +124,7 @@ async def test_a_declared_refusal_is_never_refined(checkpointer):
 
 def make_manager(store, checkpointer, tmp_path, answer: str) -> JobManager:
     graph, _ = make_graph(checkpointer, answer, tmp_path / "artifacts")
-    return DagJobs(JobManager(graph, store))
+    return DagJobs(JobManager(dag_spec(graph), store))
 
 
 async def test_the_job_is_done_keeps_its_work_and_says_it_did_not_answer(

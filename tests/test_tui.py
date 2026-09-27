@@ -32,7 +32,8 @@ from textual.content import Content
 from textual.widgets import Input, ListView, Static
 
 from jobsmith.artifacts.store import JobOutput
-from jobsmith.engine.models import Job, JobStatus
+from jobsmith.dag.jobs import DagJob
+from jobsmith.engine.models import JobStatus
 from jobsmith.engine.usage import Usage
 from jobsmith.service import AgentService, ServiceUnavailable
 from jobsmith.tui import MISSING, TuiUnavailable
@@ -78,7 +79,7 @@ def spend(tokens: int, cost: float) -> dict[str, Any]:
     return Usage(input_tokens=tokens, calls=1, cost_usd=cost, models=("fake-1",)).to_dict()
 
 
-def canned_jobs() -> list[Job]:
+def canned_jobs() -> list[DagJob]:
     """Five jobs, one per status — real records with frozen timestamps."""
     running = dag_job(
         job_id="9b7e3011-0000-4000-8000-000000000001",
@@ -112,10 +113,10 @@ def canned_jobs() -> list[Job]:
         results={"documents": {"ok": False, "error": "no such directory"}},
         error="documents: no such directory",
     )
-    cancelled = Job(job_id="c04ab244-0000-4000-8000-000000000004",
+    cancelled = dag_job(job_id="c04ab244-0000-4000-8000-000000000004",
                     status=JobStatus.CANCELLED, query="migration plan, events backend",
                     created_at=T0, updated_at=T1)
-    queued = Job(job_id="7e19f455-0000-4000-8000-000000000005",
+    queued = dag_job(job_id="7e19f455-0000-4000-8000-000000000005",
                  status=JobStatus.QUEUED, query="audit the report writers",
                  created_at=T0, updated_at=T0)
     return [running, done, failed, cancelled, queued]
@@ -132,7 +133,7 @@ class CannedService(AgentService):
     mode = "embedded"
     persistent = False
 
-    def __init__(self, jobs: list[Job] | None = None, events: list[dict] | None = None,
+    def __init__(self, jobs: list[DagJob] | None = None, events: list[dict] | None = None,
                  stream_gate: asyncio.Event | None = None,
                  list_gate: asyncio.Event | None = None,
                  missing_files: set[str] | None = None):
@@ -911,8 +912,8 @@ def test_two_steps_of_one_wave_do_not_share_a_line():
 
 def test_a_request_cannot_open_a_tag():
     """Job queries are human (and model) text landing in content markup."""
-    job = Job(job_id="x" * 8, status=JobStatus.QUEUED, query="[b]not bold[/b]",
-              created_at=T0, updated_at=T0)
+    job = dag_job(job_id="x" * 8, status=JobStatus.QUEUED, query="[b]not bold[/b]",
+                  created_at=T0, updated_at=T0)
     row = job_row(job.summary() | {"job_id": job.job_id})
     assert "\\[b]not bold\\[/b]" in row, "the request was not escaped"
 

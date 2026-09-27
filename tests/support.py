@@ -20,9 +20,10 @@ from langgraph.constants import END
 from jobsmith.dag.builder import build_agent
 from jobsmith.dag.capability import Capability, CapabilityBaseState, CapabilitySpec
 from jobsmith.dag.deps import Deps
-from jobsmith.dag.jobs import DagJob, DagJobs
+from jobsmith.dag.jobs import DagJob, DagJobs, dag_spec
 from jobsmith.dag.registry import CapabilityRegistry
 from jobsmith.dag.report import FileReporter, JobDocument, PlanRow
+from jobsmith.dag.state import job_id_of
 from jobsmith.engine.manager import JobManager
 from jobsmith.engine.models import Job, JobStatus
 from jobsmith.engine.usage import Usage
@@ -133,7 +134,7 @@ class ChartCapability(OneStep):
     async def work(self, state: CapabilityBaseState) -> dict:
         from jobsmith.artifacts.store import ArtifactRef, artifact_meta
 
-        self.seen_job_id = state.get("job_id", "")
+        self.seen_job_id = job_id_of(state)
         path = await self.artifacts.write(self.seen_job_id, self.filename, SVG)
         return self._emit_success({"chart": path},
                                   meta=artifact_meta(ArtifactRef(path, title="Revenue chart")))
@@ -144,10 +145,23 @@ class ChartCapability(OneStep):
 
 # ------------------------------------------------------------ a DAG job, as a run leaves it
 
-def dag_job(*, plan=None, results=None, step_finished_at=None, outputs=(), **record) -> DagJob:
-    """A DAG job built by hand: the record's own fields as given, and plan,
-    results, step times and files as the facts a run would have published."""
-    job = Job(**record)
+def dag_job(*, plan=None, results=None, step_finished_at=None, outputs=(), query="",
+            inputs=None, document_name="", document_title="", formats=None,
+            final_answer=None, terminal_kind=None, deliverable_expected=None,
+            **record) -> DagJob:
+    """A DAG job built by hand, as a run would have left it: the request and
+    its document decisions in the job's input, the ending and the answer in
+    its result, plan, results, step times and files as the facts it published.
+    A job with a deliverable asked for a document in that format."""
+    delivered = [o.format for o in outputs if o.role in ("main", "alternate")]
+    if formats is None and (delivered or deliverable_expected):
+        formats = delivered or ["markdown"]
+    job = Job(graph="dag", label=query, input={
+        "query": query, "inputs": inputs or {}, "document_name": document_name,
+        "document_title": document_title, "document_formats": formats}, **record)
+    if final_answer is not None or terminal_kind is not None:
+        job.result = {"terminal_kind": terminal_kind, "final_answer": final_answer,
+                      "errors": [], "document_error": None}
     if plan is not None:
         job.facts["plan"] = plan
     for name, result in (results or {}).items():
@@ -155,7 +169,7 @@ def dag_job(*, plan=None, results=None, step_finished_at=None, outputs=(), **rec
     for name, at in (step_finished_at or {}).items():
         job.facts_at[f"step:{name}"] = at
     for output in outputs:
-        job.facts[f"artifact:{output.path}"] = asdict(output)
+        job.facts[f"artifact:{output.produced_by or output.role}:{output.path}"] = asdict(output)
     return DagJob(job)
 
 
@@ -177,7 +191,7 @@ def make_manager(
                         default_document_formats=default_formats if document_formats else (),
                         reports_dir=tmp_path / "artifacts", reporter=reporter,
                         reporter_for=reporter_for)
-    return DagJobs(JobManager(graph, store), default_formats=default_formats)
+    return DagJobs(JobManager(dag_spec(graph), store), default_formats=default_formats)
 
 
 def planning(*steps: str, deps: dict[str, list[str]] | None = None, **script: str) -> FakeLLM:

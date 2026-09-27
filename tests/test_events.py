@@ -53,7 +53,7 @@ async def test_a_job_another_process_runs_reaches_this_subscriber(tmp_path, shar
             return None
 
         event = await until(heard_it_done, what="the other process's job reaching the subscriber")
-        assert event["query"] == "compare A and B"
+        assert event["label"] == "compare A and B"
         watcher.manager.unsubscribe(queue)
         assert watcher.manager.engine.events._task is None      # nobody listening: nothing polls
     finally:
@@ -127,7 +127,7 @@ async def test_the_first_look_is_quiet_only_about_what_moved_before_subscribing(
     stamp = "2026-09-27T12:00:00.000000+00:00"
     moved = {"before": "2026-09-27T11:59:59.999999+00:00", "at": stamp,
              "after": "2026-09-27T12:00:00.000001+00:00"}
-    jobs = [Job(job_id=name, status=JobStatus.DONE, query=name, updated_at=at)
+    jobs = [Job(job_id=name, status=JobStatus.DONE, label=name, updated_at=at)
             for name, at in moved.items()]
 
     async def load_since(_since):

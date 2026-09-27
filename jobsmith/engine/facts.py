@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from langgraph.config import get_stream_writer
+from langgraph.config import get_config, get_stream_writer
 
 #: Marks a custom stream event as a fact, among whatever else a graph writes there.
 FACT_KEY = "jobsmith_fact"
@@ -25,3 +25,12 @@ def publish(key: str, value: Any) -> None:
     except RuntimeError:              # not inside a graph run
         return
     writer({FACT_KEY: key, "value": value})
+
+
+def current_job_id() -> str | None:
+    """The id of the job running this graph: its LangGraph `thread_id`, seen
+    from any node at any depth. None outside a job's run."""
+    try:
+        return (get_config().get("configurable") or {}).get("thread_id")
+    except RuntimeError:              # not inside a graph run
+        return None

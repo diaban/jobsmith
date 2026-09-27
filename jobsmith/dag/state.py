@@ -32,9 +32,11 @@ Totality, and why `query` is the exception:
 """
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from operator import add
 from typing import Annotated, Any, Required, TypedDict
+
+from ..engine.facts import current_job_id
 
 # ---------- Plan ----------
 
@@ -227,3 +229,10 @@ class AgentState(TypedDict, total=False):
     # --- Terminal status (for routing to user_error / escalate) ---
     terminal_kind: str | None  # "answer" | "unanswered" | "user_error" | "escalated"
     user_error_message: str | None
+
+
+def job_id_of(state: Mapping[str, Any]) -> str:
+    """The job this run belongs to: seeded in the state by a caller that has
+    one (a test driving a node), else the run's own thread id — the engine
+    passes the input as it is and adds nothing to it (docs/design/core-v1.md)."""
+    return state.get("job_id") or current_job_id() or ""

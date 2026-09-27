@@ -23,6 +23,7 @@ from support import CountingEcho, until
 from jobsmith.app.persistence import open_persistence
 from jobsmith.dag.builder import build_agent
 from jobsmith.dag.deps import Deps
+from jobsmith.dag.jobs import dag_spec
 from jobsmith.dag.registry import CapabilityRegistry
 from jobsmith.engine.manager import JobManager
 from jobsmith.engine.models import Job, JobStatus, now_iso
@@ -46,7 +47,7 @@ async def process(db: str, tmp_path, *, slow_delay: float = 30.0,
         alpha, slow = CountingEcho("alpha"), CountingEcho("slow", delay=slow_delay)
         graph = build_agent(Deps(llm=plan_llm()), CapabilityRegistry([alpha, slow]),
                             checkpointer=checkpointer, reports_dir=tmp_path / "artifacts")
-        mgr = JobManager(graph, store, lease=policy)
+        mgr = JobManager(dag_spec(graph), store, lease=policy)
         mgr.caps = (alpha, slow)          # type: ignore[attr-defined]  (test handle)
         yield mgr
 
@@ -64,7 +65,7 @@ async def running_in_slow(mgr: JobManager, job_id: str) -> Job | None:
 
 async def start_slow_job(owner: JobManager) -> tuple[Job, asyncio.Task]:
     """Start a job and return once it is inside `slow`, its second step."""
-    job = await owner.create_job("a job worth stopping")
+    job = await owner.create_job({"query": "a job worth stopping"})
     task = owner.start_job(job.job_id)
     _alpha, slow = owner.caps                  # type: ignore[attr-defined]
 
@@ -126,7 +127,7 @@ async def test_a_job_whose_owner_died_is_recovered(tmp_path):
         jobs = {}
         for name, who, ttl in (("expired", expired, -1), ("crashed", crashed, 30),
                                ("alive", alive, 30)):
-            job = await survivor.create_job(name)
+            job = await survivor.create_job({"query": name})
             await survivor.repo.save_lease(job.job_id, who.lease(ttl))
             job.status = JobStatus.RUNNING
             await survivor.repo.save_summary(job)
@@ -207,7 +208,7 @@ async def test_a_slow_owner_is_never_reported_cancelled_early(tmp_path):
 async def test_a_cancel_of_a_dead_owner_s_job_is_settled_by_the_canceller(tmp_path):
     db = str(tmp_path / "agent.db")
     async with process(db, tmp_path) as other:
-        job = await other.create_job("orphaned")
+        job = await other.create_job({"query": "orphaned"})
         gone = ProcessIdentity(token="gone", host="another-host", pid=1)
         await other.repo.save_lease(job.job_id, gone.lease(-1))
         job.status = JobStatus.RUNNING
@@ -231,7 +232,7 @@ async def test_an_owner_settling_between_the_canceller_s_two_reads_keeps_its_end
     """
     db = str(tmp_path / "agent.db")
     async with process(db, tmp_path) as canceller:
-        job = await canceller.create_job("settled at the worst moment")
+        job = await canceller.create_job({"query": "settled at the worst moment"})
         owner = ProcessIdentity.current()          # alive: our pid, another token
         await canceller.repo.save_lease(job.job_id, owner.lease(30))
         job.status = JobStatus.RUNNING
@@ -274,7 +275,7 @@ async def test_a_takeover_never_writes_over_an_ending_already_written(tmp_path):
     the way, an owner that wrote its ending first keeps it."""
     db = str(tmp_path / "agent.db")
     async with process(db, tmp_path) as other:
-        job = await other.create_job("ended by its owner")
+        job = await other.create_job({"query": "ended by its owner"})
         stale = await other.get_job(job.job_id)     # what the takeover saw
         stale.status = JobStatus.RUNNING
         job.status = JobStatus.DONE                 # what the owner then wrote
@@ -290,7 +291,7 @@ async def test_a_queued_job_cancelled_elsewhere_never_runs(tmp_path):
     instant another cancels it. The request is heard before anything runs."""
     db = str(tmp_path / "agent.db")
     async with process(db, tmp_path) as owner:
-        job = await owner.create_job("cancelled before it started")
+        job = await owner.create_job({"query": "cancelled before it started"})
         await owner.repo.request_cancel(job.job_id, now_iso())   # arrived in between
         settled = await owner.run_job(job.job_id)
         assert settled.status is JobStatus.CANCELLED
@@ -369,11 +370,11 @@ async def test_a_process_local_store_coordinates_nothing(store, checkpointer, tm
     alpha, slow = CountingEcho("alpha"), CountingEcho("slow")
     graph = build_agent(Deps(llm=plan_llm()), CapabilityRegistry([alpha, slow]),
                         checkpointer=checkpointer, reports_dir=tmp_path / "artifacts")
-    mgr = JobManager(graph, store)
+    mgr = JobManager(dag_spec(graph), store)
     assert mgr.repo.shared is False
-    job = await mgr.create_job("q")
+    job = await mgr.create_job({"query": "q"})
     assert (await mgr.run_job(job.job_id)).status is JobStatus.DONE
-    assert await store.asearch(("jobs", job.job_id, "control")) == []
+    assert await store.asearch(("jobs_v1", job.job_id, "control")) == []
 
 
 # ---------------- a real process boundary ----------------

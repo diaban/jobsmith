@@ -22,7 +22,7 @@ from typing import Any
 from ..artifacts.store import declare
 from ..engine.usage import current_ledger
 from .report import Reporter, ReportWriteError, compose_reporters
-from .state import AgentState, CapabilityResult, Plan
+from .state import AgentState, CapabilityResult, Plan, job_id_of
 
 
 @dataclass(frozen=True)
@@ -86,7 +86,7 @@ class DocumentWriter:
             return {}
         ledger = current_ledger()
         view = RunView(
-            job_id=state.get("job_id", ""),            # seeded at entry by the job
+            job_id=job_id_of(state),
             query=state["query"],
             document_name=state.get("document_name", ""),
             document_title=state.get("document_title", ""),

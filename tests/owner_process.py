@@ -21,6 +21,7 @@ from jobsmith.app.persistence import open_persistence
 from jobsmith.dag.builder import build_agent
 from jobsmith.dag.capability import Capability, CapabilityBaseState, CapabilitySpec
 from jobsmith.dag.deps import Deps
+from jobsmith.dag.jobs import dag_spec
 from jobsmith.dag.registry import CapabilityRegistry
 from jobsmith.engine.manager import JobManager
 from jobsmith.engine.ownership import LeasePolicy
@@ -51,8 +52,8 @@ async def main(db: str, reports: str) -> None:
         caps = [Step("alpha", 0.0), Step("slow", 60.0)]
         graph = build_agent(Deps(llm=llm), CapabilityRegistry(caps),
                             checkpointer=checkpointer, reports_dir=reports)
-        mgr = JobManager(graph, store, lease=LeasePolicy(heartbeat=0.1))
-        job = await mgr.create_job("a job owned by another process")
+        mgr = JobManager(dag_spec(graph), store, lease=LeasePolicy(heartbeat=0.1))
+        job = await mgr.create_job({"query": "a job owned by another process"})
         print(job.job_id, flush=True)
         settled = await mgr.run_job(job.job_id)
         print(settled.status.value, flush=True)
