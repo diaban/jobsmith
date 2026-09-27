@@ -87,8 +87,8 @@ async def test_interrupted_job_settled_on_startup(tmp_path):
 
     app = await open_app(tmp_path, db)
     job = await app.manager.create_job("long thing")
-    job.status = JobStatus.RUNNING              # simulate a process killed mid-run
-    await app.manager.engine._persist_summary(job)
+    job.record.status = JobStatus.RUNNING       # simulate a process killed mid-run
+    await app.manager.engine._persist_summary(job.record)
     await app.aclose()
 
     app2 = await open_app(tmp_path, db)         # build_app recovers on startup

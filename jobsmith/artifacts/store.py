@@ -41,10 +41,11 @@ is the agent's business (see `write`).
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from ..engine.facts import publish
 from .paths import safe_name
 
 # `CapabilityResult.meta` key under which a capability declares what it wrote.
@@ -146,7 +147,7 @@ class LocalArtifactStore:
         `name` is a filename, not a path: only its last component is kept, so
         a capability cannot escape the job's directory with `../` — it does
         not know the layout and must not be able to reach outside it. That
-        rule lives in `engine/paths.py` (`safe_name`) rather than here, because
+        rule lives in `artifacts/paths.py` (`safe_name`) rather than here, because
         a *name* chosen by a model is one question this project answers in
         several places — see that module.
 
@@ -164,11 +165,73 @@ class LocalArtifactStore:
         return str(path)
 
 
+
+
+@dataclass
+class JobOutput:
+    """A file the job produced FOR THE HUMAN — the deliverable.
+
+    A job can have several. `role` says what each one is:
+
+    - "main"      the deliverable, exactly one per job — what
+                  `report_path`, `jobsmith report` and `/report` point at
+    - "alternate" the same report rendered in another format (a request
+                  naming two, or `JOBSMITH_REPORT_FORMAT=markdown,html` for a
+                  document asked for without naming one)
+    - "annex"     per-step material a capability produced (a chart, an
+                  exported table) — supporting material, not the report
+
+    `format` is free-form ("markdown", "html", "pdf", ...); `produced_by`
+    names the capability, when a step made the file.
+    """
+
+    path: str
+    format: str = "markdown"
+    title: str = ""
+    role: str = "main"
+    produced_by: str | None = None      # capability name, when a step made it
+
+    @property
+    def name(self) -> str:
+        return Path(self.path).name
+
+
+#: The facts declared files are published under: `artifact:<declarer>:<path>`.
+#: Two declarers of one path are two facts; a reader lists the path once.
+ARTIFACT_FACT = "artifact:"
+
+
+def declare(output: JobOutput) -> None:
+    """Tell the job running this graph that it produced this file.
+
+    A fact like any other (`engine/facts.py`): persisted as it arrives, so a
+    run that stops later keeps it, and meaningless to the engine — listing and
+    ordering the files is the reader's (`dag/jobs.py` for the DAG).
+
+    **Declaring a file that is not there is a promise not kept**, and it is
+    recorded as one (`missing`) at the moment it is made: a reader then says
+    so rather than offering a path to nothing (0041). A file removed later is
+    another fact — the front-ends probe for it when they serve it.
+    """
+    publish(*artifact_fact(output))
+
+
+def artifact_fact(output: JobOutput) -> tuple[str, dict[str, Any]]:
+    """The fact `declare` publishes for this file, checked against the disk now."""
+    missing = {} if Path(output.path).is_file() else {"missing": True}
+    return (f"{ARTIFACT_FACT}{output.produced_by or output.role}:{output.path}",
+            asdict(output) | missing)
+
+
 __all__ = [
     "ARTIFACTS_META_KEY",
+    "ARTIFACT_FACT",
     "ArtifactRef",
     "ArtifactStore",
+    "JobOutput",
     "LocalArtifactStore",
+    "artifact_fact",
     "artifact_meta",
     "artifact_refs",
+    "declare",
 ]

@@ -7,13 +7,12 @@ or a real store again, a responsibility has leaked back into the manager.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict
 
 import pytest
 
 from jobsmith.engine.events import InProcessEvents, job_event
 from jobsmith.engine.manager import JobManager
-from jobsmith.engine.models import Job, JobOutput, JobStatus
+from jobsmith.engine.models import Job, JobStatus
 from jobsmith.engine.repository import StoreJobRepository
 from jobsmith.engine.runner import Fact, Output
 from jobsmith.engine.usage import record_usage
@@ -61,31 +60,26 @@ class DictRepository:
 
     def __init__(self):
         self.summaries: dict[str, dict] = {}
-        self.plans: dict[str, object] = {}
-        self.results: dict[tuple[str, str], dict] = {}
+        self.facts: dict[tuple[str, str], object] = {}
         self.errors: dict[str, list] = {}
 
     async def save_summary(self, job: Job) -> None:
         self.summaries[job.job_id] = job.summary()
 
-    async def save_plan(self, job_id, plan) -> None:
-        self.plans[job_id] = plan
-
     async def save_errors(self, job_id, errors) -> None:
         self.errors[job_id] = list(errors)
 
-    async def save_result(self, job_id, capability, result) -> None:
-        self.results[(job_id, capability)] = result
+    async def save_fact(self, job_id, key, value) -> None:
+        self.facts[(job_id, key)] = value
 
     async def load(self, job_id):
         summary = self.summaries.get(job_id)
         if summary is None:
             return None
         job = StoreJobRepository._from_summary(job_id, summary)
-        job.plan = self.plans.get(job_id)
-        for (jid, capability), result in self.results.items():
+        for (jid, key), value in self.facts.items():
             if jid == job_id:
-                job.results[capability] = result
+                job.facts[key] = value
         return job
 
     async def load_all(self, *, session_id=None, status=None, announced=None,
@@ -101,11 +95,10 @@ class DictRepository:
 PLAN = {"rationale": "because", "steps": [{"capability": "alpha", "depends_on": []}]}
 
 
-def ended(kind, answer=None, *, message=None, errors=(), written=(), write_error=None):
+def ended(kind, answer=None, *, message=None, errors=(), write_error=None):
     """What a DAG run returns, reduced to the keys the job reads of it."""
     return Output({"terminal_kind": kind, "final_answer": answer, "user_error_message": message,
-                   "errors": list(errors), "document_outputs": [asdict(o) for o in written],
-                   "document_error": write_error})
+                   "errors": list(errors), "document_error": write_error})
 
 
 def make_manager(tmp_path, *updates, pending=(), on_resume=None, **kwargs):
@@ -121,23 +114,22 @@ async def test_use_cases_run_without_a_graph_or_a_store(tmp_path):
         tmp_path,
         Fact("plan", PLAN),
         Fact("step:alpha", {"ok": True, "data": {"echo": "hi"}}),
-        ended("answer", "The final answer.", written=[JobOutput(path="report.md", format="markdown")]),
+        ended("answer", "The final answer."),
     )
     job = await mgr.create_job("do it", {"k": "v"}, session_id="s1", formats=["markdown"])
     done = await mgr.run_job(job.job_id)
 
     assert done.status is JobStatus.DONE
     assert done.final_answer == "The final answer."
-    assert done.results["alpha"]["data"]["echo"] == "hi"
-    assert done.step_finished_at["alpha"]
-    assert done.report_path is not None
+    assert done.facts["step:alpha"]["data"]["echo"] == "hi"
+    assert done.facts_at["step:alpha"]
     # the runner received the job's own parameters
     [(job_id, graph_input)] = mgr.runner.calls
     assert job_id == job.job_id and graph_input["query"] == "do it"
     assert graph_input["inputs"] == {"k": "v"}
-    # the repository saw the plan and the step result, through the port only
-    assert mgr.repo.plans[job.job_id] == PLAN
-    assert (job.job_id, "alpha") in mgr.repo.results
+    # the repository saw each fact as it came, through the port only
+    assert mgr.repo.facts[(job.job_id, "plan")] == PLAN
+    assert (job.job_id, "step:alpha") in mgr.repo.facts
 
 
 async def test_terminal_without_answer_fails_and_writes_no_report(tmp_path):
@@ -151,7 +143,7 @@ async def test_terminal_without_answer_fails_and_writes_no_report(tmp_path):
 
     assert done.status is JobStatus.FAILED
     assert done.error == "cannot help with that"
-    assert done.outputs == [] and done.report_path is None
+    assert done.facts == {}
     assert mgr.repo.errors[job.job_id][0]["kind"] == "plan_fail"
 
 
@@ -172,8 +164,7 @@ async def test_resuming_goes_through_the_runner_port_too(tmp_path):
     """A resume asks the runner what is still pending and re-enters it — no
     graph, no checkpoint API, nothing the manager knows about LangGraph."""
     mgr = make_manager(tmp_path, Fact("plan", PLAN),
-                       ended("answer", "Finished on the second try.", written=[JobOutput(path="report.md", format="markdown")]),
-                       pending=("cap_alpha",))
+                       ended("answer", "Finished on the second try."), pending=("cap_alpha",))
     job = await mgr.create_job("resume me", formats=["markdown"])
     await mgr.cancel_job(job.job_id)
 
@@ -182,7 +173,7 @@ async def test_resuming_goes_through_the_runner_port_too(tmp_path):
     assert done.final_answer == "Finished on the second try."
     assert mgr.runner.resumed == [job.job_id]   # re-entered...
     assert mgr.runner.calls == []               # ...never re-run from the query
-    assert done.report_path is not None         # and it still produces its deliverable
+    assert done.facts["plan"] == PLAN           # and what it published is the job's
 
 
 async def test_resume_is_refused_when_the_runner_has_nothing_pending(tmp_path):
@@ -251,20 +242,19 @@ async def test_a_full_subscriber_is_dropped_not_awaited():
     assert queue.qsize() == 1  # the rest were dropped, publish never blocked
 
 
-async def test_the_job_s_deliverables_are_what_the_run_says_it_wrote(tmp_path):
-    """The run writes its own document and says so; the manager assigns what it
-    is handed, and still knows which one is *the* report."""
-    written = [JobOutput(path="r.md", format="markdown"),
-               JobOutput(path="r.html", format="html", role="alternate")]
-    mgr = make_manager(tmp_path, Fact("plan", PLAN), ended("answer", "Done.", written=written))
-    job = await mgr.create_job("q", formats=["markdown"])
+async def test_a_fact_is_kept_as_it_arrives_whatever_it_says(tmp_path):
+    """The manager records a fact under its key, stamped, without reading it:
+    a file the run declared is one more fact (→ docs/design/core-v1.md)."""
+    declared = {"path": "r.md", "format": "markdown", "role": "main"}
+    mgr = make_manager(tmp_path, Fact("artifact:r.md", declared), Fact("anything", [1, 2]),
+                       ended("answer", "Done."))
+    job = await mgr.create_job("q")
     done = await mgr.run_job(job.job_id)
 
-    assert [(o.format, o.role) for o in done.outputs] == [
-        ("markdown", "main"), ("html", "alternate")]
-    assert done.report_path == "r.md"
-    # and the repository — the port, no store — recorded both
-    assert len(mgr.repo.summaries[job.job_id]["outputs"]) == 2
+    assert done.facts == {"artifact:r.md": declared, "anything": [1, 2]}
+    assert set(done.facts_at) == {"artifact:r.md", "anything"}
+    assert mgr.repo.facts[(job.job_id, "artifact:r.md")] == declared
+    assert set(mgr.repo.summaries[job.job_id]["facts_at"]) == {"artifact:r.md", "anything"}
 
 
 async def test_a_failed_report_write_leaves_the_job_done_and_persisted(tmp_path):
@@ -278,11 +268,10 @@ async def test_a_failed_report_write_leaves_the_job_done_and_persisted(tmp_path)
 
     assert done.status is JobStatus.DONE          # the work is not the file
     assert done.final_answer == "The answer."
-    assert done.outputs == [] and done.report_path is None
     assert done.error == "markdown: No space left on device"
 
     stored = mgr.repo.summaries[job.job_id]       # what a later reader sees
     assert stored["status"] == "done" and stored["error"] == done.error
-    assert stored["outputs"] == [] and stored["final_answer"] == "The answer."
+    assert stored["final_answer"] == "The answer."
 
 

@@ -26,10 +26,11 @@ from jobsmith.agents.default.slides import (
     Slide,
     SlideDeckCapability,
 )
+from jobsmith.artifacts.store import LocalArtifactStore, artifact_refs
 from jobsmith.dag.builder import build_agent
 from jobsmith.dag.deps import Deps
+from jobsmith.dag.jobs import DagJobs
 from jobsmith.dag.registry import CapabilityRegistry
-from jobsmith.engine.artifacts import LocalArtifactStore, artifact_refs
 from jobsmith.engine.manager import JobManager
 from jobsmith.engine.models import JobStatus
 
@@ -379,7 +380,7 @@ async def test_the_job_records_the_deck_as_an_annex(store, checkpointer, tmp_pat
                   default="A sufficiently long final answer for the deck test.")
     cap = SlideDeckCapability(llm, LocalArtifactStore(tmp_path / "artifacts"), FakeRenderer())
     graph = build_agent(Deps(llm=llm), CapabilityRegistry([cap]), checkpointer=checkpointer, reports_dir=tmp_path / "artifacts")
-    manager = JobManager(graph, store)
+    manager = DagJobs(JobManager(graph, store))
 
     done = await manager.run_job((await manager.create_job("brief the board", formats=["markdown"])).job_id)
 

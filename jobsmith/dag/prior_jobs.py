@@ -27,7 +27,7 @@ is supplied by the composition root, exactly like `ArtifactStore`: the job
 records belong to the deployment's persistence, not to any agent's idea of a
 document index. `AgentContext` therefore has to be able to name it, and
 `agents/base.py` may not import one agent's module — the same argument that
-put `ArtifactStore` in `engine/artifacts.py`, and it produces the same shape: a
+put `ArtifactStore` in `artifacts/store.py`, and it produces the same shape: a
 port here, an adapter over the jobs layer in `dag/prior.py`, a capability
 that imports neither.
 

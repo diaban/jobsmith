@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from ..engine.repository import JobRepository
 from .capability import default_result_markdown
+from .jobs import DagJob
 from .prior_jobs import PriorJob, PriorJobUnavailable, PriorStep
 
 
@@ -49,7 +50,8 @@ class RepositoryPriorJobs:
         self.repository = repository
 
     async def load(self, job_id: str) -> PriorJob:
-        job = await self.repository.load(job_id)
+        record = await self.repository.load(job_id)
+        job = DagJob(record) if record is not None else None
         if job is None:
             raise PriorJobUnavailable(f"{job_id!r}: no such job")
         steps = tuple(

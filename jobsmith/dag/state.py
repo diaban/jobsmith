@@ -128,7 +128,7 @@ CONVERSATION_INPUT_KEY = "conversation"
 # parameter, shown at the approval interrupt), and whichever capability
 # declares `requires_inputs=("source_files",)` consumes it. The framework
 # carries the key and never opens anything — reading is a port's job, and what
-# a path is allowed to be is `engine/paths.py`.
+# a path is allowed to be is `artifacts/paths.py`.
 SOURCE_FILES_INPUT_KEY = "source_files"
 
 # The jobs a request builds ON — ids of earlier runs whose material this one
@@ -196,8 +196,8 @@ class AgentState(TypedDict, total=False):
     # seeded at entry; "" leaves both to the Reporter (`dag/deliver.py`).
     document_name: str
     document_title: str
-    # What the run's own document step wrote, and why a write failed (#28).
-    document_outputs: list[dict[str, Any]]
+    # Why the run's own document step could not write a format (#28); what it
+    # did write is declared to the job, not kept here.
     document_error: str | None
 
     # --- Planner output ---

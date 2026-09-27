@@ -17,15 +17,16 @@ from support import (
     until,
 )
 
-from jobsmith.dag.capability import CapabilityBaseState
-from jobsmith.dag.report import compose_reporters
-from jobsmith.engine.artifacts import (
+from jobsmith.artifacts.store import (
     ArtifactRef,
     ArtifactStore,
     LocalArtifactStore,
     artifact_meta,
     artifact_refs,
 )
+from jobsmith.dag.capability import CapabilityBaseState
+from jobsmith.dag.jobs import DagJobs
+from jobsmith.dag.report import compose_reporters
 from jobsmith.engine.manager import JobManager
 from jobsmith.engine.models import JobStatus
 
@@ -278,6 +279,7 @@ async def test_a_resumed_job_lists_each_file_exactly_once(store, checkpointer, t
 
 async def test_a_run_that_blew_up_mid_stream_still_lists_what_landed(store, tmp_path):
     """The runner itself raised — a terminal no real graph produces on demand."""
+    from jobsmith.artifacts.store import JobOutput, artifact_fact
     from jobsmith.engine.runner import Fact
 
     chart = tmp_path / "artifacts" / "landed.svg"
@@ -290,12 +292,15 @@ async def test_a_run_that_blew_up_mid_stream_still_lists_what_landed(store, tmp_
                                 "steps": [{"capability": "chart", "depends_on": []}]})
             yield Fact("step:chart", {"ok": True, "data": {}, "meta": artifact_meta(
                 ArtifactRef(str(chart)), ArtifactRef(str(chart.parent / "half.svg")))})
+            for path in (chart, chart.parent / "half.svg"):      # as `declare` would say it
+                yield Fact(*artifact_fact(JobOutput(path=str(path), format="svg",
+                                                    role="annex", produced_by="chart")))
             raise RuntimeError("the graph blew up")
 
         async def pending(self, job_id):
             return ()
 
-    mgr = JobManager(store=store, runner=ExplodingRunner())
+    mgr = DagJobs(JobManager(store=store, runner=ExplodingRunner()))
     done = await run(mgr)
 
     assert done.status is JobStatus.FAILED and done.report_path is None

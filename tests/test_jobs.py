@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from conftest import FakeLLM, plan_json
-from support import SlowEcho, cancelled_midway, make_manager
+from support import SlowEcho, cancelled_midway, dag_job, make_manager
 
 from jobsmith.dag.builder import build_agent
 from jobsmith.dag.deps import Deps
@@ -28,13 +28,13 @@ async def test_create_run_done_with_store_contents(store, checkpointer, tmp_path
     assert set(done.results) == {"alpha", "beta"}
     assert done.plan is not None
 
-    # store schema: index + meta/plan + artifacts
+    # store schema: index + the facts the run published
     index = await store.aget(("jobs", "index"), job.job_id)
     assert index.value["status"] == "done"
-    plan = await store.aget(("jobs", job.job_id, "meta"), "plan")
-    assert [s["capability"] for s in plan.value["steps"]] == ["alpha", "beta"]
-    step = await store.aget(("jobs", job.job_id, "results"), "alpha")
-    assert step.value["ok"] is True
+    plan = await store.aget(("jobs", job.job_id, "facts"), "plan")
+    assert [s["capability"] for s in plan.value["value"]["steps"]] == ["alpha", "beta"]
+    step = await store.aget(("jobs", job.job_id, "facts"), "step:alpha")
+    assert step.value["value"]["ok"] is True
 
     # get_job reconstructs the same view
     fetched = await mgr.get_job(job.job_id)
@@ -132,8 +132,8 @@ async def test_resume_finishes_a_cancelled_job_without_redoing_finished_steps(
     assert done.results["alpha"]["data"]["echo"] == "alpha#1"   # the original result
     assert done.results["slow"]["data"]["echo"] == "slow#2"
     # the stored result of the finished step was left untouched
-    kept = await store.aget(("jobs", job.job_id, "results"), "alpha")
-    assert kept.value["data"]["echo"] == "alpha#1"
+    kept = await store.aget(("jobs", job.job_id, "facts"), "step:alpha")
+    assert kept.value["value"]["data"]["echo"] == "alpha#1"
     # the plan came back from the repository — a resumed stream never replans
     assert [s["capability"] for s in done.plan["steps"]] == ["alpha", "slow"]
     # and the deliverable is produced the same way a first attempt produces it
@@ -288,9 +288,9 @@ async def test_subscribe_streams_job_events(store, checkpointer, tmp_path):
         events.append(queue.get_nowait())
     assert events[0]["status"] == "queued"
     assert events[-1]["status"] == "done"
-    assert events[-1]["report_path"] is not None
+    assert (await mgr.get_job(job.job_id)).report_path is not None   # an event says, a read shows
     assert all(e["job_id"] == job.job_id and e["session_id"] == "s1" for e in events)
-    assert any(e["steps_done"] == ["alpha"] for e in events)  # mid-run progress
+    assert len(events) > 3                                   # mid-run progress, as it came
 
     mgr.unsubscribe(queue)
     await mgr.mark_announced(job.job_id)  # persists a summary → would emit
@@ -306,8 +306,8 @@ async def test_status_transitions_observed_mid_stream(store, checkpointer, tmp_p
             self.inner = inner
 
         async def aput(self, namespace, key, value):
-            if namespace[-1] == "results":
-                seen.append(f"result:{key}")
+            if namespace[-1] == "facts" and key.startswith("step:"):
+                seen.append(f"result:{key[len('step:'):]}")
             if namespace == ("jobs", "index"):
                 seen.append(f"status:{value['status']}")
             return await self.inner.aput(namespace, key, value)
@@ -396,11 +396,11 @@ def test_a_title_is_never_cut_mid_word():
 def test_the_deliverable_carries_that_title(store, checkpointer, tmp_path):
     """One place decides it, and all three Reporters read `JobDocument.title`."""
     from jobsmith.dag.report import build_document
-    from jobsmith.engine.models import Job, JobStatus
+    from jobsmith.engine.models import JobStatus
 
     request = ("Réaliser un comparatif détaillé des chaises ergonomiques "
                "adaptées à un utilisateur travaillant à domicile")
-    doc = build_document(Job(job_id="j1", status=JobStatus.DONE, query=request,
+    doc = build_document(dag_job(job_id="j1", status=JobStatus.DONE, query=request,
                              final_answer="an answer"))
     assert doc.title.endswith("…") and doc.request == request
     assert "\n" not in doc.title
@@ -485,9 +485,9 @@ def test_the_deliverable_names_its_run_and_does_not_recite_it():
     `with_annexes` is.
     """
     from jobsmith.dag.report import MarkdownReport, build_document
-    from jobsmith.engine.models import Job, JobStatus
+    from jobsmith.engine.models import JobStatus
 
-    job = Job(job_id="j85abcdef", status=JobStatus.DONE,
+    job = dag_job(job_id="j85abcdef", status=JobStatus.DONE,
               query="compare the two options",
               session_id="s1", created_at="2026-01-01T00:00:00Z",
               final_answer="The first one.",

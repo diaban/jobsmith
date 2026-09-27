@@ -12,11 +12,12 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
-from support import done_job, make_document
+from support import dag_job, done_job, make_document
 
 from jobsmith.app import build_app
 from jobsmith.app.agent import pick_report_formats
 from jobsmith.app.providers import KeywordChatModel, KeywordLLM
+from jobsmith.artifacts.store import JobOutput
 from jobsmith.dag import report as report_module
 from jobsmith.dag.report import (
     MarkdownReport,
@@ -27,7 +28,7 @@ from jobsmith.dag.report import (
     make_reporter,
 )
 from jobsmith.dag.report_html import HtmlReport, dag_svg, markdown_to_html
-from jobsmith.engine.models import Job, JobOutput, JobStatus
+from jobsmith.engine.models import JobStatus
 
 
 def tags_of(html: str) -> list[str]:
@@ -280,14 +281,14 @@ def test_the_page_carries_the_same_provenance_as_the_markdown_one():
 
 
 def test_write_produces_one_html_output_and_report_path_points_at_it(tmp_path):
-    job = Job(job_id="j9", status=JobStatus.DONE, query="analyse the thing",
-              created_at="2026-09-01T00:00:00Z", final_answer="Here it is.")
+    job = dag_job(job_id="j9", status=JobStatus.DONE, query="analyse the thing",
+                  created_at="2026-09-01T00:00:00Z", final_answer="Here it is.")
     [output] = HtmlReport().write(job, tmp_path)
 
     assert output.format == "html" and output.role == "main"
     assert output.path == str(tmp_path / "j9.html")
-    job.outputs = [output]
-    assert job.report_path == output.path
+    assert dag_job(job_id="j9", status=JobStatus.DONE, query="q",
+                   outputs=[output]).report_path == output.path
     assert "Here it is." in (tmp_path / "j9.html").read_text(encoding="utf-8")
 
 
@@ -300,7 +301,7 @@ def test_annexes_are_folded_in_when_asked(tmp_path):
         def get(self, name):
             return Cap()
 
-    job = Job(job_id="j8", status=JobStatus.DONE, query="q",
+    job = dag_job(job_id="j8", status=JobStatus.DONE, query="q",
               created_at="", final_answer="a",
               plan={"steps": [{"capability": "research", "depends_on": []}]},
               results={"research": {"ok": True, "data": {}}})
@@ -374,7 +375,7 @@ async def test_the_composed_agent_can_hand_back_html(tmp_path):
 def test_both_reporters_read_the_same_document(tmp_path):
     """The point of the split: one document, two serializations, no layout
     logic duplicated — and the markdown one is untouched by any of this."""
-    job = Job(job_id="j7", status=JobStatus.DONE, query="q",
+    job = dag_job(job_id="j7", status=JobStatus.DONE, query="q",
               created_at="", final_answer="An answer.",
               plan={"steps": [{"capability": "research", "depends_on": []}]},
               results={"research": {"ok": True, "data": {}}},
@@ -412,13 +413,13 @@ def test_every_format_is_written_and_the_first_asked_for_is_main(tmp_path, forma
     reporter = compose_reporters(",".join(formats))
     assert reporter.format == formats[0]
 
-    job = done_job()
-    job.outputs = reporter.write(job, tmp_path)
-    assert [(o.format, o.role) for o in job.outputs] == [
+    outputs = reporter.write(done_job(), tmp_path)
+    assert [(o.format, o.role) for o in outputs] == [
         (formats[0], "main"), (formats[1], "alternate")]
-    for output in job.outputs:                   # both really landed on disk
+    for output in outputs:                       # both really landed on disk
         assert "A beats B." in Path(output.path).read_text(encoding="utf-8")
-    assert job.report_path == job.outputs[0].path
+    assert dag_job(job_id="j10", status=JobStatus.DONE, query="q",
+                   outputs=outputs).report_path == outputs[0].path
 
 
 def test_aliases_of_one_format_do_not_write_the_same_file_twice(tmp_path):

@@ -21,6 +21,7 @@ from support import (
     CFG,
     CountingEcho,
     cancelled_midway,
+    dag_job,
     launch_call,
     make_manager,
     make_session,
@@ -28,6 +29,7 @@ from support import (
     wait_settled,
 )
 
+from jobsmith.artifacts.store import JobOutput
 from jobsmith.chat import ChatRunner, ChatSession, JobStarted, Token, ToolFinished
 from jobsmith.chat.session import (
     DEFAULT_INLINE_ANSWER_MAX,
@@ -49,8 +51,9 @@ from jobsmith.chat.tools import (
     running_steps,
 )
 from jobsmith.dag.clients import DEFAULT_MODEL as ANTHROPIC_MODEL
+from jobsmith.dag.jobs import DagJob
 from jobsmith.dag.state import CONVERSATION_INPUT_KEY
-from jobsmith.engine.models import Job, JobOutput, JobStatus, now_iso
+from jobsmith.engine.models import JobStatus, now_iso
 
 
 def assert_notices_hoisted(system):
@@ -137,7 +140,9 @@ async def test_the_answer_is_delivered_verbatim_and_not_through_the_model(
     runner = ChatRunner(session.build())
 
     events = [e async for e in runner.stream(session.session_id, "analyse the alpha data")]
-    (job,) = await session.manager.list_jobs(session_id=session.session_id)
+    (listed,) = await session.manager.list_jobs(session_id=session.session_id)
+    job = await session.manager.get_job(listed.job_id)
+    assert job is not None
 
     delivered = "".join(e.text for e in events if isinstance(e, Token))
     assert job.final_answer and job.final_answer in delivered, \
@@ -455,23 +460,23 @@ ANNEX = JobOutput(path="/tmp/abcdef0123/chart.svg", format="svg", role="annex",
 @pytest.mark.parametrize(("job", "delivered", "says", "never"), ids=[
     "done-with-path", "done-partial-write", "failed-with-annex", "failed-bare", "cancelled",
 ], argvalues=[
-    (Job(job_id="abcdef0123", status=JobStatus.DONE, query="q", final_answer="The answer.",
+    (dag_job(job_id="abcdef0123", status=JobStatus.DONE, query="q", final_answer="The answer.",
          outputs=[JobOutput(path="/tmp/abcdef0123.md")]),
      False, ["Report file: /tmp/abcdef0123.md"], ["No report file"]),
     # the main file failed, a sibling was written: its path, the cause, no null
-    (Job(job_id="abcdef0123", status=JobStatus.DONE, query="q", final_answer="The answer.",
+    (dag_job(job_id="abcdef0123", status=JobStatus.DONE, query="q", final_answer="The answer.",
          error="the html deliverable could not be written: OSError: nope",
          outputs=[JobOutput(path="/tmp/abcdef0123.md", role="alternate")]),
      True, ["/tmp/abcdef0123.md", "html deliverable could not be written",
             "ALREADY been shown"], ["None", "The answer."]),
     # a stopped job's files are announced, and not as a report (→ 0041)
-    (Job(job_id="abcdef0123", status=JobStatus.FAILED, query="q",
+    (dag_job(job_id="abcdef0123", status=JobStatus.FAILED, query="q",
          error="the model refused", outputs=[ANNEX]),
      False, ["FAILED: the model refused", ANNEX.path, "not as a report"], ["Report file"]),
-    (Job(job_id="abcdef0123", status=JobStatus.FAILED, query="q", error="the model refused"),
+    (dag_job(job_id="abcdef0123", status=JobStatus.FAILED, query="q", error="the model refused"),
      False, ["Job abcdef01 ('q') FAILED: the model refused"], ["\n"]),
     # the model's own tool stopped it: not a failure; the delivery error still said
-    (Job(job_id="abcdef0123", status=JobStatus.CANCELLED, query="q",
+    (dag_job(job_id="abcdef0123", status=JobStatus.CANCELLED, query="q",
          error="1 file(s) a step reported producing are missing: chart → gone.svg",
          outputs=[ANNEX]),
      False, ["was CANCELLED before it finished", ANNEX.path, "not as a report", "gone.svg"],
@@ -695,21 +700,27 @@ async def make_running_job(
 ):
     """A job in mid-flight, written straight to the repository — the point is
     the *rendering* of persisted progress, not another run of the engine."""
-    job = await manager.create_job(query, session_id=session_id)
+    job = (await manager.create_job(query, session_id=session_id)).record
     job.status = status
-    job.step_finished_at = {name: now_iso() for name in done}
+    plan = {"steps": [{"capability": s, "depends_on": (deps or {}).get(s, [])} for s in steps],
+            "rationale": "test plan"}
+    await manager.engine.repo.save_fact(job.job_id, "plan", plan)
+    for name in done:
+        await land(manager, job, name)
     await manager.engine.repo.save_summary(job)
-    await manager.engine.repo.save_plan(job.job_id, {
-        "steps": [{"capability": s, "depends_on": (deps or {}).get(s, [])} for s in steps],
-        "rationale": "test plan",
-    })
     return job
+
+
+async def land(manager, job, capability):
+    """A step's result, published as the run would publish it."""
+    job.facts_at[f"step:{capability}"] = now_iso()
+    await manager.engine.repo.save_fact(job.job_id, f"step:{capability}", {"ok": True})
 
 
 async def advance(manager, job, capability):
     """One more step lands."""
-    fresh = await manager.get_job(job.job_id)
-    fresh.step_finished_at[capability] = now_iso()
+    fresh = (await manager.get_job(job.job_id)).record
+    await land(manager, fresh, capability)
     await manager.engine.repo.save_summary(fresh)
     return fresh
 
@@ -894,9 +905,9 @@ async def test_no_jobs_means_no_injection_at_all(store, checkpointer, tmp_path):
 # ---------------- Progress rendering, derived from persisted job data -------
 
 
-def make_job(**kwargs) -> Job:
+def make_job(**kwargs) -> DagJob:
     base = {"job_id": "abcd1234ef", "status": JobStatus.RUNNING, "query": "q", "created_at": ""}
-    return Job(**(base | kwargs))
+    return dag_job(**(base | kwargs))
 
 
 def test_running_steps_is_the_ready_wave():
@@ -932,8 +943,8 @@ def test_progress_signature_ignores_elapsed_time_only():
     before = progress_signature(job)
     assert progress_signature(make_job(plan=job.plan, created_at="2020-01-01T00:00:00+00:00")) \
         == before                                       # age alone is not news
-    job.step_finished_at = {"research": now_iso()}
-    assert progress_signature(job) != before            # a landed step is
+    landed = make_job(plan=job.plan, step_finished_at={"research": now_iso()})
+    assert progress_signature(landed) != before         # a landed step is
 
 
 # ---------------- Where a promoted job's answer lives (#85) ------------------
@@ -1018,17 +1029,17 @@ def test_length_never_decides_when_there_is_no_file_to_decide_against():
     failed, or a request that asked for no document.
     """
     middleware = JobNotificationMiddleware(None, "s1", inline_answer_max=0)
-    answered = Job(job_id="abcdef0123", status=JobStatus.DONE, query="q",
+    answered = dag_job(job_id="abcdef0123", status=JobStatus.DONE, query="q",
                    final_answer="The answer, which is longer than nothing at all.")
     assert middleware._deliver(answered) is True
 
-    with_file = Job(job_id="abcdef0124", status=JobStatus.DONE, query="q",
+    with_file = dag_job(job_id="abcdef0124", status=JobStatus.DONE, query="q",
                     final_answer="The answer, which is longer than nothing at all.",
                     outputs=[JobOutput(path="/tmp/abcdef0124.md")])
     assert middleware._deliver(with_file) is False
 
     # and nothing is ever delivered for a run that has no answer to deliver
-    assert middleware._deliver(Job(job_id="c", status=JobStatus.FAILED, query="q",
+    assert middleware._deliver(dag_job(job_id="c", status=JobStatus.FAILED, query="q",
                                    error="boom")) is False
 
 

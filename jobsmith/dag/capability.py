@@ -20,6 +20,7 @@ from typing import Annotated, Any, Required, TypedDict
 from langgraph.graph import StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from ..artifacts.store import JobOutput, artifact_refs, declare
 from ..engine.facts import publish
 from ..engine.usage import current_ledger
 from .state import AgentState, CapabilityResult, NodeError, merge_results
@@ -153,9 +154,19 @@ class Capability(ABC):
             meta["usage"] = usage.to_dict()
         return meta
 
+    def _declare_files(self, result: CapabilityResult) -> None:
+        """The files this step says it wrote (`artifact_meta`), declared to
+        the job as annexes attributed to it (docs/design/core-v1.md, "Files
+        are facts") — whether the step succeeded or not: a failed step's
+        chart is evidence worth keeping (0041)."""
+        for ref in artifact_refs(result.get("meta")):
+            declare(JobOutput(path=ref.path, format=ref.file_format, title=ref.title,
+                              role="annex", produced_by=self.spec.name))
+
     def _emit_success(self, data: dict[str, Any], meta: dict[str, Any] | None = None) -> dict:
         result: CapabilityResult = {"ok": True, "data": data, "meta": self._usage_meta(meta)}
         publish(f"step:{self.spec.name}", result)     # the job records it as it lands
+        self._declare_files(result)
         return {
             "results": {self.spec.name: result},
             "completed_capabilities": [self.spec.name],
@@ -172,7 +183,7 @@ class Capability(ABC):
 
         `meta` is symmetric with `_emit_success` on purpose: a step that wrote
         a chart and then hit an error has to be able to say so
-        (`artifact_meta(...)`, see `engine/artifacts.py`), or the file it left on
+        (`artifact_meta(...)`, see `artifacts/store.py`), or the file it left on
         disk is recorded nowhere. Same reasoning as the usage stamp below: a
         failed step's evidence is exactly the evidence worth keeping.
         """
@@ -187,6 +198,7 @@ class Capability(ABC):
         result: CapabilityResult = {"ok": False, "error": detail,
                                     "meta": self._usage_meta(meta)}
         publish(f"step:{self.spec.name}", result)
+        self._declare_files(result)
         return {
             "results": {self.spec.name: result},
             "completed_capabilities": [self.spec.name],

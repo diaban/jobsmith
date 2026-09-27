@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import inspect
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,7 @@ from langgraph.constants import END
 from jobsmith.dag.builder import build_agent
 from jobsmith.dag.capability import Capability, CapabilityBaseState, CapabilitySpec
 from jobsmith.dag.deps import Deps
-from jobsmith.dag.jobs import DagJobs
+from jobsmith.dag.jobs import DagJob, DagJobs
 from jobsmith.dag.registry import CapabilityRegistry
 from jobsmith.dag.report import FileReporter, JobDocument, PlanRow
 from jobsmith.engine.manager import JobManager
@@ -130,7 +131,7 @@ class ChartCapability(OneStep):
         self.seen_job_id: str | None = None
 
     async def work(self, state: CapabilityBaseState) -> dict:
-        from jobsmith.engine.artifacts import ArtifactRef, artifact_meta
+        from jobsmith.artifacts.store import ArtifactRef, artifact_meta
 
         self.seen_job_id = state.get("job_id", "")
         path = await self.artifacts.write(self.seen_job_id, self.filename, SVG)
@@ -139,6 +140,23 @@ class ChartCapability(OneStep):
 
     def render_context(self, result):
         return "a chart was drawn"
+
+
+# ------------------------------------------------------------ a DAG job, as a run leaves it
+
+def dag_job(*, plan=None, results=None, step_finished_at=None, outputs=(), **record) -> DagJob:
+    """A DAG job built by hand: the record's own fields as given, and plan,
+    results, step times and files as the facts a run would have published."""
+    job = Job(**record)
+    if plan is not None:
+        job.facts["plan"] = plan
+    for name, result in (results or {}).items():
+        job.facts[f"step:{name}"] = result
+    for name, at in (step_finished_at or {}).items():
+        job.facts_at[f"step:{name}"] = at
+    for output in outputs:
+        job.facts[f"artifact:{output.path}"] = asdict(output)
+    return DagJob(job)
 
 
 # ------------------------------------------------------------ the engine
@@ -370,9 +388,9 @@ def make_document(**over) -> JobDocument:
     return doc
 
 
-def done_job(job_id: str = "j10") -> Job:
-    return Job(job_id=job_id, status=JobStatus.DONE, query="compare A and B",
-               created_at="2026-09-01T00:00:00Z", final_answer="A beats B.")
+def done_job(job_id: str = "j10") -> DagJob:
+    return dag_job(job_id=job_id, status=JobStatus.DONE, query="compare A and B",
+                   created_at="2026-09-01T00:00:00Z", final_answer="A beats B.")
 
 
 # ------------------------------------------------------------ markers

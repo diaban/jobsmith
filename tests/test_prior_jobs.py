@@ -71,14 +71,14 @@ async def test_the_adapter_reads_the_record_in_plan_order(store):
     repository = StoreJobRepository(store)
     job = Job(job_id="j1", status=JobStatus.DONE, query="compare X and Y",
               final_answer="X wins on price.")
-    job.plan = {"steps": [{"capability": "web_search", "depends_on": []},
-                          {"capability": "research", "depends_on": ["web_search"]}],
-                "rationale": "r"}
     await repository.save_summary(job)
-    await repository.save_plan("j1", job.plan)
+    await repository.save_fact("j1", "plan", {
+        "steps": [{"capability": "web_search", "depends_on": []},
+                  {"capability": "research", "depends_on": ["web_search"]}],
+        "rationale": "r"})
     # saved in the OTHER order, as a wave that landed second would
-    await repository.save_result("j1", "research", {"ok": True, "data": {"notes": "N"}})
-    await repository.save_result("j1", "web_search", {
+    await repository.save_fact("j1", "step:research", {"ok": True, "data": {"notes": "N"}})
+    await repository.save_fact("j1", "step:web_search", {
         "ok": True, "data": {"documents": [{"id": "d1", "text": "a page"}]}})
 
     loaded = await RepositoryPriorJobs(repository).load("j1")
@@ -93,8 +93,8 @@ async def test_the_adapter_carries_a_failed_step_as_what_it_said(store):
     dropping the step would read as "that run never searched"."""
     repository = StoreJobRepository(store)
     await repository.save_summary(Job(job_id="j2", status=JobStatus.DONE, query="q"))
-    await repository.save_result("j2", "web_search",
-                                 {"ok": False, "error": "the provider refused"})
+    await repository.save_fact("j2", "step:web_search",
+                               {"ok": False, "error": "the provider refused"})
     loaded = await RepositoryPriorJobs(repository).load("j2")
     assert loaded.steps[0].ok is False
     assert "provider refused" in loaded.steps[0].text

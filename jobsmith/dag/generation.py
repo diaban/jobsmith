@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..engine.artifacts import artifact_refs
+from ..artifacts.store import artifact_refs
 from .deps import Deps
 from .profile import NO_ANSWER_MARKER, AgentProfile
 from .registry import CapabilityRegistry

@@ -496,7 +496,7 @@ download instead, because "no report" would be false — the job has one, on
 disk. `jobsmith report <id>` says the same thing in the terminal.
 
 **A capability can hand back a file** — `slide_deck` is the one that ships.
-It writes through the `ArtifactStore` port (`engine/artifacts.py`) — `write(job_id, name, data) -> path`, backed by a
+It writes through the `ArtifactStore` port (`artifacts/store.py`) — `write(job_id, name, data) -> path`, backed by a
 directory today and by object storage the day that matters — and names what it
 wrote in its result's `meta`; the job records each one as an annex, attributed
 to the step. Annexes never disturb the report: they come after the
