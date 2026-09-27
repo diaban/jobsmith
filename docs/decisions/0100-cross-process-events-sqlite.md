@@ -1,6 +1,6 @@
 # 0100 — Job events cross processes on a SQLite file, by watching `data_version`
 
-- **Issue:** #100 · **PR:** #NN · **Status:** accepted (Postgres: #138)
+- **Issue:** #100 · **PR:** #139 · **Status:** accepted (Postgres: #138)
 - **Rule in `CLAUDE.md`:** "Events cross processes on a SQLite file"
 
 **Context.** `subscribe()` (the TUI's repaint, `/events`) only fanned out what its own process persisted. A job run by `jobsmith chat` did not show up in a `jobsmith ui` on the same database until F5. `BaseStore` cannot answer "what changed anywhere" without rereading the whole index.
