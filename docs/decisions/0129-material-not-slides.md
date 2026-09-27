@@ -1,6 +1,6 @@
 # 0129 — The material steps write no slides: a separate step builds the deck
 
-- **Issue:** #129 · **PR:** #NN · **Status:** accepted
+- **Issue:** #129 · **PR:** #137 · **Status:** accepted
 - **Rule in `CLAUDE.md`:** "The deliverable is written for its reader" (`SUBJECT_ONLY_RULE`)
 
 **Context.** On a deck request, `analysis` designed the slides itself ("Slide 1: …", speaker notes) 8/8 times despite `SUBJECT_ONLY_RULE` ("never design the document"). The generator then pasted that outline into the written answer about half the time (0126, *Controls*).
