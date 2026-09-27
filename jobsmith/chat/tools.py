@@ -354,7 +354,7 @@ async def announce_plan(manager: JobManager, job_id: str,
     """Write the job's plan into the turn the moment it is decided (#86).
 
     Driven by the manager's own event stream, which already says "this job
-    moved" when the plan lands (`PlanReady` persists a summary for exactly
+    moved" when the plan lands (the `plan` fact persists a summary for exactly
     that): an event for this job is a reason to re-read it, and the first
     read that finds a plan announces it and ends the watch. An event says
     *something changed*, never what (0048), so a dropped one costs a later

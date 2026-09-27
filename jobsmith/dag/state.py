@@ -22,8 +22,8 @@ Totality, and why `query` is the exception:
   These schemas are `total=False` because a LangGraph node returns a *partial*
   update — that is right for writes. It is wrong for reads: pyright's
   `reportTypedDictNotRequiredAccess` then rejects `state["query"]` even though
-  the graph is only ever entered with a query (`engine/runner.py` invokes it with
-  `{"query", "inputs", "job_id"}`, and a resume replays that same checkpoint).
+  the graph is only ever entered with a query (`JobManager._graph_input` builds
+  `{"query", "inputs", "job_id", ...}`, and a resume replays that same checkpoint).
   `Required[str]` states that truthfully, and costs nothing on the write side
   because no node is annotated `-> AgentState`: they all return plain `dict`.
   Every other key is genuinely absent until some node writes it, so it stays
@@ -185,12 +185,12 @@ class AgentState(TypedDict, total=False):
     route: str | None           # "plan" | "direct" (see dag/router.py)
 
     # --- What document this run is to leave behind (see dag/document.py) ---
-    # Seeded at entry with what the CALLER already asked for (`engine/runner.py`
-    # passes the job's own `formats`), so the three states are the ones
+    # Seeded at entry with what the CALLER already asked for (the job passes
+    # its own `formats`), so the three states are the ones
     # `Job.formats` has: a list of format names, `[]` for "no document at
     # all", and absent for "nobody has said". `document_intent` writes it only
     # in the last case — which is what keeps a caller that spoke authoritative
-    # — and `engine/runner.py` reads the write back off that node's name.
+    # — and it publishes the `formats` fact whichever way it decided.
     document_formats: list[str] | None
     # What the requester asked the document to be called and titled (#55),
     # seeded at entry; "" leaves both to the Reporter (`dag/deliver.py`).

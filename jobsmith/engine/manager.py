@@ -11,7 +11,7 @@ each of them can change (or be swapped) for its own reasons:
 The defaults wire the v1 stack (LangGraph store, LangGraph graph, in-process
 events), so `JobManager(graph, store)` still works. The deliverable is not
 among them: the run writes its own document and says what it wrote
-(`DocumentWritten`), and the manager records that as it records a step.
+(`document_outputs`, in its output), and the manager records that.
 
 Cancellation semantics: `cancel_job` cancels the in-process asyncio.Task;
 cancellation propagates into the running invocation, the checkpointer retains
@@ -55,16 +55,7 @@ from .ownership import (
     owner_is_gone,
 )
 from .repository import JobRepository, StoreJobRepository
-from .runner import (
-    DocumentWritten,
-    FormatsChosen,
-    GraphRunner,
-    JobUpdate,
-    NodeErrors,
-    PlanReady,
-    StepFinished,
-    Terminal,
-)
+from .runner import Fact, GraphRunner, JobUpdate, Output
 from .usage import Usage, UsageLedger, current_ledger, usage_ledger
 
 # Statuses a job can be resumed from — see `JobManager._begin_resume`.
@@ -86,6 +77,9 @@ ANNOUNCEABLE = (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED)
 # — the checkpoint has nothing pending, so `resume_job` refuses it) or add a
 # sixth status every consumer would have to learn.
 DELIVERED = ("answer", TERMINAL_UNANSWERED)
+
+# The fact a DAG step publishes its result under: `step:<capability>`.
+STEP_FACT = "step:"
 
 # Ledger scope carrying what previous attempts of a resumed job already spent.
 EARLIER_ATTEMPTS = "earlier attempts"
@@ -166,7 +160,7 @@ class JobManager:
         reads as expecting a document it will never get is exactly the
         confusion this field exists to remove. `None` is not yet a decision —
         "write me a report" may still be read out of the query — so it stays
-        True until that step has read it (`_apply`, `FormatsChosen`).
+        True until that step has read it (`_apply`, the `formats` fact).
 
         `DEFAULT_FORMATS_ALIAS` ("default") is resolved here into this
         deployment's `default_formats` (#96): it is how a caller asks for a
@@ -199,9 +193,18 @@ class JobManager:
             raise ValueError(f"job {job_id} is {job.status.value}, expected queued")
         if not await self._begin(job):
             return job
-        return await self._drive(job, self.runner.stream(
-            job.job_id, job.query, job.inputs, job.formats,
-            document_name=job.document_name, document_title=job.document_title))
+        return await self._drive(job, self.runner.stream(job.job_id, self._graph_input(job)))
+
+    @staticmethod
+    def _graph_input(job: Job) -> dict[str, Any]:
+        """What the planner DAG starts from, built from the record it was asked
+        with. `formats` is what the CALLER already asked the document to be:
+        `None` — the request said nothing — is what lets the graph's document
+        step decide; anything else silences it before a single model call
+        (#90). The record's DAG fields leave at step 6b (docs/design/core-v1.md)."""
+        return {"query": job.query, "inputs": job.inputs, "job_id": job.job_id,
+                "document_formats": job.formats, "document_name": job.document_name,
+                "document_title": job.document_title}
 
     async def resume_job(self, job_id: str) -> Job:
         """Re-enter a stopped job's checkpoint and run it to completion.
@@ -464,7 +467,7 @@ class JobManager:
         annexes, missing = self._capability_outputs(job)
         job.outputs = list(deliverables or []) + annexes
         # Said out loud whatever the terminal. A declaration can only exist on
-        # a step that FINISHED (`_apply` writes `results` on `StepFinished`
+        # a step that FINISHED (`_apply` writes `results` on a `step:` fact
         # alone), so a ref with no file is a capability that promised what it
         # did not leave — a defect the run stopping afterwards cannot explain
         # away. It is appended after the failure reason, so "why the run
@@ -486,7 +489,7 @@ class JobManager:
         `GET /jobs/{id}/outputs/{name}` and failing there instead of here.
         Staying silent is no better, **whatever terminal the run reached**: a
         declaration only exists on a step that FINISHED (`_apply` writes
-        `results` on `StepFinished` alone), so a ref with no file behind it is
+        `results` on a `step:` fact alone), so a ref with no file behind it is
         a capability that promised what it did not leave, and a run stopping
         later cannot retroactively explain a promise made by a completed step.
         It lands in `job.error` — the same channel, and the same reasoning, as
@@ -522,11 +525,15 @@ class JobManager:
 
     async def _apply(self, job: Job, update: JobUpdate, errors: list[NodeError],
                      written: list[JobOutput]) -> None:
-        """Fold one domain update from the runner into the job."""
+        """Fold one update from the runner into the job.
+
+        The keys read here are the planner DAG's (`dag/`): the facts it
+        publishes while it runs, and the state it returns. They leave the
+        engine at step 6b of the core split, with the record fields they
+        fill (docs/design/core-v1.md).
+        """
         match update:
-            case NodeErrors(node_errors):
-                errors.extend(node_errors)
-            case FormatsChosen(None):
+            case Fact("formats", None):
                 # The document step finished and wrote nothing. For a caller
                 # who had already spoken that is the node standing aside —
                 # nothing to record. For a request nobody named a format for,
@@ -538,7 +545,7 @@ class JobManager:
                 if job.formats is None and job.deliverable_expected:
                     job.deliverable_expected = False
                     await self._persist_summary(job)
-            case FormatsChosen(formats):
+            case Fact("formats", formats):
                 # The engine read the request for a document the caller said
                 # nothing about (#90). It reaches the record the way every
                 # other graph fact does — the node wrote to state, the runner
@@ -551,7 +558,7 @@ class JobManager:
                     # only ever goes True → False, and this is the True → False.
                     job.deliverable_expected = False
                 await self._persist_summary(job)
-            case PlanReady(plan):
+            case Fact("plan", plan):
                 job.plan = plan
                 await self.repo.save_plan(job.job_id, plan)
                 # The plan is the first thing a watcher can see of a run, and
@@ -560,25 +567,31 @@ class JobManager:
                 # a UI drawing the DAG shows "no plan yet" for the whole of
                 # the first step — a picture that was stale when it was drawn.
                 await self._persist_summary(job)
-            case StepFinished(capability, result):
+            case Fact(key, result) if key.startswith(STEP_FACT):
+                # The step names itself in the fact's key: never read which
+                # step finished off the accumulated `results` (#53).
+                capability = key[len(STEP_FACT):]
                 job.results[capability] = result
                 job.step_finished_at[capability] = now_iso()
                 await self.repo.save_result(job.job_id, capability, result)
                 await self._persist_summary(job)   # touch updated_at for progress
-            case DocumentWritten(outputs, error):
-                # A write that failed leaves the run DONE (#28): the answer is
-                # the work, and `error` says which format and why.
-                written[:] = outputs
-                if error:
-                    job.error = "; ".join(filter(None, [job.error, error]))
-            case Terminal(terminal_kind, final_answer, user_error_message):
-                job.terminal_kind = terminal_kind
-                job.final_answer = final_answer
-                if terminal_kind not in DELIVERED:
+            case Output(value) if isinstance(value, dict):
+                errors.extend(value.get("errors") or [])
+                job.terminal_kind = value.get("terminal_kind")
+                job.final_answer = value.get("final_answer")
+                if job.terminal_kind not in DELIVERED:
                     # `job.error` is why the run could not serve the request.
                     # A declared refusal has no such message: nothing went
                     # wrong, and what was missing is in the answer itself.
-                    job.error = user_error_message
+                    job.error = value.get("user_error_message")
+                # What the run's document step wrote (`dag/deliver.py`). A
+                # write that failed leaves the run DONE (#28): the answer is
+                # the work, and the error says which format and why.
+                written[:] = [JobOutput(**o) for o in value.get("document_outputs") or []]
+                if value.get("document_error"):
+                    job.error = "; ".join(filter(None, [job.error, value["document_error"]]))
+            case _:
+                pass    # a root node finished: nothing on this record says so yet (6b)
 
     def start_job(self, job_id: str) -> asyncio.Task:
         """Fire-and-forget: run the job in a background task (cancellable)."""

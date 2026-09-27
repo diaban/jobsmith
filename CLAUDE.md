@@ -167,8 +167,8 @@ errors: execution_error → escalate (some ok result) | user_error (none) → EN
 - **Router** (`dag/router.py`) is a dedicated triage node — the planner never decides *whether* to plan. Routes live in `Router.routes` (`plan`, `direct` → `DirectResponder`); **fail-open** to `plan`. New route = `Router.routes` entry + node + `AgentBuilder.route_targets` entry. → 0000
   - An **empty registry** routes `"direct"` structurally, before the LLM call, fallback included. → 0038
   - **The direct route is told the files the run delivers**; asked for as a file, its reply is that document (`DIRECT_DOCUMENT_RULE`) — the request is never moved to the planner for it. → 0080
-- **Document intent** (`dag/document.py`), a decision node **before triage**: fills silence, never overrides (a seeded `document_formats` returns before any model call), chooses from `available_formats(registry)` and proves a choice (`confirm`) so it cannot refuse, fail-open (writes nothing = no file), writes only to state (`FormatsChosen`, folded by `JobManager._apply`). → 0090, 0108
-  - **No document unless asked**: `_deliverable_wanted` is `bool(job.formats)`; silence is `FormatsChosen(None)`. **`None` (may be filled) and `[]` (never overridden) are two facts** — never `formats or []`. → 0096
+- **Document intent** (`dag/document.py`), a decision node **before triage**: fills silence, never overrides (a seeded `document_formats` returns before any model call), chooses from `available_formats(registry)` and proves a choice (`confirm`) so it cannot refuse, fail-open (writes nothing = no file), publishes the `formats` fact (folded by `JobManager._apply`). → 0090, 0108
+  - **No document unless asked**: `_deliverable_wanted` is `bool(job.formats)`; silence is the fact `formats = None`. **`None` (may be filled) and `[]` (never overridden) are two facts** — never `formats or []`. → 0096
   - **A file asked for in words is asked for**: "save it to a file" is `requested` whatever else the request asks; a file it is only about is not (`FILE_REQUEST_RULE`). → 0125
 - **Planner** (`dag/planner.py`) renders its prompt from `registry.specs()`, validates the LLM's JSON DAG: names against the registry, drops steps whose `is_applicable(state)` is false (generalizes "vision only if image" via `spec.requires_inputs`), **prunes dropped names from surviving `depends_on`**, Kahn cycle check.
   - A plan emptied by applicability routes to `direct_answer` (`_route_after_planner`); `{"steps": []}` from the model is still an error. → 0038
@@ -189,12 +189,12 @@ Capability `build()` MUST use `self.state_graph(PrivateState)` (which sets `outp
 | `JobRepository` | where records live + **the store schema** | `engine/repository.py` |
 | `GraphRunner` | drives the run, translates it to domain updates | `engine/runner.py` |
 | `JobEvents` | broadcasts progress | `engine/events.py` |
-| — | the deliverable: the run writes it (`write_document`, Reporters) and reports `DocumentWritten` | `dag/deliver.py` |
+| — | the deliverable: the run writes it (`write_document`, Reporters) and returns `document_outputs` | `dag/deliver.py` |
 
 Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `repository=`/`runner=`/`events=` to swap one. `tests/test_job_seams.py` drives the whole lifecycle with **no graph and no store** — if that stops being possible, a responsibility has leaked back in.
 
-- **Only `runner.py` knows LangGraph's stream shape**; it yields `PlanReady`/`StepFinished`/`NodeErrors`/`Terminal`. Graph nodes stay job-agnostic: **new persistence goes in the manager or the repository, never in a node.** → 0000
-  - `PlanReady` persists a summary as soon as the plan exists. **Which step finished is read from the `cap_*` node name**, never from `results`. → 0048, 0053
+- **Only `runner.py` knows LangGraph's stream shape**; it yields `NodeFinished`/`Fact`/`Output` and knows nothing of the graph. Graph nodes stay job-agnostic: **new persistence goes in the manager or the repository, never in a node.** → 0000
+  - The `plan` fact persists a summary as soon as the plan exists. **Which step finished is the `step:<cap>` fact's key**, never read from `results`. → 0048, 0053
 - **Only `repository.py` knows the schema**: `("jobs","index")/job_id` → summary; `("jobs",job_id,"meta")` → plan/errors; `("jobs",job_id,"results")/cap_name` → per-capability result. Fine-grained state stays in the checkpointer under `thread_id == job_id`. Moving job records to SQL is another implementation of this port.
 - **`load_all` is complete**: filters applied by the store, one query, nothing cut; `list_jobs` orders newest first, **then** cuts; what must see everything (announcements, an id, orphans, events) passes `limit=None` — never a bigger number. `tests/test_job_history.py` seeds 250 jobs on every backend. → 0141
 - **`dag/prior.py`** (`RepositoryPriorJobs`) is the only place that knows how a finished run's material is reached. → 0074

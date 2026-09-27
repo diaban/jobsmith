@@ -26,7 +26,6 @@ ALLOWED: set[tuple[str, str]] = {
     ("engine/manager.py", "jobsmith.dag.state"),
     ("engine/models.py", "jobsmith.dag.state"),
     ("engine/repository.py", "jobsmith.dag.state"),
-    ("engine/runner.py", "jobsmith.dag.state"),
 }
 
 
