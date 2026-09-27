@@ -8,6 +8,7 @@ cases, e.g. a throwaway `docker run postgres`); on memory it polls nothing.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 
 import pytest
@@ -85,6 +86,35 @@ async def test_what_existed_before_subscribing_is_not_news_and_one_leaver_stops_
 
         await until(heard_the_new_one, what="the remaining subscriber hearing the new job")
         assert all(e["job_id"] != old.job_id for e in seen)
+    finally:
+        await runner.aclose()
+        await watcher.aclose()
+
+
+async def test_a_job_moved_before_the_watch_first_looks_is_still_news(tmp_path, shared_db):
+    """The watch starts as a task after `subscribe()` returns, so its first look
+    can come after another process already moved a job: moved since subscribing
+    is news all the same, whenever the watch gets to look."""
+    watcher, runner = await _app(tmp_path, shared_db), await _app(tmp_path, shared_db)
+    events = watcher.manager.events
+    gate, watch = asyncio.Event(), events._watch
+
+    async def late_watch():
+        await gate.wait()
+        await watch()
+
+    events._watch = late_watch
+    try:
+        queue = watcher.manager.subscribe()
+        job = await runner.manager.create_job("compare A and B")
+        await runner.manager.run_job(job.job_id)
+        gate.set()
+
+        async def heard_it_done():
+            return any(e["job_id"] == job.job_id and e["status"] == "done"
+                       for e in await _drain(queue))
+
+        await until(heard_it_done, what="a job moved before the first look reaching the subscriber")
     finally:
         await runner.aclose()
         await watcher.aclose()

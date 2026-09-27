@@ -203,7 +203,8 @@ async def build_app(
             events = SqliteWatchEvents(
                 watched, lambda since: repository.load_all(updated_since=since))
         elif (dsn := postgres_dsn(db_spec)) is not None:
-            events = PostgresNotifyEvents(dsn, repository.load)
+            events = PostgresNotifyEvents(
+                dsn, repository.load, lambda since: repository.load_all(updated_since=since))
         if events is not None:
             stack.push_async_callback(events.aclose)
         manager = JobManager(
