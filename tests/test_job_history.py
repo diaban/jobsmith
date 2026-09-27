@@ -45,13 +45,16 @@ async def test_the_newest_job_survives_a_long_history(tmp_path, db):
     me, others = f"me-{uuid.uuid4().hex[:8]}", f"others-{uuid.uuid4().hex[:8]}"   # a reused DB
     try:
         for i in range(HISTORY):
-            await manager.create_job(f"an old job {i}", session_id=others)
+            newest_other = await manager.create_job(f"an old job {i}", session_id=others)
         queue = watcher.manager.subscribe()
         mine = await manager.create_job("compare A and B", session_id=me)
         await manager.run_job(mine.job_id)
 
         assert [j.job_id for j in await manager.list_jobs(session_id=me)] == [mine.job_id]
-        assert (await manager.list_jobs(limit=1))[0].job_id == mine.job_id   # newest first
+        # Newest first, then cut — among what only this test writes: on a shared
+        # database another test may create a newer job at any moment.
+        newest = await manager.list_jobs(session_id=others, limit=1)
+        assert [j.job_id for j in newest] == [newest_other.job_id]
         assert [j.job_id for j in await manager.list_finished_unannounced(me)] == [mine.job_id]
         assert (await _find(manager, me, mine.job_id[:8])).job_id == mine.job_id
         queued = await manager.list_jobs(status=JobStatus.QUEUED, session_id=others, limit=None)
