@@ -159,8 +159,8 @@ validate_input → document_intent → router ─(direct | empty registry)→ di
                               └→ executor_dispatch ⇄ {cap_<name> × registry}
                                 ↓ (all done)                     ↓
                           merge_results → generation → validate_output
-                                              ↑ refine ←┘ (≤ max_refine)  → post_process → END
-                                                         └(could not answer)→ unanswered → END
+                                              ↑ refine ←┘ (≤ max_refine)  → post_process → write_document → END
+                                                         └(could not answer)→ unanswered → write_document → END
 errors: execution_error → escalate (some ok result) | user_error (none) → END
 ```
 
@@ -189,7 +189,7 @@ Capability `build()` MUST use `self.state_graph(PrivateState)` (which sets `outp
 | `JobRepository` | where records live + **the store schema** | `engine/repository.py` |
 | `GraphRunner` | drives the run, translates it to domain updates | `engine/runner.py` |
 | `JobEvents` | broadcasts progress | `engine/events.py` |
-| `Reporter` | produces the deliverable | `dag/report.py` |
+| — | the deliverable: the run writes it (`write_document`, Reporters) and reports `DocumentWritten` | `dag/deliver.py` |
 
 Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `repository=`/`runner=`/`events=` to swap one. `tests/test_job_seams.py` drives the whole lifecycle with **no graph and no store** — if that stops being possible, a responsibility has leaked back in.
 
