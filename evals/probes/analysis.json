@@ -1,0 +1,12 @@
+[
+  {"id": "deck_tcp_udp", "query": "make a short slide deck comparing TCP and UDP", "expect": "falsy"},
+  {"id": "deck_and_summary", "query": "make a short slide deck comparing TCP and UDP, and also save a written summary as a markdown file", "expect": "falsy"},
+  {"id": "presentation_caching", "query": "prepare a presentation on caching strategies for a web API, for my team", "expect": "falsy"},
+  {"id": "deck_heat_pumps", "query": "I need slides on the pros and cons of heat pumps for a homeowners' meeting", "expect": "falsy"},
+  {"id": "deck_rest_graphql", "query": "build a 5-slide deck: REST vs GraphQL for a small team", "expect": "falsy"},
+  {"id": "one_pager", "query": "write a printable one-pager comparing TCP and UDP", "expect": "falsy"},
+  {"id": "pdf_report", "query": "compare REST and GraphQL for a small team, as a PDF", "expect": "falsy"},
+  {"id": "plain_compare", "query": "compare TCP and UDP for a real-time multiplayer game", "expect": "falsy"},
+  {"id": "plain_tradeoffs", "query": "analyse the trade-offs of optimistic and pessimistic locking", "expect": "falsy"},
+  {"id": "summary_file", "query": "summarise the pros and cons of heat pumps, and save that as a file", "expect": "falsy"}
+]
