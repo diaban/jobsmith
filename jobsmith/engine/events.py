@@ -20,7 +20,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Protocol
 
-from .models import Job
+from .models import Job, now_iso
 
 
 def job_event(job: Job) -> dict[str, Any]:
@@ -73,12 +73,18 @@ class WatchedEvents(InProcessEvents):
     for a job another process moved. A job is announced when its `updated_at`
     differs from the last one seen, so this process's own persists (already
     published) and what existed before anyone subscribed are not news.
+
+    "Before anyone subscribed" is the instant `subscribe()` starts the watch,
+    stamped there, synchronously — not the moment the watch first gets to
+    look, which comes later: a job another process moves in between is news,
+    and was once lost there (#145).
     """
 
     def __init__(self) -> None:
         super().__init__()
         self._seen: dict[str, str] = {}
         self._task: asyncio.Task | None = None
+        self._since: str = ""           # when the running watch was asked for
 
     def publish(self, event: dict[str, Any]) -> None:
         self._seen[event["job_id"]] = event.get("updated_at") or ""
@@ -87,6 +93,7 @@ class WatchedEvents(InProcessEvents):
     def subscribe(self, *, max_queue: int = 256) -> asyncio.Queue:
         queue = super().subscribe(max_queue=max_queue)
         if self._task is None or self._task.done():
+            self._since = now_iso()
             try:
                 self._task = asyncio.get_running_loop().create_task(self._watch())
             except RuntimeError:        # no running loop: this process's events only
@@ -149,12 +156,13 @@ class SqliteWatchEvents(WatchedEvents):
     def _data_version(conn: sqlite3.Connection) -> int:
         return conn.execute("PRAGMA data_version").fetchall()[0][0]
 
-    async def _refresh(self, *, announce: bool) -> None:
+    async def _refresh(self, *, quiet_before: str = "") -> None:
         # Only what moved since the last look (`$gte`, so a job persisted in
         # the same instant is not lost; `_announce` drops what was seen): the
-        # whole index is read once, when the watch starts (#141).
+        # whole index is read once, when the watch starts (#141), and that
+        # first look is quiet only about what moved before the subscription.
         for job in await self._load_since(self._watermark):
-            self._announce(job, quietly=not announce)
+            self._announce(job, quietly=job.updated_at < quiet_before)
             if self._watermark is None or job.updated_at > self._watermark:
                 self._watermark = job.updated_at
 
@@ -162,14 +170,14 @@ class SqliteWatchEvents(WatchedEvents):
         conn = await asyncio.to_thread(self._connect)
         try:
             version = await asyncio.to_thread(self._data_version, conn)
-            await self._refresh(announce=False)      # what exists is not news
+            await self._refresh(quiet_before=self._since)   # what existed is not news
             while True:
                 await asyncio.sleep(self._interval)
                 try:
                     now = await asyncio.to_thread(self._data_version, conn)
                     if now != version:
                         version = now
-                        await self._refresh(announce=True)
+                        await self._refresh()
                 except sqlite3.Error:    # a busy file this tick: ask again next one
                     continue
         finally:
@@ -188,10 +196,16 @@ class PostgresNotifyEvents(WatchedEvents):
 
     CHANNEL = "jobsmith_jobs"
 
-    def __init__(self, dsn: str, load: Callable[[str], Awaitable[Job | None]]) -> None:
+    def __init__(
+        self,
+        dsn: str,
+        load: Callable[[str], Awaitable[Job | None]],
+        load_since: Callable[[str], Awaitable[list[Job]]],
+    ) -> None:
         super().__init__()
         self._dsn = dsn
         self._load = load
+        self._load_since = load_since
         self._notifier: Any = None
         self._lock = asyncio.Lock()
         self._sending: set[asyncio.Task] = set()
@@ -222,6 +236,10 @@ class PostgresNotifyEvents(WatchedEvents):
         conn = await AsyncConnection.connect(self._dsn, autocommit=True)
         try:
             await conn.execute(f"LISTEN {self.CHANNEL}")
+            # A NOTIFY sent before the LISTEN reached nobody: what moved since
+            # the subscription is read once, now that nothing more can be missed.
+            for job in await self._load_since(self._since):
+                self._announce(job)
             async for note in conn.notifies():
                 job = await self._load(note.payload)
                 if job is not None:
