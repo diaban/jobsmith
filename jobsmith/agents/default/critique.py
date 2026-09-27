@@ -36,8 +36,8 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from ...core.capability import CapabilitySpec
-from ...core.state import CapabilityResult
+from ...dag.capability import CapabilitySpec
+from ...dag.state import CapabilityResult
 from ._step import SingleStepCapability, StepState
 
 

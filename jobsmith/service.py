@@ -38,7 +38,7 @@ from .chat.runner import (
     ToolFinished,
     ToolStarted,
 )
-from .jobs.report import is_binary_format
+from .dag.report import is_binary_format
 
 # ------------------------------------------------------------------ the port
 
@@ -318,7 +318,7 @@ class AgentService(ABC):
 
     @abstractmethod
     def subscribe(self, *, max_queue: int = 256) -> asyncio.Queue:
-        """A queue of job-progress events (the `jobs/events.job_event` shape).
+        """A queue of job-progress events (the `engine/events.job_event` shape).
 
         Sync because subscribing is not the I/O — draining the queue is. The
         remote backing keeps an HTTP stream open behind it, so a subscription
@@ -435,7 +435,7 @@ class LocalAgentService(AgentService):
         return {"job_id": job.job_id, "status": job.status.value}
 
     async def list_jobs(self, *, status=None, session_id=None) -> list[dict]:
-        from .jobs.models import JobStatus
+        from .engine.models import JobStatus
 
         jobs = await self.manager.list_jobs(
             status=JobStatus(status) if status else None, session_id=session_id, limit=100

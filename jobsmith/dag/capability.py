@@ -20,8 +20,8 @@ from typing import Annotated, Any, Required, TypedDict
 from langgraph.graph import StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from ..engine.usage import current_ledger
 from .state import AgentState, CapabilityResult, NodeError, merge_results
-from .usage import current_ledger
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -75,7 +75,7 @@ class CapabilityBaseState(CapabilityOutputState, total=False):
 
     `job_id` is declared here so a capability that produces a file can name
     the job it writes for (`ArtifactStore.write`). It is deliberately NOT
-    Required: `jobs/runner.py` invokes the graph with it, but a graph driven
+    Required: `engine/runner.py` invokes the graph with it, but a graph driven
     directly (a test, a script) has no job, so it is read with `.get()` — a
     capability with no job to write for should say so rather than invent a
     directory.
@@ -137,7 +137,7 @@ class Capability(ABC):
     def _usage_meta(self, meta: dict[str, Any] | None) -> dict[str, Any]:
         """Stamp what this capability spent onto its own result metadata.
 
-        Read from the ambient ledger (see `core/usage.py`), which the
+        Read from the ambient ledger (see `engine/usage.py`), which the
         JobManager installs for the run: every LLM call made by any node of
         this sub-graph is already booked under the capability's name. Absent
         when nothing was spent — a key of zeroes says less than no key.
@@ -170,7 +170,7 @@ class Capability(ABC):
 
         `meta` is symmetric with `_emit_success` on purpose: a step that wrote
         a chart and then hit an error has to be able to say so
-        (`artifact_meta(...)`, see `core/artifacts.py`), or the file it left on
+        (`artifact_meta(...)`, see `engine/artifacts.py`), or the file it left on
         disk is recorded nowhere. Same reasoning as the usage stamp below: a
         failed step's evidence is exactly the evidence worth keeping.
         """

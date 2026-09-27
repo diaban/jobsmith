@@ -13,9 +13,9 @@ from conftest import FakeLLM, plan_json
 
 from jobsmith.agents.default.documents import DocumentsCapability
 from jobsmith.agents.default.sources import Document, LocalFiles, _chunks
-from jobsmith.core.builder import build_agent
-from jobsmith.core.deps import Deps
-from jobsmith.core.registry import CapabilityRegistry
+from jobsmith.dag.builder import build_agent
+from jobsmith.dag.deps import Deps
+from jobsmith.dag.registry import CapabilityRegistry
 
 
 class FakeSource:

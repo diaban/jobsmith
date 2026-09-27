@@ -15,7 +15,7 @@ from support import until
 
 from jobsmith.app.agent import build_app
 from jobsmith.app.providers import KeywordChatModel, make_llm
-from jobsmith.jobs.events import InProcessEvents, PostgresNotifyEvents, SqliteWatchEvents
+from jobsmith.engine.events import InProcessEvents, PostgresNotifyEvents, SqliteWatchEvents
 
 PG = os.environ.get("JOBSMITH_TEST_PG")
 

@@ -21,12 +21,12 @@ from conftest import FakeLLM, plan_json
 from support import CountingEcho, until
 
 from jobsmith.app.persistence import open_persistence
-from jobsmith.core.builder import build_agent
-from jobsmith.core.deps import Deps
-from jobsmith.core.registry import CapabilityRegistry
-from jobsmith.jobs.manager import JobManager
-from jobsmith.jobs.models import Job, JobStatus, now_iso
-from jobsmith.jobs.ownership import LeasePolicy, ProcessIdentity
+from jobsmith.dag.builder import build_agent
+from jobsmith.dag.deps import Deps
+from jobsmith.dag.registry import CapabilityRegistry
+from jobsmith.engine.manager import JobManager
+from jobsmith.engine.models import Job, JobStatus, now_iso
+from jobsmith.engine.ownership import LeasePolicy, ProcessIdentity
 
 FAST = LeasePolicy(heartbeat=0.05, ttl=30.0, poll=0.02)
 TESTS = Path(__file__).parent
@@ -365,7 +365,7 @@ async def test_a_process_local_store_coordinates_nothing(store, checkpointer, tm
     def no_heartbeat(*a, **kw):
         raise AssertionError("a heartbeat was started on a process-local store")
 
-    monkeypatch.setattr("jobsmith.jobs.manager.Heartbeat", no_heartbeat)
+    monkeypatch.setattr("jobsmith.engine.manager.Heartbeat", no_heartbeat)
     alpha, slow = CountingEcho("alpha"), CountingEcho("slow")
     graph = build_agent(Deps(llm=plan_llm()), CapabilityRegistry([alpha, slow]),
                         checkpointer=checkpointer)

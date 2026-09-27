@@ -40,7 +40,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
-from ..jobs.models import JobStatus
+from ..engine.models import JobStatus
 from ..service import BinaryDeliverable, LocalAgentService
 
 
@@ -72,7 +72,7 @@ class JobIn(BaseModel):
 
 # `JobOutput.format` is free-form domain vocabulary ("markdown", "html", ...);
 # turning it into an HTTP content type is this adapter's business, which is why
-# the table lives here and not in jobs/report.py. An unknown format degrades to
+# the table lives here and not in dag/report.py. An unknown format degrades to
 # plain text rather than a guess — a browser then shows it instead of offering
 # a download of something it cannot name.
 REPORT_MEDIA_TYPES = {

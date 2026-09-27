@@ -26,12 +26,12 @@ from jobsmith.agents.default.slides import (
     Slide,
     SlideDeckCapability,
 )
-from jobsmith.core.artifacts import LocalArtifactStore, artifact_refs
-from jobsmith.core.builder import build_agent
-from jobsmith.core.deps import Deps
-from jobsmith.core.registry import CapabilityRegistry
-from jobsmith.jobs.manager import JobManager
-from jobsmith.jobs.models import JobStatus
+from jobsmith.dag.builder import build_agent
+from jobsmith.dag.deps import Deps
+from jobsmith.dag.registry import CapabilityRegistry
+from jobsmith.engine.artifacts import LocalArtifactStore, artifact_refs
+from jobsmith.engine.manager import JobManager
+from jobsmith.engine.models import JobStatus
 
 DESIGNED = json.dumps({
     "title": "Background jobs",
@@ -116,7 +116,7 @@ async def test_the_model_is_asked_for_a_deck_and_the_file_is_declared():
 
 async def test_the_deck_is_built_from_what_the_other_steps_produced():
     """A deck of the job's material, in a fixed order — `results` arrives in
-    wave order and a consumer must never iterate that (core/state.py)."""
+    wave order and a consumer must never iterate that (dag/state.py)."""
     cap, llm = make_capability()
     await run_capability(cap, job_id="job1", results={
         "critique": {"ok": True, "data": {"critique": "the weak point"}},

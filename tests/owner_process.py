@@ -18,12 +18,12 @@ from conftest import FakeLLM, plan_json
 from langgraph.constants import END
 
 from jobsmith.app.persistence import open_persistence
-from jobsmith.core.builder import build_agent
-from jobsmith.core.capability import Capability, CapabilityBaseState, CapabilitySpec
-from jobsmith.core.deps import Deps
-from jobsmith.core.registry import CapabilityRegistry
-from jobsmith.jobs.manager import JobManager
-from jobsmith.jobs.ownership import LeasePolicy
+from jobsmith.dag.builder import build_agent
+from jobsmith.dag.capability import Capability, CapabilityBaseState, CapabilitySpec
+from jobsmith.dag.deps import Deps
+from jobsmith.dag.registry import CapabilityRegistry
+from jobsmith.engine.manager import JobManager
+from jobsmith.engine.ownership import LeasePolicy
 
 
 class Step(Capability):

@@ -22,21 +22,21 @@ from typing import Any
 from ..agents import get_agent
 from ..agents.base import AgentContext, open_agent_resources
 from ..chat import DEFAULT_CHAT_SYSTEM_PROMPT, ChatSession
-from ..core.artifacts import LocalArtifactStore
-from ..core.builder import AgentBuilder
-from ..core.deps import Deps
-from ..core.registry import CapabilityRegistry
-from ..jobs.events import PostgresNotifyEvents, SqliteWatchEvents, WatchedEvents
-from ..jobs.manager import JobManager
-from ..jobs.prior import RepositoryPriorJobs
-from ..jobs.report import (
+from ..dag.builder import AgentBuilder
+from ..dag.deps import Deps
+from ..dag.prior import RepositoryPriorJobs
+from ..dag.registry import CapabilityRegistry
+from ..dag.report import (
     available_formats,
     compose_reporters,
     ensure_formats_available,
     parse_report_formats,
     renderable_formats,
 )
-from ..jobs.repository import StoreJobRepository
+from ..engine.artifacts import LocalArtifactStore
+from ..engine.events import PostgresNotifyEvents, SqliteWatchEvents, WatchedEvents
+from ..engine.manager import JobManager
+from ..engine.repository import StoreJobRepository
 from .persistence import (
     open_persistence,
     pick_db,
@@ -147,7 +147,7 @@ async def build_app(
         # of what this deployment declares readable: the tree the product's own
         # paths point into, so the report a job just wrote is a file the next
         # request can name. An agent may add what it already exposes by other
-        # means (`--docs`); it may not add anything else. See `core/paths.py`.
+        # means (`--docs`); it may not add anything else. See `engine/paths.py`.
         registry = CapabilityRegistry(
             definition.capabilities(
                 AgentContext(llm, resources, artifacts,

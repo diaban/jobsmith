@@ -33,7 +33,7 @@ it lands, which is the bullet this prompt gained.
 """
 from __future__ import annotations
 
-from ...core.profile import NO_ANSWER_INSTRUCTION, AgentProfile
+from ...dag.profile import NO_ANSWER_INSTRUCTION, AgentProfile
 from ._step import SUBJECT_ONLY_RULE
 
 #: Where the critique's caveats go (→ 0082). Phrased by what the block *is*

@@ -21,7 +21,7 @@ the reader of the deliverable would never learn that a document they named
 was never opened.
 
 **Nothing here knows what a path is allowed to be.** The port refuses, the
-capability reports what it was told. That rule lives in `core/paths.py` and
+capability reports what it was told. That rule lives in `engine/paths.py` and
 is the deployment's to configure — a capability that could widen it would be
 a capability that could read anything.
 """
@@ -31,8 +31,8 @@ from typing import Any, Literal
 
 from langgraph.constants import END
 
-from ...core.capability import Capability, CapabilityBaseState, CapabilitySpec
-from ...core.state import SOURCE_FILES_INPUT_KEY, AgentState, CapabilityResult
+from ...dag.capability import Capability, CapabilityBaseState, CapabilitySpec
+from ...dag.state import SOURCE_FILES_INPUT_KEY, AgentState, CapabilityResult
 from .sources import DocumentReader
 
 

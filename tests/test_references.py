@@ -9,7 +9,7 @@ from support import chat_turn, launch_call, make_manager
 from jobsmith.agents.default.prior_jobs import PriorJobsCapability, referenced_jobs
 from jobsmith.agents.default.read_files import ReadFilesCapability, named_files
 from jobsmith.chat import JobStarted
-from jobsmith.core.state import FROM_JOBS_INPUT_KEY, SOURCE_FILES_INPUT_KEY
+from jobsmith.dag.state import FROM_JOBS_INPUT_KEY, SOURCE_FILES_INPUT_KEY
 
 
 class Nothing:

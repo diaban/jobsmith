@@ -9,7 +9,7 @@ deck-shaped structure is **another generation**. Generations belong on this
 side of the line, where the tokens they burn are attributed to a step and
 booked in the usage ledger like every other call.
 
-What it leaves behind is an **annex** (`core/artifacts.py`): the job's main
+What it leaves behind is an **annex** (`engine/artifacts.py`): the job's main
 deliverable is still the report, and this is one more thing the run produced.
 So the capability writes through the `ArtifactStore` port — it names a *file*,
 never a path — and declares what it wrote in its result's `meta`.
@@ -30,10 +30,10 @@ from typing import Any, Literal, Protocol
 
 from langgraph.constants import END
 
-from ...core.artifacts import ArtifactRef, ArtifactStore, artifact_meta
-from ...core.capability import Capability, CapabilityBaseState, CapabilitySpec
-from ...core.deps import LLMClient
-from ...core.state import CapabilityResult
+from ...dag.capability import Capability, CapabilityBaseState, CapabilitySpec
+from ...dag.deps import LLMClient
+from ...dag.state import CapabilityResult
+from ...engine.artifacts import ArtifactRef, ArtifactStore, artifact_meta
 
 # Bounds on what the model is allowed to hand back. A deck is a document a
 # human presents: past a dozen slides or half a dozen bullets it stops being
@@ -205,7 +205,7 @@ class SlideDeckCapability(Capability):
     #: Where the deck's content comes from, in priority order, and **what
     #: each block is** — `(capability, data key, what this material is)`.
     #: Fixed rather than derived from `results`, which arrives in wave order
-    #: (a consumer must never iterate that, see `core/state.py`).
+    #: (a consumer must never iterate that, see `dag/state.py`).
     #:
     #: The third field is the fix for #58: a deck handed `critique` under a
     #: bare `[critique]` tag rendered it faithfully — two slides of gaps and

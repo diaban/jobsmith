@@ -16,7 +16,7 @@ from support import until
 from jobsmith.app.agent import build_app
 from jobsmith.app.providers import KeywordChatModel, make_llm
 from jobsmith.chat.tools import _find
-from jobsmith.jobs.models import JobStatus
+from jobsmith.engine.models import JobStatus
 
 HISTORY = 250           # past every former cut: 50, 100 and 200
 PG = os.environ.get("JOBSMITH_TEST_PG")

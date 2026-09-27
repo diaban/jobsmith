@@ -45,9 +45,9 @@ from typing import Any, Literal
 
 from langgraph.constants import END
 
-from ...core.capability import Capability, CapabilityBaseState, CapabilitySpec
-from ...core.prior_jobs import PriorJob, PriorJobSource
-from ...core.state import FROM_JOBS_INPUT_KEY, AgentState, CapabilityResult
+from ...dag.capability import Capability, CapabilityBaseState, CapabilitySpec
+from ...dag.prior_jobs import PriorJob, PriorJobSource
+from ...dag.state import FROM_JOBS_INPUT_KEY, AgentState, CapabilityResult
 
 TRUNCATION_NOTE = "\n\n…[truncated: only the first {kept} characters of this material]"
 

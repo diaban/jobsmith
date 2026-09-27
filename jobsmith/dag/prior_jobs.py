@@ -8,7 +8,7 @@ round trip costs more than elegance. The report is a deliverable and not a
 trace, so re-reading it hands the follow-up the thinnest representation of
 the run — the final prose, never the notes or the passages behind it — and
 since #85 it is thinner still: a title, the answer and one line naming the
-job (`jobs/report.py::job_reference`), everything else about the run being
+job (`dag/report.py::job_reference`), everything else about the run being
 recorded rather than recited. The file now carries nothing `final_answer`
 does not, so reading it back is reading the answer through a filesystem and
 losing the material on the way. It also assumes a file that may be on
@@ -27,12 +27,12 @@ is supplied by the composition root, exactly like `ArtifactStore`: the job
 records belong to the deployment's persistence, not to any agent's idea of a
 document index. `AgentContext` therefore has to be able to name it, and
 `agents/base.py` may not import one agent's module — the same argument that
-put `ArtifactStore` in `core/artifacts.py`, and it produces the same shape: a
-port here, an adapter over the jobs layer in `jobs/prior.py`, a capability
+put `ArtifactStore` in `engine/artifacts.py`, and it produces the same shape: a
+port here, an adapter over the jobs layer in `dag/prior.py`, a capability
 that imports neither.
 
 Nothing here names a store, a namespace or a schema. Where a job's records
-live is `jobs/repository.py`'s secret, and a capability reaching into the
+live is `engine/repository.py`'s secret, and a capability reaching into the
 jobs layer for them would be the layering mistake this project avoids
 everywhere else.
 """
@@ -80,7 +80,7 @@ class PriorJob:
     """What one earlier run produced, as far as anyone else needs to know.
 
     `steps` is in **plan order** — the only deterministic order a run has
-    (`results` is filled by parallel waves, see the caveat in `core/state.py`)
+    (`results` is filled by parallel waves, see the caveat in `dag/state.py`)
     — and carries failed steps too: "the web search failed in that run" is
     material for whoever builds on it, the same reasoning `read_files` gives
     for carrying its refusals rather than staying silent about them.

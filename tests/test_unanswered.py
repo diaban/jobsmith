@@ -14,15 +14,15 @@ from conftest import FakeLLM, plan_json
 from support import SlowEcho
 
 from jobsmith.chat.session import JobNotificationMiddleware
-from jobsmith.core.builder import build_agent
-from jobsmith.core.deps import Deps
-from jobsmith.core.generation import split_declaration
-from jobsmith.core.registry import CapabilityRegistry
-from jobsmith.core.state import TERMINAL_UNANSWERED
-from jobsmith.jobs.manager import JobManager
-from jobsmith.jobs.models import Job, JobOutput, JobStatus
-from jobsmith.jobs.report import UNANSWERED_NOTICE, MarkdownReport, build_document
-from jobsmith.jobs.report_html import HtmlReport
+from jobsmith.dag.builder import build_agent
+from jobsmith.dag.deps import Deps
+from jobsmith.dag.generation import split_declaration
+from jobsmith.dag.registry import CapabilityRegistry
+from jobsmith.dag.report import UNANSWERED_NOTICE, MarkdownReport, build_document
+from jobsmith.dag.report_html import HtmlReport
+from jobsmith.dag.state import TERMINAL_UNANSWERED
+from jobsmith.engine.manager import JobManager
+from jobsmith.engine.models import Job, JobOutput, JobStatus
 
 REFUSAL = (
     "NO_ANSWER: the quarterly report the request names was never provided\n"

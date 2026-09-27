@@ -35,8 +35,8 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from jobsmith.core.state import TERMINAL_UNANSWERED
-from jobsmith.jobs.report import UNANSWERED_NOTICE
+from jobsmith.dag.report import UNANSWERED_NOTICE
+from jobsmith.dag.state import TERMINAL_UNANSWERED
 
 from .cases import EvalCase
 from .deliverable import (
@@ -375,7 +375,7 @@ def check_grounding_reaches_reasoning(case: EvalCase, obs: Observation) -> Check
     if not material:
         return _skip(name, "the retrieved material added nothing to the request's own words")
     # Whatever those steps put in their results, whatever its shape: a
-    # capability's payload is its own business (`core/state.py`), so this
+    # capability's payload is its own business (`dag/state.py`), so this
     # reads it as text rather than learning any capability's keys.
     produced = terms(normalize(json.dumps(
         [obs.results.get(step, {}).get("data") for step in downstream],

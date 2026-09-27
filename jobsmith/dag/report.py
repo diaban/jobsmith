@@ -46,10 +46,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from ..core.paths import PathRefused, safe_name
-from ..core.state import TERMINAL_UNANSWERED
-from ..core.usage import Usage
-from .models import Job, JobOutput
+from ..engine.models import Job, JobOutput
+from ..engine.paths import PathRefused, safe_name
+from ..engine.usage import Usage
+from .state import TERMINAL_UNANSWERED
 
 # What a deliverable opens with when the run declared it could not answer
 # (#59). One sentence, above the text, in every format: a file that reads like
@@ -181,7 +181,7 @@ def document_stem(name: str) -> str:
 
     The caller says what the file is *called*; where it goes is this code's
     decision, so `safe_name` refuses anything carrying a separator instead of
-    flattening it (`core/paths.py` answers that once, for annexes too).
+    flattening it (`engine/paths.py` answers that once, for annexes too).
 
     The extension is dropped when it names a format we know: a user asking for
     `rapport.md` and a PDF of the same thing is asking for one document under

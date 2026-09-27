@@ -9,9 +9,9 @@ from jobsmith.agents.banking.capabilities.refs import RefsCapability
 from jobsmith.agents.banking.capabilities.search import SearchCapability
 from jobsmith.agents.banking.capabilities.vision import VisionCapability
 from jobsmith.agents.banking.profile import BANKING_PROFILE
-from jobsmith.core.builder import AgentBuilder
-from jobsmith.core.deps import Deps
-from jobsmith.core.registry import CapabilityRegistry
+from jobsmith.dag.builder import AgentBuilder
+from jobsmith.dag.deps import Deps
+from jobsmith.dag.registry import CapabilityRegistry
 
 
 def banking_builder(llm: FakeLLM, checkpointer, store, *, search=None) -> AgentBuilder:

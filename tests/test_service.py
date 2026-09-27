@@ -33,7 +33,7 @@ from support import (
 
 from jobsmith.api import create_api
 from jobsmith.cli.client import DaemonClient, EmbeddedClient
-from jobsmith.jobs.models import Job, JobOutput, JobStatus
+from jobsmith.engine.models import Job, JobOutput, JobStatus
 from jobsmith.service import (
     AgentService,
     BinaryDeliverable,
