@@ -25,8 +25,9 @@ from jobsmith.artifacts.store import (
     artifact_refs,
 )
 from jobsmith.dag.capability import CapabilityBaseState
-from jobsmith.dag.jobs import DagJobs
+from jobsmith.dag.jobs import DagJobs, dag_spec
 from jobsmith.dag.report import compose_reporters
+from jobsmith.dag.state import job_id_of
 from jobsmith.engine.manager import JobManager
 from jobsmith.engine.models import JobStatus
 
@@ -43,7 +44,7 @@ class HalfChartCapability(ChartCapability):
     """Writes its file, then fails: `_emit_failure` takes a `meta` too."""
 
     async def work(self, state: CapabilityBaseState) -> dict:
-        path = await self.artifacts.write(state.get("job_id", ""), self.filename, SVG)
+        path = await self.artifacts.write(job_id_of(state), self.filename, SVG)
         return self._emit_failure("the export died after the file was written",
                                   meta=artifact_meta(ArtifactRef(path, title="Half a chart")))
 
@@ -173,7 +174,7 @@ async def test_files_are_listed_in_plan_order_and_never_twice(store, checkpointe
 
     class Copycat(ChartCapability):
         async def work(self, state):
-            path = str(tmp_path / "artifacts" / state.get("job_id", "") / "first.svg")
+            path = str(tmp_path / "artifacts" / job_id_of(state) / "first.svg")
             return self._emit_success({"chart": path}, meta=artifact_meta(ArtifactRef(path)))
 
     mgr = drawing(store, checkpointer, tmp_path, second, first,
@@ -300,7 +301,7 @@ async def test_a_run_that_blew_up_mid_stream_still_lists_what_landed(store, tmp_
         async def pending(self, job_id):
             return ()
 
-    mgr = DagJobs(JobManager(store=store, runner=ExplodingRunner()))
+    mgr = DagJobs(JobManager(dag_spec(None), store=store, runner=ExplodingRunner()))
     done = await run(mgr)
 
     assert done.status is JobStatus.FAILED and done.report_path is None

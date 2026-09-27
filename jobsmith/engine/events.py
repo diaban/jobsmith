@@ -29,7 +29,7 @@ def job_event(job: Job) -> dict[str, Any]:
         "job_id": job.job_id,
         "status": job.status.value,
         "session_id": job.session_id,
-        "query": job.query[:80],
+        "label": job.label[:80],
         "updated_at": job.updated_at,
         "usage": job.usage,          # spend so far: live, not only at the end
     }

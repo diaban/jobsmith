@@ -44,7 +44,6 @@ from jobsmith.dag.report import (
     document_stem,
 )
 from jobsmith.engine.models import JobStatus
-from jobsmith.engine.repository import StoreJobRepository
 
 NAME = "chair_comparison"
 
@@ -123,16 +122,6 @@ async def test_silence_and_no_file_stay_two_facts_through_the_store(
     assert (await mgr.get_job(refused.job_id)).formats == []
 
 
-async def test_a_record_older_than_the_field_reads_as_unstated(store):
-    """Before #84 an empty `formats` meant "the deployment decides", and such a
-    record has no `deliverable_expected` key — that is how it is recognised."""
-    await store.aput(("jobs", "index"), "old1", {
-        "status": "cancelled", "query": "q", "formats": [],
-        "created_at": "2026-01-01T00:00:00+00:00"})
-    job = await StoreJobRepository(store).load("old1")
-    assert job is not None and job.formats is None and job.deliverable_expected is True
-
-
 # ------------------------------------------------ decided by the document step
 
 @pytest.mark.parametrize(("reply", "formats", "suffix"), ids=["named", "requested", "none", "unspecified"], argvalues=[
@@ -151,8 +140,7 @@ async def test_the_request_s_own_words_decide_the_file(
     assert done.status is JobStatus.DONE and done.formats == formats
     assert done.deliverable_expected is (suffix is not None) and done.error is None
     assert done.report_path is None if suffix is None else done.report_path.endswith(suffix)
-    index = await store.aget(("jobs", "index"), done.job_id)
-    assert index.value["formats"] == formats
+    assert (await mgr.get_job(done.job_id)).formats == formats     # as the store has it
 
 
 async def test_a_caller_who_named_formats_is_not_second_guessed(store, checkpointer, tmp_path):
@@ -173,8 +161,7 @@ async def test_no_file_is_recorded_when_decided_even_if_the_run_then_fails(
     done = await run(mgr, "compare X and Y")
 
     assert done.status is JobStatus.FAILED and done.deliverable_expected is False
-    index = await store.aget(("jobs", "index"), done.job_id)
-    assert index.value["deliverable_expected"] is False
+    assert (await mgr.get_job(done.job_id)).deliverable_expected is False
 
 
 # ======================================================== its name and title

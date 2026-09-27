@@ -25,7 +25,7 @@ from ..artifacts.store import LocalArtifactStore
 from ..chat import DEFAULT_CHAT_SYSTEM_PROMPT, ChatSession
 from ..dag.builder import AgentBuilder
 from ..dag.deps import Deps
-from ..dag.jobs import DagJobs
+from ..dag.jobs import DagJobs, dag_spec
 from ..dag.prior import RepositoryPriorJobs
 from ..dag.registry import CapabilityRegistry
 from ..dag.report import (
@@ -212,7 +212,7 @@ async def build_app(
         if events is not None:
             stack.push_async_callback(events.aclose)
         manager = DagJobs(
-            JobManager(graph, store, repository=repository, events=events),
+            JobManager(dag_spec(graph), store, repository=repository, events=events),
             default_formats=default_formats,
         )
         # A previous process may have died mid-run: settle those jobs first.

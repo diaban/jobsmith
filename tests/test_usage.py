@@ -19,7 +19,7 @@ from jobsmith.dag.builder import build_agent
 from jobsmith.dag.capability import CapabilityBaseState
 from jobsmith.dag.clients import AnthropicLLMClient, OpenAILLMClient
 from jobsmith.dag.deps import Deps
-from jobsmith.dag.jobs import DagJob, DagJobs
+from jobsmith.dag.jobs import DagJob, DagJobs, dag_spec
 from jobsmith.dag.registry import CapabilityRegistry
 from jobsmith.dag.report import MarkdownReport, build_document, format_step_usage, format_usage
 from jobsmith.engine.manager import JobManager
@@ -197,7 +197,7 @@ def make_manager(store, checkpointer, tmp_path, caps_spec, *, fail=()):
     )
     caps = [Metered(name, llm, calls=calls, fail=name in fail) for name, calls in caps_spec]
     graph = build_agent(Deps(llm=llm), CapabilityRegistry(caps), checkpointer=checkpointer, reports_dir=tmp_path / "artifacts")
-    return DagJobs(JobManager(graph, store)), llm
+    return DagJobs(JobManager(dag_spec(graph), store)), llm
 
 
 # ---------------------------------------------------------------- end to end
@@ -478,7 +478,7 @@ async def test_two_jobs_running_at_once_never_bill_each_other(store, checkpointe
                       default="A sufficiently long final answer for this run.")
         graph = build_agent(Deps(llm=llm), CapabilityRegistry([capability]),
                             checkpointer=MemorySaver(), reports_dir=tmp_path / "artifacts")
-        return DagJobs(JobManager(graph, store))
+        return DagJobs(JobManager(dag_spec(graph), store))
 
     alpha, beta = manager_for("alpha", 100), manager_for("beta", 7)
     job_a = await alpha.create_job("A")

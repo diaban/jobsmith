@@ -35,12 +35,14 @@ feature.
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
-from ..dag.state import TERMINAL_UNANSWERED, NodeError
 from .events import InProcessEvents, JobEvents, job_event
+from .graph import GraphSpec, JobFailed
 from .models import Job, JobStatus, now_iso
 from .ownership import (
     Heartbeat,
@@ -63,16 +65,8 @@ RESUMABLE = (JobStatus.CANCELLED, JobStatus.FAILED)
 # otherwise say nothing about what it produced.
 ANNOUNCEABLE = (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED)
 
-# The terminals of a run that did its work and has something to hand back: it
-# answered, or it declared — as data, from the generator — that the material
-# does not answer the request (#59). Both are DONE and both get a deliverable
-# written, because nothing failed in either: the graph ran to the end, every
-# step reported, the tokens were spent and the files are on disk. Which of the
-# two it was is `terminal_kind`'s to say; making the *status* carry it would
-# either call a refusal a crash (FAILED misreports the work, and is a dead end
-# — the checkpoint has nothing pending, so `resume_job` refuses it) or add a
-# sixth status every consumer would have to learn.
-DELIVERED = ("answer", TERMINAL_UNANSWERED)
+# The name a graph handed over bare (not as a GraphSpec) is known by.
+DEFAULT_GRAPH = "default"
 
 # Ledger scope carrying what previous attempts of a resumed job already spent.
 EARLIER_ATTEMPTS = "earlier attempts"
@@ -81,21 +75,36 @@ EARLIER_ATTEMPTS = "earlier attempts"
 class JobManager:
     def __init__(
         self,
-        graph: Any = None,
+        graph: GraphSpec | Any = None,
         store: Any = None,
         *,
+        graphs: Sequence[GraphSpec] = (),
         repository: JobRepository | None = None,
         runner: GraphRunner | None = None,
         events: JobEvents | None = None,
         lease: LeasePolicy | None = None,
     ):
+        """`graph` is the default graph — a `GraphSpec`, or a compiled graph
+        whose output is its result; `graphs` are more, each run by its name.
+        A `runner` replaces the default graph's (tests drive the lifecycle
+        with no graph at all)."""
         if repository is None and store is None:
             raise ValueError("JobManager needs a store or an explicit repository")
-        if runner is None and graph is None:
+        if runner is None and graph is None and not graphs:
             raise ValueError("JobManager needs a graph or an explicit runner")
-        self.graph = graph
+        specs = list(graphs)
+        if graph is not None:
+            specs.insert(0, graph if isinstance(graph, GraphSpec) else GraphSpec(DEFAULT_GRAPH, graph))
+        self.default_graph = specs[0].name if specs else DEFAULT_GRAPH
+        self.specs: dict[str, GraphSpec] = {spec.name: spec for spec in specs}
+        self.specs.setdefault(self.default_graph, GraphSpec(self.default_graph, None))
+        self._runners: dict[str, GraphRunner] = {
+            spec.name: GraphRunner(spec.graph) for spec in specs}
+        if runner is not None:
+            self._runners[self.default_graph] = runner
+        self.graph = self.specs[self.default_graph].graph      # the default one's
+        self.runner: GraphRunner = self._runners[self.default_graph]
         self.repo: JobRepository = repository or StoreJobRepository(store)
-        self.runner: GraphRunner = runner or GraphRunner(graph)
         self.events: JobEvents = events or InProcessEvents()
         self._tasks: dict[str, asyncio.Task] = {}  # in-process cancellation handles
         # Who this manager is on the leases it writes, and the timings of
@@ -119,31 +128,24 @@ class JobManager:
 
     async def create_job(
         self,
-        query: str,
-        inputs: dict[str, Any] | None = None,
+        input: Any = None,
         *,
+        graph: str | None = None,
+        label: str = "",
         session_id: str | None = None,
-        document_name: str = "",
-        document_title: str = "",
-        formats: list[str] | None = None,
     ) -> Job:
-        """Record a job, QUEUED, as the caller already checked it (`dag/jobs.py`).
-
-        `formats == []` — no file at all — is recorded as
-        `deliverable_expected=False` here and now, because it is known here
-        and now (#84); `None` is not yet a decision — "write me a report" may
-        still be read out of the query — so it stays True until the graph's
-        document step has read it (`_apply`, the `formats` fact).
-        """
+        """Record a job, QUEUED: `input` reaches the graph as it is (JSON), and
+        `label` is the one line a listing shows. An unknown graph is refused
+        here, in front of whoever asked."""
+        name = graph or self.default_graph
+        if name not in self._runners:
+            raise ValueError(f"no graph named {name!r} here: {sorted(self._runners)}")
         job = Job(
             job_id=uuid.uuid4().hex,
             status=JobStatus.QUEUED,
-            query=query,
-            inputs=inputs or {},
-            document_name=document_name,
-            document_title=document_title,
-            formats=formats,
-            deliverable_expected=formats != [],
+            graph=name,
+            label=label,
+            input=input,
             session_id=session_id,
             created_at=now_iso(),
         )
@@ -157,18 +159,15 @@ class JobManager:
             raise ValueError(f"job {job_id} is {job.status.value}, expected queued")
         if not await self._begin(job):
             return job
-        return await self._drive(job, self.runner.stream(job.job_id, self._graph_input(job)))
+        return await self._drive(job, self._runner(job).stream(job.job_id, job.input))
 
-    @staticmethod
-    def _graph_input(job: Job) -> dict[str, Any]:
-        """What the planner DAG starts from, built from the record it was asked
-        with. `formats` is what the CALLER already asked the document to be:
-        `None` — the request said nothing — is what lets the graph's document
-        step decide; anything else silences it before a single model call
-        (#90). The record's DAG fields leave at step 6b (docs/design/core-v1.md)."""
-        return {"query": job.query, "inputs": job.inputs, "job_id": job.job_id,
-                "document_formats": job.formats, "document_name": job.document_name,
-                "document_title": job.document_title}
+    def _runner(self, job: Job) -> GraphRunner:
+        if job.graph == self.default_graph:
+            return self.runner                 # swappable, as tests swap it
+        runner = self._runners.get(job.graph)
+        if runner is None:
+            raise ValueError(f"job {job.job_id} runs {job.graph!r}, which this process does not have")
+        return runner
 
     async def resume_job(self, job_id: str) -> Job:
         """Re-enter a stopped job's checkpoint and run it to completion.
@@ -176,7 +175,7 @@ class JobManager:
         See `_begin_resume` for what may be resumed and why.
         """
         job = await self._begin_resume(job_id)
-        return await self._drive(job, self.runner.resume(job.job_id), resumed=True)
+        return await self._drive(job, self._runner(job).resume(job.job_id), resumed=True)
 
     async def _require(self, job_id: str) -> Job:
         job = await self.get_job(job_id)
@@ -232,12 +231,13 @@ class JobManager:
                 f"job {job_id} is {job.status.value}, expected "
                 f"{' or '.join(s.value for s in RESUMABLE)}"
             )
-        if not await self.runner.pending(job_id):
+        if not await self._runner(job).pending(job_id):
             raise ValueError(
                 f"job {job_id} has no checkpoint to resume from: it either never "
                 f"started or already reached its last step"
             )
         job.error = None          # the stopped attempt's message is stale now
+        job.result = None         # ...and so is anything it returned
         # ...and so is the fact that the stop was announced: a job picked back
         # up is news again. Without this, a cancelled job announced in its
         # session and then resumed to DONE is filtered out of
@@ -258,7 +258,7 @@ class JobManager:
         resumed attempt therefore persists, reports and emits events exactly
         like a first one.
         """
-        errors: list[NodeError] = []
+        returned: list[Any] = []            # what the run returned, if it did
         # One ledger per run — a fresh one, so a job launched from inside
         # another run can never bill its parent. Every LLM call underneath
         # books into it, attributed to the graph step that made it.
@@ -276,7 +276,10 @@ class JobManager:
         with usage_ledger(ledger):
             try:
                 async for update in updates:
-                    await self._apply(job, update, errors)
+                    if isinstance(update, Output):
+                        returned[:] = [update.value]
+                    else:
+                        await self._apply(job, update)
             except asyncio.CancelledError:
                 if watch is not None:
                     watch.stop()        # before any await: nothing may cancel the settling
@@ -311,17 +314,7 @@ class JobManager:
                 if watch is not None:
                     watch.stop()
 
-            if errors:
-                await self.repo.save_errors(job.job_id, errors)
-            job.status = JobStatus.DONE if job.terminal_kind in DELIVERED else JobStatus.FAILED
-            if job.status is JobStatus.DONE and not self._deliverable_wanted(job):
-                # It answered and nobody wanted a document of it: a decision,
-                # recorded — the flag goes True → False and never back, so a
-                # job that asked for no file does not silently re-promise one
-                # by failing. Usually already recorded by now (`create_job`
-                # for `[]`, the document step for silence); this is the
-                # backstop for a graph with no document step at all.
-                job.deliverable_expected = False
+            self._conclude(job, returned)
             await self._persist_summary(job)
             if watch is not None:
                 await self._release(job, watch)
@@ -356,99 +349,51 @@ class JobManager:
               f"this one ran it; stopped without writing]", file=sys.stderr)
         return await self.get_job(job.job_id) or job
 
-    @staticmethod
-    def _deliverable_wanted(job: Job) -> bool:
-        """Is this run meant to leave a document behind (#84, #96)?
+    def _conclude(self, job: Job, returned: list[Any]) -> None:
+        """What a run that went to the end made of itself: DONE with a result,
+        or FAILED with a reason — never FAILED in silence.
 
-        **Only if the request asked for one.** `formats` non-empty — named by
-        the caller, or read out of the sentence by the graph's document step
-        (#90), or asked for without a format and resolved to the deployment's
-        default — is a file, whatever the run turned out to be: a reader who
-        asked for a PDF gets one even if the router answered on the spot,
-        since handing them nothing over how a triage step read their sentence
-        would be a second silent decision. `[]` and `None` are no file.
-
-        `None` used to be answered by the plan's shape — a run that planned
-        and executed capabilities wrote the deployment's formats, one that
-        answered direct did not (#84). That was deliberate while a run
-        **promoted** to the background (#83) had no other place its answer
-        survived word for word: the completion notice handed it to the chat
-        model, which synthesised it. #85 gave the promoted run the same
-        verbatim channel a synchronous one uses, and guaranteed that a run
-        with no file is delivered whatever its length — which removed the
-        only reason silence meant a file. So the rule #84 stated for the
-        requests that spoke now holds for the silent ones too: **the request
-        decides, not the plan, not the duration and not the door**. A plan's
-        shape says how much work the answer took, which is not what anybody
-        asked about a file.
-
-        The answer is no harder to reach for it: it is on the record
-        (`final_answer`, `GET /jobs/{id}`, `jobsmith job <id>`), `jobsmith run
-        --wait` prints it, and the conversation carries it in full (#83, #85).
+        The result is its graph's `GraphSpec.result` of what the run returned;
+        that may raise `JobFailed` for a run that declared it failed, and must
+        be JSON, since the record is. A stream that ended without returning
+        (a graph paused at an interrupt) has nothing to conclude from.
         """
-        return bool(job.formats)
+        if not returned:
+            job.status, job.error = JobStatus.FAILED, "the run ended without returning"
+            return
+        try:
+            result = self.specs[job.graph].result(returned[0])
+        except JobFailed as failed:
+            job.status = JobStatus.FAILED
+            job.error = failed.reason or "the run declared it failed"
+            job.result = failed.result if _is_json(failed.result) else None
+            return
+        except Exception as e:
+            job.status, job.error = JobStatus.FAILED, f"its result could not be read: {e!r}"
+            return
+        if not _is_json(result):
+            job.status, job.error = JobStatus.FAILED, "its result is not JSON"
+            return
+        job.status, job.result = JobStatus.DONE, result
 
-    async def _apply(self, job: Job, update: JobUpdate, errors: list[NodeError]) -> None:
+    async def _apply(self, job: Job, update: JobUpdate) -> None:
         """Fold one update from the runner into the job.
 
         A fact is recorded as it arrives, whatever it says (`engine/facts.py`):
         persisted under its key, stamped with when it came, and announced — a
         fact is progress. A root node that finished is noted, and travels with
-        the next write. What remains below of the planner DAG's words
-        (`formats`, the keys of its output) leaves at step 6b.3 of the core
-        split, with the record fields it fills (docs/design/core-v1.md).
+        the next write.
         """
         match update:
             case Fact(key, value):
                 job.facts[key] = value
                 job.facts_at[key] = now_iso()
                 await self.repo.save_fact(job.job_id, key, value)
-                if key == "formats":
-                    self._fold_formats(job, value)
                 await self._persist_summary(job)
             case NodeFinished(node):
                 job.steps[node] = now_iso()
-            case Output(value) if isinstance(value, dict):
-                errors.extend(value.get("errors") or [])
-                job.terminal_kind = value.get("terminal_kind")
-                job.final_answer = value.get("final_answer")
-                if job.terminal_kind not in DELIVERED:
-                    # `job.error` is why the run could not serve the request.
-                    # A declared refusal has no such message: nothing went
-                    # wrong, and what was missing is in the answer itself.
-                    job.error = value.get("user_error_message")
-                # A document write that failed leaves the run DONE (#28): the
-                # answer is the work, and the error says which format and why.
-                if value.get("document_error"):
-                    job.error = "; ".join(filter(None, [job.error, value["document_error"]]))
             case _:
                 pass
-
-    @staticmethod
-    def _fold_formats(job: Job, formats: list[str] | None) -> None:
-        if formats is None:
-                # The document step finished and wrote nothing. For a caller
-                # who had already spoken that is the node standing aside —
-                # nothing to record. For a request nobody named a format for,
-                # it is the decision #96 made: silence is no file, and this is
-                # the moment it is known — so recorded now, as `create_job`
-                # records `[]`, rather than left for the terminal to discover.
-                # `formats` stays `None`: "said nothing" and "said no file"
-                # remain two facts on the record (#84), with one outcome.
-            if job.formats is None:
-                job.deliverable_expected = False
-            return
-                # The engine read the request for a document the caller said
-                # nothing about (#90). It reaches the record the way every
-                # other graph fact does — the node wrote to state, the runner
-                # translated it, and the fold happens here: a node that called
-                # the repository itself would be the first one that does.
-        job.formats = formats
-        if not formats:
-            # Known now, so recorded now, exactly as `create_job` records it
-            # for a caller who asked for no file. The flag only ever goes
-            # True → False, and this is the True → False.
-            job.deliverable_expected = False
 
     def start_job(self, job_id: str) -> asyncio.Task:
         """Fire-and-forget: run the job in a background task (cancellable)."""
@@ -463,7 +408,7 @@ class JobManager:
         checks run here, and only the driving is backgrounded.
         """
         job = await self._begin_resume(job_id)
-        self._background(job.job_id, self._drive(job, self.runner.resume(job.job_id),
+        self._background(job.job_id, self._drive(job, self._runner(job).resume(job.job_id),
                                                  resumed=True))
         return job
 
@@ -705,3 +650,11 @@ class JobManager:
         if job is not None and not job.announced:
             job.announced = True
             await self._persist_summary(job)
+
+
+def _is_json(value: Any) -> bool:
+    try:
+        json.dumps(value)
+    except (TypeError, ValueError):
+        return False
+    return True

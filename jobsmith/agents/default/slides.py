@@ -33,7 +33,7 @@ from langgraph.constants import END
 from ...artifacts.store import ArtifactRef, ArtifactStore, artifact_meta
 from ...dag.capability import Capability, CapabilityBaseState, CapabilitySpec
 from ...dag.deps import LLMClient
-from ...dag.state import CapabilityResult
+from ...dag.state import CapabilityResult, job_id_of
 
 # Bounds on what the model is allowed to hand back. A deck is a document a
 # human presents: past a dozen slides or half a dozen bullets it stops being
@@ -271,7 +271,7 @@ class SlideDeckCapability(Capability):
         # driven outside a job has none. Checked BEFORE the model call: a deck
         # is a file, and there is nowhere to keep it, so composing one would
         # only spend tokens on something nobody could ever open.
-        if not state.get("job_id", ""):
+        if not job_id_of(state):
             return {"failure": "no job to write a deck for: a deck is a file and a "
                                "run outside a job has nowhere to keep it"}
         try:
@@ -302,7 +302,7 @@ class SlideDeckCapability(Capability):
         # Both are guaranteed by `design`, which the router only leaves for
         # here once it has written a deck (and it refuses to run without a job).
         deck = Deck.from_dict(state.get("deck") or {})
-        job_id = state.get("job_id", "")
+        job_id = job_id_of(state)
         try:
             data = await self.renderer.render(deck)
             path = await self.artifacts.write(job_id, deck_filename(self.renderer), data)

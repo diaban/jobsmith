@@ -11,6 +11,7 @@ from support import SlowEcho, cancelled_midway, dag_job, make_manager
 
 from jobsmith.dag.builder import build_agent
 from jobsmith.dag.deps import Deps
+from jobsmith.dag.profile import DEFAULT_EMPTY_QUERY_MESSAGE
 from jobsmith.dag.registry import CapabilityRegistry
 from jobsmith.engine.models import JobStatus
 from jobsmith.engine.runner import Fact, GraphRunner
@@ -29,11 +30,11 @@ async def test_create_run_done_with_store_contents(store, checkpointer, tmp_path
     assert done.plan is not None
 
     # store schema: index + the facts the run published
-    index = await store.aget(("jobs", "index"), job.job_id)
+    index = await store.aget(("jobs_v1", "index"), job.job_id)
     assert index.value["status"] == "done"
-    plan = await store.aget(("jobs", job.job_id, "facts"), "plan")
+    plan = await store.aget(("jobs_v1", job.job_id, "facts"), "plan")
     assert [s["capability"] for s in plan.value["value"]["steps"]] == ["alpha", "beta"]
-    step = await store.aget(("jobs", job.job_id, "facts"), "step:alpha")
+    step = await store.aget(("jobs_v1", job.job_id, "facts"), "step:alpha")
     assert step.value["value"]["ok"] is True
 
     # get_job reconstructs the same view
@@ -55,8 +56,18 @@ async def test_failed_job_records_error_and_errors_meta(store, checkpointer, tmp
     assert done.status is JobStatus.FAILED
     assert done.terminal_kind == "escalated"
     assert done.error is not None
-    errors = await store.aget(("jobs", job.job_id, "meta"), "errors")
-    assert any(e["kind"] == "generation_fail" for e in errors.value)
+    assert any(e["kind"] == "generation_fail" for e in done.record.result["errors"])
+
+
+async def test_a_rejected_request_fails_with_the_profile_s_own_words(
+    store, checkpointer, tmp_path
+):
+    """A run that ends at `user_error` declared it could not serve the request:
+    FAILED, and never in silence — the error is what the profile says."""
+    mgr = make_manager(store, checkpointer, tmp_path)
+    done = await mgr.run_job((await mgr.create_job("   ")).job_id)
+    assert done.status is JobStatus.FAILED and done.terminal_kind == "user_error"
+    assert done.error == DEFAULT_EMPTY_QUERY_MESSAGE
 
 
 async def test_run_requires_queued(store, checkpointer, tmp_path):
@@ -132,7 +143,7 @@ async def test_resume_finishes_a_cancelled_job_without_redoing_finished_steps(
     assert done.results["alpha"]["data"]["echo"] == "alpha#1"   # the original result
     assert done.results["slow"]["data"]["echo"] == "slow#2"
     # the stored result of the finished step was left untouched
-    kept = await store.aget(("jobs", job.job_id, "facts"), "step:alpha")
+    kept = await store.aget(("jobs_v1", job.job_id, "facts"), "step:alpha")
     assert kept.value["value"]["data"]["echo"] == "alpha#1"
     # the plan came back from the repository — a resumed stream never replans
     assert [s["capability"] for s in done.plan["steps"]] == ["alpha", "slow"]
@@ -146,8 +157,8 @@ async def test_resume_settles_a_job_its_process_died_on(store, checkpointer, tmp
     checkpoint. A *new process* over the same store must be able to finish it."""
     mgr, job, alpha, slow = await cancelled_midway(store, checkpointer, tmp_path)
     # what a killed process actually leaves behind: a RUNNING record + checkpoint
-    record = await store.aget(("jobs", "index"), job.job_id)
-    await store.aput(("jobs", "index"), job.job_id, record.value | {"status": "running"})
+    record = await store.aget(("jobs_v1", "index"), job.job_id)
+    await store.aput(("jobs_v1", "index"), job.job_id, record.value | {"status": "running"})
 
     # a fresh manager and a fresh graph over the same store and checkpointer
     restarted = make_manager(store, checkpointer, tmp_path, caps=[alpha, slow],
@@ -308,7 +319,7 @@ async def test_status_transitions_observed_mid_stream(store, checkpointer, tmp_p
         async def aput(self, namespace, key, value):
             if namespace[-1] == "facts" and key.startswith("step:"):
                 seen.append(f"result:{key[len('step:'):]}")
-            if namespace == ("jobs", "index"):
+            if namespace == ("jobs_v1", "index"):
                 seen.append(f"status:{value['status']}")
             return await self.inner.aput(namespace, key, value)
 

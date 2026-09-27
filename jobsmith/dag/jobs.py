@@ -14,15 +14,55 @@ from dataclasses import asdict
 from typing import Any
 
 from ..artifacts.store import ARTIFACT_FACT, JobOutput
+from ..engine.graph import GraphSpec, JobFailed
 from ..engine.manager import JobManager
 from ..engine.models import Job, JobStatus
 from .report import document_stem, ensure_formats_available
-from .state import CapabilityResult, Plan
+from .state import TERMINAL_UNANSWERED, CapabilityResult, Plan
 
 #: The facts the DAG publishes (`dag/planner.py`, `dag/capability.py`).
 PLAN_FACT = "plan"
 STEP_FACT = "step:"
 _ROLE_ORDER = {"main": 0, "alternate": 1}
+
+#: The name the planner DAG runs under in the engine.
+DAG_GRAPH = "dag"
+
+# The terminals of a run that did its work and has something to hand back: it
+# answered, or it declared — as data, from the generator — that the material
+# does not answer the request (#59). Both are DONE, because nothing failed in
+# either: the graph ran to the end, every step reported, the tokens were spent
+# and the files are on disk. Which of the two it was is `terminal_kind`'s to
+# say; making the *status* carry it would either call a refusal a crash
+# (FAILED misreports the work, and is a dead end — the checkpoint has nothing
+# pending, so a resume refuses it) or add a sixth status every consumer would
+# have to learn.
+DELIVERED = ("answer", TERMINAL_UNANSWERED)
+
+
+def dag_result(output: dict[str, Any]) -> dict[str, Any]:
+    """What a DAG run's final state makes of the job: its ending, its answer,
+    the errors its nodes met, and why its document could not be written.
+
+    A run that ended anywhere but a DELIVERED terminal (`user_error`,
+    `escalate`) declared it could not serve the request: `JobFailed`, with
+    the message it gave and this same result kept.
+    """
+    result = {
+        "terminal_kind": output.get("terminal_kind"),
+        "final_answer": output.get("final_answer"),
+        "errors": list(output.get("errors") or []),
+        "document_error": output.get("document_error"),
+    }
+    if result["terminal_kind"] not in DELIVERED:
+        raise JobFailed(output.get("user_error_message")
+                        or f"the run ended as {result['terminal_kind']!r}", result=result)
+    return result
+
+
+def dag_spec(graph: Any) -> GraphSpec:
+    """The planner DAG, as the job engine runs it."""
+    return GraphSpec(DAG_GRAPH, graph, result=dag_result)
 
 
 class DagJob:
@@ -31,10 +71,9 @@ class DagJob:
     The engine's record knows facts, not plans: this view derives what a DAG
     run IS from what it published — its plan, each step's result and when it
     landed, the files it declared — and renders it in the shape every
-    front-end already reads. What the record still carries of the DAG itself
-    (the request, the answer, the document decisions) leaves it at step 6b.3
-    of the core split (docs/design/core-v1.md), and this view reads it from
-    the input and the result then.
+    front-end already reads. The request and its document decisions are the
+    job's `input` (built by `DagJobs.create_job`), the ending and the answer
+    its `result` (`dag_result`).
 
     A view of a SUMMARY (a listing) has no fact values: no plan, no results,
     no files — `get_job` has them. Step times come with every summary.
@@ -42,6 +81,8 @@ class DagJob:
 
     def __init__(self, record: Job):
         self.record = record
+        self._input: dict[str, Any] = record.input if isinstance(record.input, dict) else {}
+        self._result: dict[str, Any] = record.result if isinstance(record.result, dict) else {}
 
     # ---- what the record carries as is ----
 
@@ -55,23 +96,27 @@ class DagJob:
 
     @property
     def query(self) -> str:
-        return self.record.query
+        return self._input.get("query") or self.record.label
 
     @property
     def inputs(self) -> dict[str, Any]:
-        return self.record.inputs
+        return self._input.get("inputs") or {}
 
     @property
     def document_name(self) -> str:
-        return self.record.document_name
+        return self._input.get("document_name") or ""
 
     @property
     def document_title(self) -> str:
-        return self.record.document_title
+        return self._input.get("document_title") or ""
 
     @property
     def formats(self) -> list[str] | None:
-        return self.record.formats
+        """What the document is to be: what the caller named, else what the
+        graph's document step read out of the request (#90). Three states:
+        a list, `[]` for no document at all, `None` for nobody said (#84)."""
+        asked = self._input.get("document_formats")
+        return asked if asked is not None else self.record.facts.get("formats")
 
     @property
     def session_id(self) -> str | None:
@@ -87,15 +132,27 @@ class DagJob:
 
     @property
     def final_answer(self) -> str | None:
-        return self.record.final_answer
+        return self._result.get("final_answer")
 
     @property
     def terminal_kind(self) -> str | None:
-        return self.record.terminal_kind
+        return self._result.get("terminal_kind")
 
     @property
     def deliverable_expected(self) -> bool:
-        return self.record.deliverable_expected
+        """Was a document meant to be written at all (#84)? False says its
+        absence is the *decision* and not a failure: the request asked for no
+        document, or said nothing about one — neither the caller nor the
+        graph's document step (#96). Until that step has read the request,
+        silence is not yet a decision, so it reads True; it only ever goes
+        True → False. It exists because `report_path is None` already means
+        two other things: the run did not answer, and the write failed."""
+        if self.formats:
+            return True
+        if self._input.get("document_formats") == []:
+            return False
+        decided = "formats" in self.record.facts or self.status is JobStatus.DONE
+        return not decided
 
     @property
     def announced(self) -> bool:
@@ -180,7 +237,8 @@ class DagJob:
                 for _, output, missing in self._declared() if missing]
         missing = (f"{len(gone)} file(s) a step reported producing are missing: "
                    f"{', '.join(gone)}" if gone else "")
-        return "; ".join(filter(None, [self.record.error, missing])) or None
+        return "; ".join(filter(None, [self.record.error, self._result.get("document_error"),
+                                       missing])) or None
 
     @property
     def report_path(self) -> str | None:
@@ -256,9 +314,18 @@ class DagJobs:
         wanted = await asyncio.to_thread(
             ensure_formats_available, formats, default=self.default_formats)
         return DagJob(await self.engine.create_job(
-            query, inputs, session_id=session_id,
-            document_name=document_stem(document_name) if document_name.strip() else "",
-            document_title=document_title.strip(), formats=wanted))
+            {
+                "query": query,
+                "inputs": inputs or {},
+                # What the requester asked the DOCUMENT to be (#55), decided
+                # once, never re-derived at write time; each defaults on its
+                # own. `document_formats` seeded is what silences the graph's
+                # document step (#90): None lets it read the request.
+                "document_name": document_stem(document_name) if document_name.strip() else "",
+                "document_title": document_title.strip(),
+                "document_formats": wanted,
+            },
+            graph=DAG_GRAPH, label=query, session_id=session_id))
 
     # ---- the rest is the engine's, as the bench has always called it ----
 

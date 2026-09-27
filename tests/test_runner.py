@@ -11,7 +11,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
-from jobsmith.engine.facts import publish
+from jobsmith.engine.facts import current_job_id, publish
 from jobsmith.engine.runner import Fact, GraphRunner, NodeFinished, Output
 
 
@@ -74,3 +74,22 @@ async def test_a_run_that_raises_returns_nothing():
             seen.append(update)
     assert seen == [Fact("plan", ["sum"])]
     assert await runner.pending("j1") == ("first",)      # left to resume
+
+
+def test_outside_a_run_a_node_has_no_job_and_tells_nobody():
+    assert current_job_id() is None
+    publish("anything", 1)                 # nobody to tell: no error
+
+
+async def test_inside_a_run_a_node_knows_its_job():
+    def node(state: In) -> dict:
+        publish("job", current_job_id())
+        return {"total": 0}
+
+    g = StateGraph(State, input_schema=In, output_schema=Out)
+    g.add_node("node", node)
+    g.add_edge(START, "node")
+    g.add_edge("node", END)
+    updates = [u async for u in GraphRunner(g.compile(checkpointer=MemorySaver()))
+               .stream("j9", {"a": 1, "b": 2})]
+    assert Fact("job", "j9") in updates

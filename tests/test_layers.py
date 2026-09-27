@@ -22,10 +22,7 @@ MAY_IMPORT: dict[str, set[str]] = {
 }
 
 #: (importing file, imported module) crossings still to be removed.
-ALLOWED: set[tuple[str, str]] = {
-    ("engine/manager.py", "jobsmith.dag.state"),
-    ("engine/repository.py", "jobsmith.dag.state"),
-}
+ALLOWED: set[tuple[str, str]] = set()
 
 
 def _imported(path: Path) -> set[str]:

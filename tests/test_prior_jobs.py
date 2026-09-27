@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from conftest import FakeLLM
 from langchain_core.messages import AIMessage
-from support import PACK_SCRIPT, chat_turn, launch_call, make_manager, notes_call
+from support import PACK_SCRIPT, chat_turn, dag_job, launch_call, make_manager, notes_call
 
 import jobsmith.agents.default.prior_jobs as prior_jobs_module
 from jobsmith.agents.default.prior_jobs import PriorJobsCapability
@@ -22,7 +22,7 @@ from jobsmith.chat.runner import JobStarted
 from jobsmith.dag.prior import RepositoryPriorJobs
 from jobsmith.dag.prior_jobs import PriorJob, PriorJobUnavailable, PriorStep
 from jobsmith.dag.state import FROM_JOBS_INPUT_KEY
-from jobsmith.engine.models import Job, JobStatus
+from jobsmith.engine.models import JobStatus
 from jobsmith.engine.repository import StoreJobRepository
 
 
@@ -69,8 +69,8 @@ async def test_the_adapter_reads_the_record_in_plan_order(store):
     """Plan order is the only deterministic order a run has — `results` is
     filled by parallel waves — so the adapter is where it is imposed, once."""
     repository = StoreJobRepository(store)
-    job = Job(job_id="j1", status=JobStatus.DONE, query="compare X and Y",
-              final_answer="X wins on price.")
+    job = dag_job(job_id="j1", status=JobStatus.DONE, query="compare X and Y",
+                  final_answer="X wins on price.").record
     await repository.save_summary(job)
     await repository.save_fact("j1", "plan", {
         "steps": [{"capability": "web_search", "depends_on": []},
@@ -92,7 +92,7 @@ async def test_the_adapter_carries_a_failed_step_as_what_it_said(store):
     """"That run's web search failed" is material for whoever builds on it;
     dropping the step would read as "that run never searched"."""
     repository = StoreJobRepository(store)
-    await repository.save_summary(Job(job_id="j2", status=JobStatus.DONE, query="q"))
+    await repository.save_summary(dag_job(job_id="j2", status=JobStatus.DONE, query="q").record)
     await repository.save_fact("j2", "step:web_search",
                                {"ok": False, "error": "the provider refused"})
     loaded = await RepositoryPriorJobs(repository).load("j2")
