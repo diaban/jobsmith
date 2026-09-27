@@ -280,7 +280,7 @@ async def test_a_reporter_that_cannot_be_composed_is_a_failed_write(
     done = await run(mgr, formats=["markdown"])
 
     assert done.status is JobStatus.DONE and done.final_answer
-    assert "renderer unavailable" in (done.error or "")
+    assert "markdown" in (done.error or "") and "renderer unavailable" in (done.error or "")
     assert (await mgr.get_job(done.job_id)).status is JobStatus.DONE
 
 
@@ -303,6 +303,26 @@ async def test_what_the_run_wrote_before_a_failed_format_stays_a_deliverable(tmp
     [output] = update["document_outputs"]
     assert output["role"] == "main" and Path(output["path"]).is_file()
     assert "html" in update["document_error"] and "renderer exploded" in update["document_error"]
+
+
+async def test_the_run_s_document_presents_step_material_in_plan_order(tmp_path):
+    """Steps finish in arrival order; the document follows the PLAN, whatever
+    order `results` filled in."""
+    from jobsmith.dag.registry import CapabilityRegistry
+
+    registry = CapabilityRegistry([SlowEcho("first"), SlowEcho("second")])
+    plan = {"rationale": "", "steps": [{"capability": "first", "depends_on": []},
+                                       {"capability": "second", "depends_on": ["first"]}]}
+    arrived = {"second": {"ok": True, "data": {"echo": "SECOND"}},
+               "first": {"ok": True, "data": {"echo": "FIRST"}}}
+    writer = DocumentWriter(reports_dir=tmp_path,
+                            reporter=MarkdownReport(registry, with_annexes=True))
+    update = await writer.run({"query": "q", "job_id": "j1", "document_formats": ["markdown"],
+                               "final_answer": "The answer.", "terminal_kind": "answer",
+                               "plan": plan, "results": arrived})
+
+    text = Path(update["document_outputs"][0]["path"]).read_text()
+    assert text.index("Step output — first") < text.index("Step output — second")
 
 
 def test_markdown_is_always_offered():
