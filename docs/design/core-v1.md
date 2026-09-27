@@ -13,8 +13,13 @@ evals stay at 100% on each PR.
 |---|---|---|
 | `jobsmith/engine/` | `jobs/{models,manager,runner,repository,ownership,events}`, `core/{usage,paths,artifacts}`, `delivery.py` | nothing from `jobsmith` outside itself |
 | `jobsmith/dag/` | the rest of `core/` (router, planner, executor, generation, document intent, registry, capability, profile, state, deps, `prior_jobs`), `jobs/report*.py`, `jobs/prior.py`, `clients.py` | `engine` |
+| `jobsmith/adapters/langchain/` | **the job ↔ conversation contract, built at step 9**: the launch tool (promotion within the turn, verbatim answer 0083/0085, plan notice 0086), the notification middleware (0006), the delivered-ids channel | `engine`, `langchain` |
 | `jobsmith/agents/` | capability packs, unchanged | `dag`, `engine` |
-| the bench | `chat/`, `service.py`, `app/`, `api/`, `cli/`, `tui/` | everything |
+| the bench | `chat/`, `service.py`, `app/`, `api/`, `cli/`, `tui/`: persona, prompt, `create_agent` assembly, the DAG's tool arguments (`source_files`, `from_jobs`, formats) | everything |
+
+That contract is what sets the framework apart: a job handed back to someone, in a precise
+shape, not just a job run durably. The split does not stop until step 9 has taken it out of
+the bench.
 
 ## The contract a graph signs
 
@@ -59,7 +64,18 @@ generic at step 2. Two more come in by extraction:
   - `none` is delivered at settle, since nobody is waiting. This ends "announceable to session None".
   - `session` is registered by the chat. Its `deliver` answers False; the conversation pulls with `pending_deliveries(reply_to)`, then calls `mark_delivered(id)` once the model has seen the job (today's middleware).
 
-  `create_job` refuses an unknown kind, and resume clears `delivered_at`. The guarantee as it stands: **at least once, keyed by job id**. A crash between handoff and `delivered_at` delivers again, and the receiver dedups on the id. Push kinds need no schema change.
+  `create_job` refuses an unknown kind, and resume clears `delivered_at`. Push kinds need no schema change.
+
+  The summary stores `reply_to` together with a flat `reply_key` that the kind's deliverer derives (`session:S1`). `pending_deliveries` filters on that key only, because every nested form fails on one backend or another (checked):
+
+  | filter | `InMemoryStore` | `AsyncSqliteStore` |
+  |---|---|---|
+  | nested `{"reply_to": {"kind": …, "id": …}}` | finds the job | `ValueError: Unsupported operator: kind` |
+  | dotted `{"reply_to.id": …}` | finds nothing | finds the job |
+  | flat `{"reply_key": "session:S1"}` | finds the job | finds the job |
+
+  The delivery tests run on all three backends, like `test_job_history.py` (0141, the same family of bug).
+- **The guarantee, as it really is.** The engine promises **at least once, keyed by job id**; deduplication is the receiver's job. For `session`, before step 9 the guarantee is weaker, both today and throughout steps 4 to 8: the notices are transient (0006), so the thread keeps no trace to deduplicate on. `mark_delivered` is also written *inside* the model call, before the model node finishes. A crash before the mark delivers the job again, and a crash after the mark but before the checkpoint loses the announcement from the thread. Step 9 closes both windows. The middleware declares a `delivered_jobs` channel in the thread state and returns `ExtendedModelResponse(response, Command(update={"delivered_jobs": ids}))`. LangChain applies that command in the **same update as the response**, and so in the same checkpoint (checked on langchain 1.4.0, `_build_commands`). A job whose id is already in the channel is never injected again. `delivered_at` becomes the index, and a late one gets repaired. The outcome is exactly once **in the thread**. The only thing left is a turn streamed to the screen that died before its checkpoint, which the next turn rewrites.
 
 ## The nine findings
 
@@ -80,15 +96,18 @@ generic at step 2. Two more come in by extraction:
 - **G1, ReAct job.** `create_agent(ScriptedChatModel)` is wrapped in a `GraphSpec` by the test and launched through `build_app` and `run_for`. Expected: DONE, the result is the final text, usage > 0. The diff touches no file under `engine/`.
 - **G2, structured job with no chat and no document.** A `StateGraph` with input `{a, b}` and output `{sum}`, `reply_to` none. Expected: DONE, `result == {"sum": 3}`, delivered at settle, no outputs. It runs in a subprocess where `jobsmith.chat`, `jobsmith.dag` and `langchain` are absent from `sys.modules`.
 - **G3, imports.** An AST test enforces the "may import" column. It lands at step 4 with today's violations on an allowlist, shrinks at every step, and is empty at step 8.
+- **G5, the contract out of the bench** (step 9). A `create_agent` conversation built only from `adapters/langchain` and `engine`, with no import from the bench, launches the G2 graph. The job is promoted and delivered. After a simulated crash on each side of the mark, it appears in the thread exactly once.
 - **G4, shape leak-check.** `make leak-check` also greps `engine/` for the product vocabulary (`query`, `session`, `document`, `formats`, `capabilit`, `plan`, `report`, `announc`, `terminal_kind`, `final_answer`, `deliverable`, `chat`), docstrings included. A false positive is renamed, never allowlisted.
 
 ## Order: one PR per step, each `make check` + structural evals at 100%
 
 4. **Move.** `engine/` and `dag/` are created by `git mv` plus import rewrites, nothing else. G3 lands with its allowlist.
 5. **The DAG writes its own document.** `_write_outputs` becomes a final DAG node that calls the Reporters and declares through `ArtifactStore`, so the manager stops calling Reporters. The fields that served them leave at step 6.
-6. **Contract and record.** Lands `GraphSpec`, the generic runner, `Job v1` and `JobFailed`. The DAG publishes its facts and its result, and the bench's view maps the new record. G2 lands.
+6a. **Generic runner and facts.** The runner passes the input through and reads the output from the root `values`, steps from the root `updates` and facts from `custom`. The DAG publishes `plan`, `formats` and `step:<cap>`, and the manager rebuilds the **old** `Job` from those facts and from the output. Neither the data model nor the bench changes, so the graph's output contract settles first.
+6b. **`Job v1` and `JobFailed`.** The DAG's result extractor takes over from the manager's mapping. A single `dag` function renders the v1 record in today's shape, so CLI, API and TUI need no change at this step. G2 lands.
 7. **Promotion and delivery.** Lands `run_for` and `reply_to`/deliverers/`delivered_at`; the chat and `POST /jobs?wait` switch to them.
-8. **Composition and usage.** Lands `AgentDefinition.graph`, optional chat, `JobService`/`ChatService` and the LangChain callback. G1 and G4 land and the allowlist is empty. After that the process unfreezes: the single refonte record points here, and the scribe rewrites `CLAUDE.md`.
+8. **Composition and usage.** Lands `AgentDefinition.graph`, optional chat, `JobService`/`ChatService` and the LangChain callback. G1 and G4 land and the allowlist is empty.
+9. **The contract leaves the bench.** The launch tool, the notification middleware and the delivered-ids channel move to `adapters/langchain/`, generic over a `GraphSpec` plus an input builder given by the app. `chat/` keeps the persona and the DAG's arguments. G5 lands. After that the process unfreezes: the single refonte record points here, and the scribe rewrites `CLAUDE.md`.
 
 ## Open questions
 
