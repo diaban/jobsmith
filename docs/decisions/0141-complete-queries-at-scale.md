@@ -1,6 +1,6 @@
 # 0141 — Complete queries filter in the store; human listings cut after ordering
 
-- **Issue:** #141 · **PR:** #NN · **Status:** accepted
+- **Issue:** #141 · **PR:** #142 · **Status:** accepted
 - **Rule in `CLAUDE.md`:** "`load_all` is complete" (Jobs layer)
 
 **Context.** Found by an external review and reproduced here. `load_all(limit=…)` applied its limit to the whole index before any filter, and stores return rows oldest first. Past ~100 jobs, the newest disappeared from announcements (0006), `cancel_job`/`job_status`, events (0100), progress notices, listings and orphan recovery. The whole suite ran in memory with a handful of jobs, so nothing saw it.
