@@ -13,6 +13,15 @@ import json
 import subprocess
 import sys
 import textwrap
+from typing import TypedDict
+
+import pytest
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.store.memory import InMemoryStore
+
+from jobsmith.engine.graph import GraphSpec
+from jobsmith.engine.manager import JobManager
 
 G2 = textwrap.dedent('''
     import asyncio, json, sys
@@ -61,3 +70,27 @@ def test_a_structured_job_runs_on_the_engine_alone():
     assert run.returncode == 0, run.stderr
     report = json.loads(run.stdout.strip().splitlines()[-1])
     assert report == {"status": "done", "result": {"sum": 3}, "steps": ["add"], "loaded": []}
+
+
+async def test_one_engine_runs_several_graphs_each_by_its_name():
+    """The record names its graph, and a job runs the graph it names; the first
+    is the default, and a name this process does not have is refused."""
+    class State(TypedDict):
+        n: int
+
+    def graph(step: int):
+        g = StateGraph(State)
+        g.add_node("step", lambda state: {"n": state["n"] + step})
+        g.add_edge(START, "step")
+        g.add_edge("step", END)
+        return g.compile(checkpointer=MemorySaver())
+
+    jobs = JobManager(GraphSpec("plus_one", graph(1)), InMemoryStore(),
+                      graphs=[GraphSpec("plus_ten", graph(10))])
+    default = await jobs.run_job((await jobs.create_job({"n": 1})).job_id)
+    named = await jobs.run_job((await jobs.create_job({"n": 1}, graph="plus_ten")).job_id)
+
+    assert (default.graph, default.result) == ("plus_one", {"n": 2})
+    assert (named.graph, named.result) == ("plus_ten", {"n": 11})
+    with pytest.raises(ValueError, match="plus_hundred"):
+        await jobs.create_job({"n": 1}, graph="plus_hundred")

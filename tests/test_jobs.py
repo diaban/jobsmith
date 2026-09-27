@@ -11,6 +11,7 @@ from support import SlowEcho, cancelled_midway, dag_job, make_manager
 
 from jobsmith.dag.builder import build_agent
 from jobsmith.dag.deps import Deps
+from jobsmith.dag.profile import DEFAULT_EMPTY_QUERY_MESSAGE
 from jobsmith.dag.registry import CapabilityRegistry
 from jobsmith.engine.models import JobStatus
 from jobsmith.engine.runner import Fact, GraphRunner
@@ -56,6 +57,17 @@ async def test_failed_job_records_error_and_errors_meta(store, checkpointer, tmp
     assert done.terminal_kind == "escalated"
     assert done.error is not None
     assert any(e["kind"] == "generation_fail" for e in done.record.result["errors"])
+
+
+async def test_a_rejected_request_fails_with_the_profile_s_own_words(
+    store, checkpointer, tmp_path
+):
+    """A run that ends at `user_error` declared it could not serve the request:
+    FAILED, and never in silence — the error is what the profile says."""
+    mgr = make_manager(store, checkpointer, tmp_path)
+    done = await mgr.run_job((await mgr.create_job("   ")).job_id)
+    assert done.status is JobStatus.FAILED and done.terminal_kind == "user_error"
+    assert done.error == DEFAULT_EMPTY_QUERY_MESSAGE
 
 
 async def test_run_requires_queued(store, checkpointer, tmp_path):
