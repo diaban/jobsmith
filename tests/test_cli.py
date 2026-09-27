@@ -18,10 +18,10 @@ from jobsmith.cli.main import build_parser
 from jobsmith.service import LocalAgentService
 
 
-async def embedded(tmp_path) -> EmbeddedClient:
+async def embedded(tmp_path, *, reporter=None) -> EmbeddedClient:
     return await EmbeddedClient.create(
         llm=KeywordLLM(), chat_model=KeywordChatModel(),
-        db="memory", reports_dir=str(tmp_path / "artifacts"),
+        db="memory", reports_dir=str(tmp_path / "artifacts"), reporter=reporter,
     )
 
 
@@ -129,9 +129,8 @@ async def test_report_on_a_binary_deliverable_says_where_the_file_is(tmp_path, c
 
     from jobsmith.cli.main import cmd_report
 
-    client = await embedded(tmp_path)
+    client = await embedded(tmp_path, reporter=StubPdf())
     try:
-        client.manager.reporter = StubPdf()
         launched = await client.launch_job("print it", formats=["default"])
         job_id = launched["job_id"]
         await wait_done(client, job_id)

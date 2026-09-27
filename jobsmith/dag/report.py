@@ -46,10 +46,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from ..engine.models import Job, JobOutput
+from ..engine.models import JobOutput
 from ..engine.paths import PathRefused, safe_name
 from ..engine.usage import Usage
-from .state import TERMINAL_UNANSWERED
+from .state import TERMINAL_UNANSWERED, CapabilityResult, Plan
 
 # What a deliverable opens with when the run declared it could not answer
 # (#59). One sentence, above the text, in every format: a file that reads like
@@ -101,6 +101,45 @@ class JobDocument:
     @property
     def dag_edges(self) -> list[tuple[str, str]]:
         return [(dep, row.capability) for row in self.plan for dep in row.depends_on]
+
+
+class ReportSubject(Protocol):
+    """What a Reporter reads of a job: the record, or the run writing it.
+
+    The engine's `Job` satisfies it, and so does the `RunView` the graph's
+    own document step builds from its state (`dag/deliver.py`) — a Reporter
+    never needs to know which of the two it was handed. Read-only members,
+    for the reason `Reporter` gives below.
+    """
+
+    @property
+    def job_id(self) -> str: ...
+    @property
+    def query(self) -> str: ...
+    @property
+    def document_name(self) -> str: ...
+    @property
+    def document_title(self) -> str: ...
+    @property
+    def session_id(self) -> str | None: ...
+    @property
+    def created_at(self) -> str: ...
+    @property
+    def final_answer(self) -> str | None: ...
+    @property
+    def terminal_kind(self) -> str | None: ...
+    @property
+    def plan(self) -> Plan | None: ...
+    @property
+    def results(self) -> dict[str, CapabilityResult]: ...
+    @property
+    def step_finished_at(self) -> dict[str, str]: ...
+    @property
+    def usage(self) -> dict[str, Any]: ...
+
+    def ordered_results(self) -> list[tuple[str, CapabilityResult]]: ...
+
+    def step_usage(self, capability: str) -> dict[str, Any]: ...
 
 
 def job_reference(job_id: str) -> str:
@@ -346,7 +385,7 @@ def ensure_formats_available(
 
 
 def build_document(
-    job: Job,
+    job: ReportSubject,
     registry: Any = None,
     *,
     with_annexes: bool = False,
@@ -394,7 +433,7 @@ def build_document(
     return doc
 
 
-def _annexes(job: Job, registry: Any) -> list[tuple[str, str]]:
+def _annexes(job: ReportSubject, registry: Any) -> list[tuple[str, str]]:
     """Ask each capability to present its own result (never guess here)."""
     if registry is None:
         return []
@@ -494,7 +533,7 @@ class Reporter(Protocol):
     @property
     def extension(self) -> str: ...
 
-    def write(self, job: Job, directory: Path) -> list[JobOutput]: ...
+    def write(self, job: ReportSubject, directory: Path) -> list[JobOutput]: ...
 
 
 class FileReporter:
@@ -544,7 +583,7 @@ class FileReporter:
         """
         return True
 
-    def write(self, job: Job, directory: Path) -> list[JobOutput]:
+    def write(self, job: ReportSubject, directory: Path) -> list[JobOutput]:
         path = self.path_for(job, directory)
         path.parent.mkdir(parents=True, exist_ok=True)
         document = build_document(job, self.registry, with_annexes=self.with_annexes,
@@ -557,7 +596,7 @@ class FileReporter:
             path=str(path), format=self.format, title=self.title, role="main"
         )]
 
-    def path_for(self, job: Job, directory: Path) -> Path:
+    def path_for(self, job: ReportSubject, directory: Path) -> Path:
         """Where this job's deliverable goes, and what it is called (#55).
 
         A job id is unique and says nothing; a requested name says everything
@@ -736,7 +775,7 @@ class MultiReporter:
     def extension(self) -> str:
         return self.reporters[0].extension
 
-    def write(self, job: Job, directory: Path) -> list[JobOutput]:
+    def write(self, job: ReportSubject, directory: Path) -> list[JobOutput]:
         outputs: list[JobOutput] = []
         for reporter in self.reporters:
             try:

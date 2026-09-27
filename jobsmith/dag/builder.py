@@ -15,11 +15,13 @@ fresh AgentBuilder with a new registry; compilation costs milliseconds.
 from __future__ import annotations
 
 from collections.abc import Callable, Hashable, Sequence
+from pathlib import Path
 from typing import Any
 
 from langgraph.constants import END
 from langgraph.graph import StateGraph
 
+from .deliver import DocumentWriter
 from .deps import Deps
 from .document import DocumentIntent
 from .errors import Escalator, ExecutionError, UserErrorEmitter
@@ -35,6 +37,7 @@ from .generation import (
 from .planner import Planner
 from .profile import AgentProfile
 from .registry import CapabilityRegistry
+from .report import Reporter
 from .router import Router
 from .state import AgentState
 from .validate import InputValidator, OutputValidator
@@ -57,6 +60,9 @@ class AgentBuilder:
         document_formats: tuple[str, ...] | list[str] = (),
         default_document_formats: tuple[str, ...] | list[str] = (),
         confirm_document_formats: Callable[[Sequence[str]], Sequence[str]] | None = None,
+        reporter_for: Callable[[Sequence[str]], Reporter] | None = None,
+        reporter: Reporter | None = None,
+        reports_dir: str | Path = "artifacts",
     ):
         self.deps = deps
         self.registry = registry
@@ -95,6 +101,7 @@ class AgentBuilder:
         self.refiner          = Refiner(deps, self.profile)
         self.post_processor   = PostProcessor()
         self.unanswered       = UnansweredEmitter()
+        self.document_writer  = DocumentWriter(reporter_for, reports_dir, reporter=reporter)
         self.execution_error  = ExecutionError()
         self.escalator        = Escalator(self.profile)
         self.user_error       = UserErrorEmitter(self.profile)
@@ -173,6 +180,7 @@ class AgentBuilder:
         g.add_node("refine",            self.refiner.run)
         g.add_node("post_process",      self.post_processor.run)
         g.add_node("unanswered",        self.unanswered.run)
+        g.add_node("write_document",    self.document_writer.run)
         g.add_node("execution_error",   self.execution_error.run)
         g.add_node("escalate",          self.escalator.run)
         g.add_node("user_error",        self.user_error.run)
@@ -224,8 +232,9 @@ class AgentBuilder:
             "execution_error": "execution_error",
         })
         g.add_edge("refine", "generation")
-        g.add_edge("post_process", END)
-        g.add_edge("unanswered", END)
+        g.add_edge("post_process", "write_document")
+        g.add_edge("unanswered", "write_document")
+        g.add_edge("write_document", END)
 
         # Error routing
         g.add_conditional_edges("execution_error", self._route_execution_error, {
@@ -248,8 +257,13 @@ def build_agent(
     document_formats: tuple[str, ...] | list[str] = (),
     default_document_formats: tuple[str, ...] | list[str] = (),
     confirm_document_formats: Callable[[Sequence[str]], Sequence[str]] | None = None,
+    reporter_for: Callable[[Sequence[str]], Reporter] | None = None,
+    reporter: Reporter | None = None,
+    reports_dir: str | Path = "artifacts",
 ):
     return AgentBuilder(deps, registry, profile=profile, checkpointer=checkpointer,
                         document_formats=document_formats,
                         default_document_formats=default_document_formats,
-                        confirm_document_formats=confirm_document_formats).build()
+                        confirm_document_formats=confirm_document_formats,
+                        reporter_for=reporter_for, reporter=reporter,
+                        reports_dir=reports_dir).build()

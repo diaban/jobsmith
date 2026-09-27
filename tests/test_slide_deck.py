@@ -378,8 +378,8 @@ async def test_the_job_records_the_deck_as_an_annex(store, checkpointer, tmp_pat
     llm = FakeLLM({"planner": plan_json("slide_deck"), "Design a slide deck": DESIGNED},
                   default="A sufficiently long final answer for the deck test.")
     cap = SlideDeckCapability(llm, LocalArtifactStore(tmp_path / "artifacts"), FakeRenderer())
-    graph = build_agent(Deps(llm=llm), CapabilityRegistry([cap]), checkpointer=checkpointer)
-    manager = JobManager(graph, store, reports_dir=tmp_path / "artifacts")
+    graph = build_agent(Deps(llm=llm), CapabilityRegistry([cap]), checkpointer=checkpointer, reports_dir=tmp_path / "artifacts")
+    manager = JobManager(graph, store)
 
     done = await manager.run_job((await manager.create_job("brief the board", formats=["markdown"])).job_id)
 

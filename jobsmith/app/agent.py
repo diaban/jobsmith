@@ -107,6 +107,7 @@ async def build_app(
     db: str | None = None,
     reports_dir: str | None = None,
     report_format: str | None = None,
+    reporter: Any = None,
 ) -> AgentApp:
     # An agent is a capability pack + a profile (+ a chat persona): everything
     # else below is shared, whichever one is asked for.
@@ -169,6 +170,15 @@ async def build_app(
         # PDF its default, which is asking for it before any request does.
         default_formats = pick_report_formats(report_format)
         ensure_formats_available(default_formats, registry=registry)
+        # The registry is passed so capabilities present their own results;
+        # a job's formats are composed into one reporter, whose first name is
+        # the main deliverable. A factory, because every document is now one
+        # somebody asked for (#55, #96) — the deployment's knowledge has to
+        # reach a reporter built for that job, or a requested PDF would come
+        # back without the registry. The run writes it (`dag/deliver.py`).
+        def reporter_for(formats: Sequence[str]) -> Any:
+            return compose_reporters(formats, registry)
+
         graph = AgentBuilder(
             Deps(llm=llm), registry,
             profile=definition.profile, checkpointer=checkpointer,
@@ -176,7 +186,7 @@ async def build_app(
             # engine reads the request for a format when the caller named
             # none, and it may only choose among what this deployment can
             # actually render — `.[pdf]` needs pango where the daemon runs,
-            # so the list is composed here and nowhere in `core/`. What is
+            # so the list is composed here and nowhere in `dag/`. What is
             # INSTALLED is offered, loading nothing (#108); a choice is proved
             # by `renderable_formats` when a run makes it, before any work.
             document_formats=available_formats(registry),
@@ -185,15 +195,8 @@ async def build_app(
             # SAME list the manager resolves the "default" argument to, so the
             # sentence and the argument cannot disagree about one request.
             default_document_formats=default_formats,
+            reporter_for=reporter_for, reporter=reporter, reports_dir=reports_root,
         ).build()
-        # The registry is passed so capabilities present their own results;
-        # a job's formats are composed into one reporter, whose first name is
-        # the main deliverable. A factory, because every document is now one
-        # somebody asked for (#55, #96) — the deployment's knowledge has to
-        # reach a reporter built for that job, or a requested PDF would come
-        # back without the registry.
-        def reporter_for(formats: Sequence[str]) -> Any:
-            return compose_reporters(formats, registry)
 
         # On a shared database `subscribe()` also hears the jobs another
         # process runs on it: a SQLite file is watched (#100), Postgres
@@ -209,9 +212,7 @@ async def build_app(
             stack.push_async_callback(events.aclose)
         manager = JobManager(
             graph, store, repository=repository, events=events,
-            reporter_factory=reporter_for,
             default_formats=default_formats,
-            reports_dir=reports_root,
         )
         # A previous process may have died mid-run: settle those jobs first.
         await manager.recover_interrupted()

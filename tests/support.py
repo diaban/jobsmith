@@ -145,18 +145,20 @@ class ChartCapability(OneStep):
 def make_manager(
     store, checkpointer, tmp_path, *, caps=None, llm=None,
     document_formats: tuple[str, ...] = (), default_formats: tuple[str, ...] = ("markdown",),
+    reporter=None, reporter_for=None,
 ) -> JobManager:
     """A manager over stub capabilities whose planner plans them all.
 
     `document_formats` wires the document step (off by default: no format to
-    choose from, so it asks nothing)."""
+    choose from, so it asks nothing); `reporter` writes every document its runs write."""
     caps = caps if caps is not None else [SlowEcho("alpha")]
     llm = llm or FakeLLM({"planner": plan_json(*[c.spec.name for c in caps])}, default=ANSWER)
     graph = build_agent(Deps(llm=llm), CapabilityRegistry(caps), checkpointer=checkpointer,
                         document_formats=document_formats,
-                        default_document_formats=default_formats if document_formats else ())
-    return JobManager(graph, store, reports_dir=tmp_path / "artifacts",
-                      default_formats=default_formats)
+                        default_document_formats=default_formats if document_formats else (),
+                        reports_dir=tmp_path / "artifacts", reporter=reporter,
+                        reporter_for=reporter_for)
+    return JobManager(graph, store, default_formats=default_formats)
 
 
 def planning(*steps: str, deps: dict[str, list[str]] | None = None, **script: str) -> FakeLLM:
@@ -223,11 +225,11 @@ def launch_call(query: str, rationale: str, **args) -> AIMessage:
 
 def make_session(
     store, checkpointer, tmp_path, responses, *, llm=None,
-    approval=False, sync_timeout=None, inline_answer_max=None,
+    approval=False, sync_timeout=None, inline_answer_max=None, reporter=None,
 ):
     from jobsmith.chat import ChatSession
 
-    manager = make_manager(store, checkpointer, tmp_path, llm=llm)
+    manager = make_manager(store, checkpointer, tmp_path, llm=llm, reporter=reporter)
     model = ScriptedChatModel(responses=responses)
     session = ChatSession(manager, model, checkpointer=MemorySaver(),
                           approval_required=approval, sync_timeout=sync_timeout,
@@ -269,10 +271,10 @@ def planned_service(manager, *, sync_timeout=None, responses=None):
 
 # ------------------------------------------------------------ over HTTP
 
-def make_app(store, checkpointer, tmp_path, responses, *, approval=False):
+def make_app(store, checkpointer, tmp_path, responses, *, approval=False, reporter=None):
     from jobsmith.api import create_api
 
-    manager = make_manager(store, checkpointer, tmp_path)
+    manager = make_manager(store, checkpointer, tmp_path, reporter=reporter)
     return create_api(service_over(manager, responses, approval=approval)), manager
 
 

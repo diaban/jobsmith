@@ -7,7 +7,6 @@ or a real store again, a responsibility has leaked back into the manager.
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 
 import pytest
 
@@ -15,7 +14,13 @@ from jobsmith.engine.events import InProcessEvents, job_event
 from jobsmith.engine.manager import JobManager
 from jobsmith.engine.models import Job, JobOutput, JobStatus
 from jobsmith.engine.repository import StoreJobRepository
-from jobsmith.engine.runner import NodeErrors, PlanReady, StepFinished, Terminal
+from jobsmith.engine.runner import (
+    DocumentWritten,
+    NodeErrors,
+    PlanReady,
+    StepFinished,
+    Terminal,
+)
 from jobsmith.engine.usage import record_usage
 
 
@@ -34,7 +39,7 @@ class FakeRunner:
         self.calls: list[tuple[str, str, dict]] = []
         self.resumed: list[str] = []
 
-    async def stream(self, job_id, query, inputs, formats=None):
+    async def stream(self, job_id, query, inputs, formats=None, **document):
         self.calls.append((job_id, query, inputs))
         for update in self.updates:
             yield update
@@ -105,7 +110,6 @@ def make_manager(tmp_path, *updates, pending=(), on_resume=None, **kwargs):
     return JobManager(
         repository=DictRepository(),
         runner=FakeRunner(*updates, pending=pending, on_resume=on_resume),
-        reports_dir=tmp_path / "artifacts",
         **kwargs,
     )
 
@@ -116,6 +120,7 @@ async def test_use_cases_run_without_a_graph_or_a_store(tmp_path):
         PlanReady(PLAN),
         StepFinished("alpha", {"ok": True, "data": {"echo": "hi"}}),
         Terminal("answer", "The final answer.", None),
+        DocumentWritten([JobOutput(path="report.md", format="markdown")], None),
     )
     job = await mgr.create_job("do it", {"k": "v"}, session_id="s1", formats=["markdown"])
     done = await mgr.run_job(job.job_id)
@@ -153,8 +158,7 @@ async def test_a_broken_runner_fails_the_job_rather_than_the_caller(tmp_path):
             raise RuntimeError("engine down")
             yield  # pragma: no cover — makes this an async generator
 
-    mgr = JobManager(repository=DictRepository(), runner=Exploding(),
-                     reports_dir=tmp_path / "artifacts")
+    mgr = JobManager(repository=DictRepository(), runner=Exploding())
     job = await mgr.create_job("q")
     done = await mgr.run_job(job.job_id)
     assert done.status is JobStatus.FAILED
@@ -166,7 +170,7 @@ async def test_resuming_goes_through_the_runner_port_too(tmp_path):
     graph, no checkpoint API, nothing the manager knows about LangGraph."""
     mgr = make_manager(tmp_path, PlanReady(PLAN),
                        Terminal("answer", "Finished on the second try.", None),
-                       pending=("cap_alpha",))
+                       DocumentWritten([JobOutput(path="report.md", format="markdown")], None), pending=("cap_alpha",))
     job = await mgr.create_job("resume me", formats=["markdown"])
     await mgr.cancel_job(job.job_id)
 
@@ -244,85 +248,39 @@ async def test_a_full_subscriber_is_dropped_not_awaited():
     assert queue.qsize() == 1  # the rest were dropped, publish never blocked
 
 
-async def test_how_many_deliverables_a_job_has_is_the_reporter_s_business(tmp_path):
-    """The manager assigns what the Reporter hands back, it does not wrap it:
-    a Reporter returning two outputs gives the job two deliverables, and the
-    manager still knows which one is *the* report."""
-
-    class TwoFormats:
-        format, extension = "markdown", "md"
-
-        def __init__(self):
-            self.calls: list[str] = []
-
-        def write(self, job, directory):
-            self.calls.append(job.job_id)
-            return [JobOutput(path=f"{directory}/{job.job_id}.md", format="markdown"),
-                    JobOutput(path=f"{directory}/{job.job_id}.html", format="html",
-                              role="alternate")]
-
-    reporter = TwoFormats()
+async def test_the_job_s_deliverables_are_what_the_run_says_it_wrote(tmp_path):
+    """The run writes its own document and says so; the manager assigns what it
+    is handed, and still knows which one is *the* report."""
+    written = [JobOutput(path="r.md", format="markdown"),
+               JobOutput(path="r.html", format="html", role="alternate")]
     mgr = make_manager(tmp_path, PlanReady(PLAN), Terminal("answer", "Done.", None),
-                       reporter=reporter)
+                       DocumentWritten(written, None))
     job = await mgr.create_job("q", formats=["markdown"])
     done = await mgr.run_job(job.job_id)
 
-    assert reporter.calls == [job.job_id]            # written once, not once per output
     assert [(o.format, o.role) for o in done.outputs] == [
         ("markdown", "main"), ("html", "alternate")]
-    assert done.report_path.endswith(".md")
+    assert done.report_path == "r.md"
     # and the repository — the port, no store — recorded both
     assert len(mgr.repo.summaries[job.job_id]["outputs"]) == 2
 
 
 async def test_a_failed_report_write_leaves_the_job_done_and_persisted(tmp_path):
-    """The run answered; only the file failed. That is DONE with an error —
-    and, above all, it is *persisted*: the write happens after the stream's
-    own try/except, so an escaping exception used to skip the final persist
-    and leave the store holding the RUNNING row the last step wrote — a job
-    with an answer nobody could reach."""
-
-    class Boom:
-        format, extension = "markdown", "md"
-
-        def write(self, job, directory):
-            raise OSError("No space left on device")
-
+    """The run answered; only the file failed. That is DONE with the error the
+    run reported — and, above all, *persisted*: a job with an answer nobody
+    could reach is what an escaping write once left behind. → 0028"""
     mgr = make_manager(tmp_path, PlanReady(PLAN), Terminal("answer", "The answer.", None),
-                       reporter=Boom())
+                       DocumentWritten([], "markdown: No space left on device"))
     job = await mgr.create_job("q", formats=["markdown"])
     done = await mgr.run_job(job.job_id)
 
     assert done.status is JobStatus.DONE          # the work is not the file
     assert done.final_answer == "The answer."
     assert done.outputs == [] and done.report_path is None
-    assert "markdown" in done.error and "No space left on device" in done.error
+    assert done.error == "markdown: No space left on device"
 
     stored = mgr.repo.summaries[job.job_id]       # what a later reader sees
     assert stored["status"] == "done" and stored["error"] == done.error
     assert stored["outputs"] == [] and stored["final_answer"] == "The answer."
 
 
-async def test_deliverables_already_written_survive_a_later_failure(tmp_path):
-    """Markdown lands, HTML raises: the markdown file exists, so it stays a
-    deliverable of the job. Dropping it would leave a file on disk that
-    `/jobs/{id}/outputs` never mentions."""
-    from jobsmith.dag.report import MarkdownReport, MultiReporter
-
-    class Boom:
-        format, extension = "html", "html"
-
-        def write(self, job, directory):
-            raise RuntimeError("renderer exploded")
-
-    mgr = make_manager(tmp_path, PlanReady(PLAN), Terminal("answer", "The answer.", None),
-                       reporter=MultiReporter([MarkdownReport(), Boom()]))
-    job = await mgr.create_job("q", formats=["markdown"])
-    done = await mgr.run_job(job.job_id)
-
-    assert done.status is JobStatus.DONE
-    [output] = done.outputs
-    assert output.role == "main" and Path(output.path).exists()
-    assert done.report_path == output.path
-    assert "html" in done.error and "renderer exploded" in done.error
-    assert len(mgr.repo.summaries[job.job_id]["outputs"]) == 1
