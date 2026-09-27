@@ -122,12 +122,17 @@ def sqlite_file(spec: str) -> Path | None:
     """The SQLite file `spec` names, resolved as `open_persistence` resolves it, or None.
 
     What a cross-process event feed watches (#100): memory has no other
-    process to hear from, and Postgres would be LISTEN/NOTIFY, not a file.
+    process to hear from, and Postgres is LISTEN/NOTIFY (`postgres_dsn`).
     """
     if spec in (MEMORY, "", ":memory:") or spec.startswith(_POSTGRES_SCHEMES):
         return None
     path = spec.split(":", 1)[1] if spec.startswith("sqlite:") else spec
     return Path(path).expanduser().resolve()
+
+
+def postgres_dsn(spec: str) -> str | None:
+    """The Postgres DSN `spec` names, or None — what LISTEN/NOTIFY connects to (#138)."""
+    return spec if spec.startswith(_POSTGRES_SCHEMES) else None
 
 
 async def open_persistence(spec: str, stack: AsyncExitStack) -> tuple[Any, Any]:

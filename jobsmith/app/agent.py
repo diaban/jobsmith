@@ -26,7 +26,7 @@ from ..core.artifacts import LocalArtifactStore
 from ..core.builder import AgentBuilder
 from ..core.deps import Deps
 from ..core.registry import CapabilityRegistry
-from ..jobs.events import SqliteWatchEvents
+from ..jobs.events import PostgresNotifyEvents, SqliteWatchEvents, WatchedEvents
 from ..jobs.manager import JobManager
 from ..jobs.prior import RepositoryPriorJobs
 from ..jobs.report import (
@@ -37,7 +37,13 @@ from ..jobs.report import (
     renderable_formats,
 )
 from ..jobs.repository import StoreJobRepository
-from .persistence import open_persistence, pick_db, pick_reports_dir, sqlite_file
+from .persistence import (
+    open_persistence,
+    pick_db,
+    pick_reports_dir,
+    postgres_dsn,
+    sqlite_file,
+)
 from .providers import make_chat_model, make_llm, pick_provider
 
 
@@ -189,11 +195,16 @@ async def build_app(
         def reporter_for(formats: Sequence[str]) -> Any:
             return compose_reporters(formats, registry)
 
-        # On a SQLite file, `subscribe()` also hears the jobs another process
-        # runs on it (#100); memory keeps the in-process fan-out, polls nothing.
-        watched = sqlite_file(db_spec)
-        events = (SqliteWatchEvents(watched, lambda: repository.load_all(limit=200))
-                  if watched is not None else None)
+        # On a shared database `subscribe()` also hears the jobs another
+        # process runs on it: a SQLite file is watched (#100), Postgres
+        # notifies (#138); memory keeps the in-process fan-out, polls nothing.
+        events: WatchedEvents | None = None
+        if (watched := sqlite_file(db_spec)) is not None:
+            events = SqliteWatchEvents(watched, lambda: repository.load_all(limit=200))
+        elif (dsn := postgres_dsn(db_spec)) is not None:
+            events = PostgresNotifyEvents(dsn, repository.load)
+        if events is not None:
+            stack.push_async_callback(events.aclose)
         manager = JobManager(
             graph, store, repository=repository, events=events,
             reporter_factory=reporter_for,
