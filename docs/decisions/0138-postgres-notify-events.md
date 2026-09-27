@@ -1,6 +1,6 @@
 # 0138 — Job events cross processes on Postgres, by LISTEN/NOTIFY
 
-- **Issue:** #138 · **PR:** #NN · **Status:** accepted (extends 0100)
+- **Issue:** #138 · **PR:** #140 · **Status:** accepted (extends 0100)
 - **Rule in `CLAUDE.md`:** "Events cross processes on a shared database"
 
 **Context.** 0100 made `subscribe()` hear other processes on a SQLite file. On Postgres it still heard only its own.
