@@ -7,10 +7,11 @@ each of them can change (or be swapped) for its own reasons:
     JobRepository   where records live and what the schema is  (repository.py)
     GraphRunner     how a run is driven and read back          (runner.py)
     JobEvents       how progress is broadcast                  (events.py)
-    Reporter        how the deliverable is produced            (report.py)
 
 The defaults wire the v1 stack (LangGraph store, LangGraph graph, in-process
-events, markdown report), so `JobManager(graph, store)` still works.
+events), so `JobManager(graph, store)` still works. The deliverable is not
+among them: the run writes its own document and says what it wrote
+(`DocumentWritten`), and the manager records that as it records a step.
 
 Cancellation semantics: `cancel_job` cancels the in-process asyncio.Task;
 cancellation propagates into the running invocation, the checkpointer retains
@@ -36,16 +37,11 @@ from __future__ import annotations
 import asyncio
 import sys
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from ..dag.report import (
-    ReportWriteError,
-    compose_reporters,
-    document_stem,
-    ensure_formats_available,
-)
+from ..dag.report import document_stem, ensure_formats_available
 from ..dag.state import TERMINAL_UNANSWERED, NodeError
 from .artifacts import artifact_refs
 from .events import InProcessEvents, JobEvents, job_event
@@ -60,6 +56,7 @@ from .ownership import (
 )
 from .repository import JobRepository, StoreJobRepository
 from .runner import (
+    DocumentWritten,
     FormatsChosen,
     GraphRunner,
     JobUpdate,
@@ -100,10 +97,7 @@ class JobManager:
         graph: Any = None,
         store: Any = None,
         *,
-        reporter: Any = None,
-        reporter_factory: Callable[[Sequence[str]], Any] | None = None,
         default_formats: Sequence[str] = ("markdown",),
-        reports_dir: str | Path = "artifacts",
         repository: JobRepository | None = None,
         runner: GraphRunner | None = None,
         events: JobEvents | None = None,
@@ -117,29 +111,12 @@ class JobManager:
         self.repo: JobRepository = repository or StoreJobRepository(store)
         self.runner: GraphRunner = runner or GraphRunner(graph)
         self.events: JobEvents = events or InProcessEvents()
-        # Producing the deliverable is a rendering concern, not the manager's:
-        # each job's formats are composed into a Reporter by this factory
-        # (#55). A factory rather than a Reporter: what the composition root
-        # knows — the registry, whether annexes are inlined — has to reach a
-        # reporter built for each job, and a manager that rebuilt one itself
-        # would be a manager that decides how a deliverable is rendered.
-        # Defaults to the plain composer, so a manager wired without one still
-        # honours a requested format, just without what its root would add.
-        self.reporter_factory: Callable[[Sequence[str]], Any] = (
-            reporter_factory or (lambda formats: compose_reporters(formats)))
-        # A fixed Reporter, when one is set, writes EVERY document this
-        # manager writes, whatever formats the job named — the swap seam
-        # tests and single-format embedders use. It is no longer "the
-        # deployment's default": that meant "the file a silent request gets",
-        # and since #96 a silent request gets none (see `_deliverable_wanted`).
-        self.reporter: Any = reporter
         # What "a document" means when a request wants one and names no
         # format (#96): the names `DEFAULT_FORMATS_ALIAS` resolves to in
         # `create_job`. The composition root passes `$JOBSMITH_REPORT_FORMAT`
         # here and hands the same list to the graph's document step, so the
         # two ways of asking — the argument and the sentence — agree.
         self.default_formats: list[str] = list(default_formats)
-        self.reports_dir = Path(reports_dir)  # where deliverables are written
         self._tasks: dict[str, asyncio.Task] = {}  # in-process cancellation handles
         # Who this manager is on the leases it writes, and the timings of
         # ownership (#10). Only consulted when the repository is `shared`:
@@ -223,7 +200,8 @@ class JobManager:
         if not await self._begin(job):
             return job
         return await self._drive(job, self.runner.stream(
-            job.job_id, job.query, job.inputs, job.formats))
+            job.job_id, job.query, job.inputs, job.formats,
+            document_name=job.document_name, document_title=job.document_title))
 
     async def resume_job(self, job_id: str) -> Job:
         """Re-enter a stopped job's checkpoint and run it to completion.
@@ -314,6 +292,7 @@ class JobManager:
         like a first one.
         """
         errors: list[NodeError] = []
+        written: list[JobOutput] = []       # the deliverables the run reports writing
         # One ledger per run — a fresh one, so a job launched from inside
         # another run can never bill its parent. Every LLM call underneath
         # books into it, attributed to the graph step that made it.
@@ -331,7 +310,7 @@ class JobManager:
         with usage_ledger(ledger):
             try:
                 async for update in updates:
-                    await self._apply(job, update, errors)
+                    await self._apply(job, update, errors, written)
             except asyncio.CancelledError:
                 if watch is not None:
                     watch.stop()        # before any await: nothing may cancel the settling
@@ -371,23 +350,17 @@ class JobManager:
             if errors:
                 await self.repo.save_errors(job.job_id, errors)
             job.status = JobStatus.DONE if job.terminal_kind in DELIVERED else JobStatus.FAILED
-            if job.status is JobStatus.DONE and self._deliverable_wanted(job):
-                # The reporter reads job.usage, so settle it before writing.
-                job.usage = ledger.total().to_dict()
-                self._write_outputs(job)
-            else:
-                # Either the run stopped, or it answered and nobody wanted a
-                # document of it. Only the second is a decision, and only it
-                # is recorded — the flag goes True → False and never back, so
-                # a job that asked for no file does not silently re-promise
-                # one by failing. Usually already recorded by now (`create_job`
+            if job.status is JobStatus.DONE and not self._deliverable_wanted(job):
+                # It answered and nobody wanted a document of it: a decision,
+                # recorded — the flag goes True → False and never back, so a
+                # job that asked for no file does not silently re-promise one
+                # by failing. Usually already recorded by now (`create_job`
                 # for `[]`, the document step for silence); this is the
                 # backstop for a graph with no document step at all.
-                if job.status is JobStatus.DONE:
-                    job.deliverable_expected = False
-                # The files its steps left behind are still this job's,
-                # whichever of the two it was.
-                self._collect_artifacts(job)
+                job.deliverable_expected = False
+            # What the run wrote (only a DONE run gets that far), then the
+            # files its steps left behind, which are this job's either way.
+            self._collect_artifacts(job, deliverables=written)
             await self._persist_summary(job)
             if watch is not None:
                 await self._release(job, watch)
@@ -453,75 +426,6 @@ class JobManager:
         --wait` prints it, and the conversation carries it in full (#83, #85).
         """
         return bool(job.formats)
-
-    def _write_outputs(self, job: Job) -> None:
-        """Produce the deliverables of a job that answered — and survive failing to.
-
-        Whatever the reporter hands back IS the job's deliverables: one
-        Reporter writes one file, a composed one writes several. The files a
-        capability produced for itself are collected next to them, so
-        `Job.outputs` is the whole of what this job leaves behind.
-
-        A write that raises must NOT escape: this runs after the stream's
-        own `try`, so an exception here would skip the final persist and
-        leave the store holding the RUNNING row the last finished step
-        wrote — a job with an answer that no caller can ever reach, until
-        some later process start settles it as interrupted.
-
-        The job therefore stays DONE: the graph answered, the answer is
-        persisted, only the file failed — and `job.error` says which format
-        and why. FAILED would misreport the work *and* be a dead end, since
-        it is resumable in name only (the graph ran to completion, so the
-        checkpoint has nothing pending and `resume_job` would refuse it).
-        A separate `try` on purpose: the run's own `except` means "the graph
-        blew up", which a full disk is not.
-
-        **Only a job that reached a DELIVERED terminal AND was meant to leave
-        a document gets here** — one that answered, or one that declared it
-        could not (#59), which is a run with something to hand back either
-        way, and one whose request or whose shape asked for a file
-        (`_deliverable_wanted`, #84). Running the Reporter for a run that
-        *stopped* would write a report of nothing, and running it for a run
-        nobody asked a document of writes a chat turn with a provenance
-        section; `_collect_artifacts` is the half that still applies to both,
-        and it is called on its own there.
-        """
-        reporter: Any = None
-        try:
-            # Composed INSIDE the `try`: a Reporter that cannot be built is a
-            # deliverable that could not be written, exactly like one whose
-            # write raised. Outside it, the exception skipped the final
-            # persist and left the job RUNNING forever — found by falsifying
-            # #96, where composing nothing raises by design.
-            reporter = self._reporter_for(job)
-            outputs = list(reporter.write(job, self.reports_dir))
-        except Exception as e:
-            failure = e if isinstance(e, ReportWriteError) else ReportWriteError(
-                getattr(reporter, "format", None) or ",".join(job.formats or [])
-                or "unknown", e)
-            outputs = failure.outputs       # keep what did make it to disk
-            job.error = str(failure)
-        # Annexes are collected regardless of how the report went: they are on
-        # disk either way, and a file with no JobOutput is a file nobody can
-        # find — the same reason `ReportWriteError` carries its outputs.
-        self._collect_artifacts(job, deliverables=outputs)
-
-    def _reporter_for(self, job: Job) -> Any:
-        """The Reporter this job's deliverable goes through.
-
-        Composed from the job's own formats — from the caller, which
-        `create_job` already accepted, or from the engine's own document step,
-        which can only name what this deployment renders (#90). Either way
-        this cannot be where a format is found wanting. A fixed `reporter`,
-        when one was set, overrides the composition.
-        """
-        if self.reporter is not None:
-            return self.reporter
-        # Only ever reached with a non-empty `formats` (`_deliverable_wanted`).
-        # There is no fallback for an empty one on purpose: "no formats" is
-        # "no document" (#84, #96), and `compose_reporters([])` raises rather
-        # than guess markdown.
-        return self.reporter_factory(job.formats or [])
 
     def _collect_artifacts(
         self,
@@ -616,7 +520,8 @@ class JobManager:
         )
         return outputs, missing
 
-    async def _apply(self, job: Job, update: JobUpdate, errors: list[NodeError]) -> None:
+    async def _apply(self, job: Job, update: JobUpdate, errors: list[NodeError],
+                     written: list[JobOutput]) -> None:
         """Fold one domain update from the runner into the job."""
         match update:
             case NodeErrors(node_errors):
@@ -660,6 +565,12 @@ class JobManager:
                 job.step_finished_at[capability] = now_iso()
                 await self.repo.save_result(job.job_id, capability, result)
                 await self._persist_summary(job)   # touch updated_at for progress
+            case DocumentWritten(outputs, error):
+                # A write that failed leaves the run DONE (#28): the answer is
+                # the work, and `error` says which format and why.
+                written[:] = outputs
+                if error:
+                    job.error = "; ".join(filter(None, [job.error, error]))
             case Terminal(terminal_kind, final_answer, user_error_message):
                 job.terminal_kind = terminal_kind
                 job.final_answer = final_answer

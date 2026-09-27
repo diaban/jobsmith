@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..dag.state import CapabilityResult, NodeError, Plan
+from .models import JobOutput
 
 _TERMINAL_NODES = ("post_process", "unanswered", "escalate", "user_error")
 
@@ -66,6 +67,17 @@ class NodeErrors:
 
 
 @dataclass(frozen=True)
+class DocumentWritten:
+    """The run wrote its document (`write_document`), or failed to (#28).
+
+    `outputs` are the deliverables it wrote, the first one `main`; `error`
+    says which format failed and why, and leaves the run DONE.
+    """
+    outputs: list[JobOutput]
+    error: str | None
+
+
+@dataclass(frozen=True)
 class Terminal:
     """The run reached a terminal node."""
     terminal_kind: str | None
@@ -73,7 +85,7 @@ class Terminal:
     user_error_message: str | None
 
 
-JobUpdate = PlanReady | FormatsChosen | StepFinished | NodeErrors | Terminal
+JobUpdate = PlanReady | FormatsChosen | StepFinished | NodeErrors | Terminal | DocumentWritten
 
 
 class GraphRunner:
@@ -94,6 +106,9 @@ class GraphRunner:
         query: str,
         inputs: dict[str, Any],
         formats: list[str] | None = None,
+        *,
+        document_name: str = "",
+        document_title: str = "",
     ) -> AsyncIterator[JobUpdate]:
         """Start a run from the query.
 
@@ -104,7 +119,8 @@ class GraphRunner:
         """
         async for update in self._translate(self.graph.astream(
             {"query": query, "inputs": inputs, "job_id": job_id,
-             "document_formats": formats},
+             "document_formats": formats, "document_name": document_name,
+             "document_title": document_title},
             config=self._config(job_id),
             stream_mode="updates",
         )):
@@ -175,6 +191,10 @@ class GraphRunner:
                     result = (value.get("results") or {}).get(capability)
                     if result is not None:
                         yield StepFinished(capability, result)
+                elif node == "write_document":
+                    yield DocumentWritten(
+                        [JobOutput(**o) for o in value.get("document_outputs") or []],
+                        value.get("document_error"))
                 elif node in _TERMINAL_NODES:
                     yield Terminal(
                         value.get("terminal_kind"),

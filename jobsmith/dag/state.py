@@ -192,6 +192,13 @@ class AgentState(TypedDict, total=False):
     # in the last case — which is what keeps a caller that spoke authoritative
     # — and `engine/runner.py` reads the write back off that node's name.
     document_formats: list[str] | None
+    # What the requester asked the document to be called and titled (#55),
+    # seeded at entry; "" leaves both to the Reporter (`dag/deliver.py`).
+    document_name: str
+    document_title: str
+    # What the run's own document step wrote, and why a write failed (#28).
+    document_outputs: list[dict[str, Any]]
+    document_error: str | None
 
     # --- Planner output ---
     plan: Plan | None

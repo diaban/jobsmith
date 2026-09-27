@@ -194,8 +194,8 @@ def make_manager(store, checkpointer, tmp_path, caps_spec, *, fail=()):
         default="A sufficiently long final answer for the usage test.",
     )
     caps = [Metered(name, llm, calls=calls, fail=name in fail) for name, calls in caps_spec]
-    graph = build_agent(Deps(llm=llm), CapabilityRegistry(caps), checkpointer=checkpointer)
-    return JobManager(graph, store, reports_dir=tmp_path / "artifacts"), llm
+    graph = build_agent(Deps(llm=llm), CapabilityRegistry(caps), checkpointer=checkpointer, reports_dir=tmp_path / "artifacts")
+    return JobManager(graph, store), llm
 
 
 # ---------------------------------------------------------------- end to end
@@ -477,8 +477,8 @@ async def test_two_jobs_running_at_once_never_bill_each_other(store, checkpointe
         llm = FakeLLM({"planner": plan_json(name)},
                       default="A sufficiently long final answer for this run.")
         graph = build_agent(Deps(llm=llm), CapabilityRegistry([capability]),
-                            checkpointer=MemorySaver())
-        return JobManager(graph, store, reports_dir=tmp_path / "artifacts")
+                            checkpointer=MemorySaver(), reports_dir=tmp_path / "artifacts")
+        return JobManager(graph, store)
 
     alpha, beta = manager_for("alpha", 100), manager_for("beta", 7)
     job_a = await alpha.create_job("A")

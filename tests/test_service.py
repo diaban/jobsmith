@@ -79,9 +79,10 @@ PROPOSED = {"type": "proposal", "query": "analyse it", "rationale": "multi-step"
             "formats": ["markdown"], "from_jobs": []}
 
 
-def chair_service(store, checkpointer, tmp_path, *, approval=True, sync_timeout=None):
+def chair_service(store, checkpointer, tmp_path, *, approval=True, sync_timeout=None,
+                  reporter=None):
     """`approval=True` by default: the proposal is the richest terminal the port carries."""
-    return service_over(make_manager(store, checkpointer, tmp_path), [
+    return service_over(make_manager(store, checkpointer, tmp_path, reporter=reporter), [
         launch_call("analyse it", "multi-step", document_name="chair_notes",
                     document_title="Comparatif", formats=["default"]),
         AIMessage(content="launched!"),
@@ -160,8 +161,7 @@ async def test_a_binary_deliverable_is_refused_the_same_way_by_both_backings(
     store, checkpointer, tmp_path, through
 ):
     """`get_report` promises a string: a PDF is refused, naming its download. → 0034"""
-    service = chair_service(store, checkpointer, tmp_path)
-    service.manager.reporter = StubPdf()
+    service = chair_service(store, checkpointer, tmp_path, reporter=StubPdf())
     client = through(service)
     job = await wait_done(client, (await client.launch_job("print it",
                                                            formats=["default"]))["job_id"])

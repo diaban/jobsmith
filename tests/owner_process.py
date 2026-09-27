@@ -50,9 +50,8 @@ async def main(db: str, reports: str) -> None:
                       default="A sufficiently long final answer for the job test.")
         caps = [Step("alpha", 0.0), Step("slow", 60.0)]
         graph = build_agent(Deps(llm=llm), CapabilityRegistry(caps),
-                            checkpointer=checkpointer)
-        mgr = JobManager(graph, store, reports_dir=reports,
-                         lease=LeasePolicy(heartbeat=0.1))
+                            checkpointer=checkpointer, reports_dir=reports)
+        mgr = JobManager(graph, store, lease=LeasePolicy(heartbeat=0.1))
         job = await mgr.create_job("a job owned by another process")
         print(job.job_id, flush=True)
         settled = await mgr.run_job(job.job_id)

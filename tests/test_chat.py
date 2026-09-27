@@ -429,8 +429,8 @@ async def test_a_job_whose_report_failed_is_announced_honestly(
             raise OSError("No space left on device")
 
     session, model = make_session(store, checkpointer, tmp_path,
-                                  [AIMessage(content="Here is what came back.")])
-    session.manager.reporter = Boom()
+                                  [AIMessage(content="Here is what came back.")],
+                                  reporter=Boom())
     job = await session.manager.create_job("crunch numbers", session_id=session.session_id, formats=["default"])
     done = await session.manager.run_job(job.job_id)
     assert done.status is JobStatus.DONE and done.report_path is None

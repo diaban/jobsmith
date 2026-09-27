@@ -351,8 +351,8 @@ async def test_annexes_are_opt_in_and_rendered_by_the_capability(store, checkpoi
 
     caps = [ProseCap("prose"), StructuredCap("structured")]
     registry = CapabilityRegistry(caps)
-    mgr = make_manager(store, checkpointer, tmp_path, caps=caps)
-    mgr.reporter = MarkdownReport(registry, with_annexes=True)
+    mgr = make_manager(store, checkpointer, tmp_path, caps=caps,
+                       reporter=MarkdownReport(registry, with_annexes=True))
     job = await mgr.create_job("render me", formats=["markdown"])
     done = await mgr.run_job(job.job_id)
 

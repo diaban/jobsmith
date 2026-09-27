@@ -45,8 +45,8 @@ async def process(db: str, tmp_path, *, slow_delay: float = 30.0,
         checkpointer, store = await open_persistence(db, stack)
         alpha, slow = CountingEcho("alpha"), CountingEcho("slow", delay=slow_delay)
         graph = build_agent(Deps(llm=plan_llm()), CapabilityRegistry([alpha, slow]),
-                            checkpointer=checkpointer)
-        mgr = JobManager(graph, store, reports_dir=tmp_path / "artifacts", lease=policy)
+                            checkpointer=checkpointer, reports_dir=tmp_path / "artifacts")
+        mgr = JobManager(graph, store, lease=policy)
         mgr.caps = (alpha, slow)          # type: ignore[attr-defined]  (test handle)
         yield mgr
 
@@ -368,8 +368,8 @@ async def test_a_process_local_store_coordinates_nothing(store, checkpointer, tm
     monkeypatch.setattr("jobsmith.engine.manager.Heartbeat", no_heartbeat)
     alpha, slow = CountingEcho("alpha"), CountingEcho("slow")
     graph = build_agent(Deps(llm=plan_llm()), CapabilityRegistry([alpha, slow]),
-                        checkpointer=checkpointer)
-    mgr = JobManager(graph, store, reports_dir=tmp_path / "artifacts")
+                        checkpointer=checkpointer, reports_dir=tmp_path / "artifacts")
+    mgr = JobManager(graph, store)
     assert mgr.repo.shared is False
     job = await mgr.create_job("q")
     assert (await mgr.run_job(job.job_id)).status is JobStatus.DONE

@@ -51,10 +51,12 @@ def charts(tmp_path) -> LocalArtifactStore:
     return LocalArtifactStore(tmp_path / "artifacts")
 
 
-def drawing(store, checkpointer, tmp_path, *caps, deps=None, llm=None) -> JobManager:
+def drawing(store, checkpointer, tmp_path, *caps, deps=None, llm=None,
+            reporter=None) -> JobManager:
     caps = caps or (ChartCapability(charts(tmp_path)),)
     return make_manager(store, checkpointer, tmp_path, caps=list(caps),
-                        llm=llm or planning(*[c.spec.name for c in caps], deps=deps))
+                        llm=llm or planning(*[c.spec.name for c in caps], deps=deps),
+                        reporter=reporter)
 
 
 async def run(mgr: JobManager, query="draw me something", **create):
@@ -128,8 +130,7 @@ async def test_a_file_a_step_produced_becomes_an_annex(store, checkpointer, tmp_
 async def test_annexes_come_after_the_deliverables_and_there_is_one_main(
     store, checkpointer, tmp_path
 ):
-    mgr = drawing(store, checkpointer, tmp_path)
-    mgr.reporter = compose_reporters("markdown,html")
+    mgr = drawing(store, checkpointer, tmp_path, reporter=compose_reporters("markdown,html"))
     done = await run(mgr, formats=["markdown"])
     assert [(o.format, o.role) for o in done.outputs] == [
         ("markdown", "main"), ("html", "alternate"), ("svg", "annex")]
@@ -155,8 +156,7 @@ async def test_annexes_survive_a_report_that_could_not_be_written(
         def write(self, job, directory):
             raise OSError("No space left on device")
 
-    mgr = drawing(store, checkpointer, tmp_path)
-    mgr.reporter = Boom()
+    mgr = drawing(store, checkpointer, tmp_path, reporter=Boom())
     done = await run(mgr, formats=["markdown"])
 
     [annex] = done.outputs
@@ -285,7 +285,7 @@ async def test_a_run_that_blew_up_mid_stream_still_lists_what_landed(store, tmp_
     chart.write_text(SVG)
 
     class ExplodingRunner:
-        async def stream(self, job_id, query, inputs, formats=None):
+        async def stream(self, job_id, query, inputs, formats=None, **document):
             yield PlanReady({"rationale": "r",
                              "steps": [{"capability": "chart", "depends_on": []}]})
             yield StepFinished("chart", {"ok": True, "data": {}, "meta": artifact_meta(
@@ -295,7 +295,7 @@ async def test_a_run_that_blew_up_mid_stream_still_lists_what_landed(store, tmp_
         async def pending(self, job_id):
             return ()
 
-    mgr = JobManager(store=store, runner=ExplodingRunner(), reports_dir=tmp_path / "artifacts")
+    mgr = JobManager(store=store, runner=ExplodingRunner())
     done = await run(mgr)
 
     assert done.status is JobStatus.FAILED and done.report_path is None

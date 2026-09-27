@@ -42,8 +42,8 @@ async def test_a_binary_deliverable_is_refused_by_report_and_offered_by_outputs(
     that way nor absent, so it is a 415 that names the download — a 404 would
     say the job has no report, which is the one thing that is false. The bytes
     are on /outputs/{name}, and this asserts they really are."""
-    app, manager = make_app(store, checkpointer, tmp_path, [AIMessage(content="hi")])
-    manager.reporter = StubPdf()
+    app, manager = make_app(store, checkpointer, tmp_path, [AIMessage(content="hi")],
+                            reporter=StubPdf())
 
     async with client_for(app) as client:
         job = await wait_done(client, (await client.post(

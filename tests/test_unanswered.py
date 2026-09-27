@@ -32,13 +32,13 @@ REFUSAL = (
 )
 
 
-def make_graph(checkpointer, answer: str):
+def make_graph(checkpointer, answer: str, reports_dir="artifacts"):
     llm = FakeLLM(
         {"planner": plan_json("alpha"), "ONLY the provided": answer},
         default="a plain answer long enough to pass the length floor",
     )
     graph = build_agent(Deps(llm=llm), CapabilityRegistry([SlowEcho("alpha")]),
-                        checkpointer=checkpointer)
+                        checkpointer=checkpointer, reports_dir=reports_dir)
     return graph, llm
 
 
@@ -121,8 +121,8 @@ async def test_a_declared_refusal_is_never_refined(checkpointer):
 # ------------------------------------------------------------- the job
 
 def make_manager(store, checkpointer, tmp_path, answer: str) -> JobManager:
-    graph, _ = make_graph(checkpointer, answer)
-    return JobManager(graph, store, reports_dir=tmp_path / "artifacts")
+    graph, _ = make_graph(checkpointer, answer, tmp_path / "artifacts")
+    return JobManager(graph, store)
 
 
 async def test_the_job_is_done_keeps_its_work_and_says_it_did_not_answer(
