@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ..engine.facts import publish
 from .deps import Deps
 from .profile import DEFAULT_PLANNER_TEMPLATE
 from .registry import CapabilityRegistry
@@ -155,6 +156,7 @@ class Planner:
             )
             parsed = json.loads(raw_response)
             plan = self._validate_plan(parsed, state)
+            publish("plan", plan)          # the job shows it as soon as it exists
             return {"plan": plan}
         except (json.JSONDecodeError, ValueError) as e:
             err: NodeError = {

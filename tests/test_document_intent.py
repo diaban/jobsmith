@@ -10,13 +10,15 @@ import json
 
 import pytest
 from conftest import FakeLLM
+from langgraph.graph import END, START, StateGraph
 from support import SlowEcho, make_manager
 
 from jobsmith.dag.deps import Deps
 from jobsmith.dag.document import DocumentIntent
 from jobsmith.dag.profile import FILE_REQUEST_RULE
+from jobsmith.dag.state import AgentState
+from jobsmith.engine.facts import FACT_KEY
 from jobsmith.engine.models import JobStatus
-from jobsmith.engine.runner import FormatsChosen, GraphRunner, PlanReady
 
 RENDERABLE = ("html", "markdown", "pdf")
 NAMED_HTML = json.dumps({"document": "named", "formats": ["html"]})
@@ -109,38 +111,31 @@ async def test_it_asks_nothing_when_there_is_nothing_to_decide(seeded, formats):
     assert asked(llm) == []
 
 
-# ------------------------------------------------------------ the runner's translation
+# ------------------------------------------------------------ what the job hears
 
-class FakeGraph:
-    """A graph that publishes the updates it was given, LangGraph-shaped."""
-
-    def __init__(self, *updates):
-        self.updates = updates
-        self.inputs: list[dict] = []
-
-    async def astream(self, state, config=None, stream_mode=None):
-        self.inputs.append(state)
-        for update in self.updates:
-            yield update
+async def facts_of(step: DocumentIntent, state: dict) -> list[dict]:
+    """What the node tells the job running it, run as a graph would run it."""
+    g = StateGraph(AgentState)
+    g.add_node("document_intent", step.run)
+    g.add_edge(START, "document_intent")
+    g.add_edge("document_intent", END)
+    return [c async for c in g.compile().astream(state, stream_mode="custom")]
 
 
-async def test_only_the_node_s_own_write_is_announced():
-    """Read off the node name, never the seeded channel (→ 0053)."""
-    graph = FakeGraph(
-        {"document_intent": {"document_formats": []}},
-        {"router": {"route": "plan", "document_formats": ["html"]}},
-        {"planner": {"plan": {"steps": [], "rationale": "r"}}},
-    )
-    updates = [u async for u in GraphRunner(graph).stream("j1", "q", {}, ["markdown"])]
-
-    assert updates == [FormatsChosen([]), PlanReady({"steps": [], "rationale": "r"})]
-    assert graph.inputs[0]["document_formats"] == ["markdown"]
-
-
-@pytest.mark.parametrize("published", [{}, None])
-async def test_a_node_that_decided_nothing_still_announces_it(published):
-    runner = GraphRunner(FakeGraph({"document_intent": published}))
-    assert [u async for u in runner.stream("j1", "q", {}, None)] == [FormatsChosen(None)]
+@pytest.mark.parametrize(("reply", "seeded", "heard"), ids=_id, argvalues=[
+    ({"document": "named", "formats": ["html"]}, None, ["html"]),
+    ({"document": "none"}, None, []),                   # "no file", said
+    ({"document": "unspecified"}, None, None),          # silence
+    ({"document": "named", "formats": ["html"]}, ["markdown"], None),   # a caller spoke
+])
+async def test_the_job_hears_the_question_settled_whichever_way(reply, seeded, heard):
+    """A list, `[]`, or `None` for "wrote nothing" — silence and a caller who
+    had spoken alike: the job tells those two apart from the record it seeded
+    the run with (→ 0090, 0096)."""
+    state = {"query": "a page about chairs"}
+    if seeded is not None:
+        state["document_formats"] = seeded
+    assert await facts_of(node(reply), state) == [{FACT_KEY: "formats", "value": heard}]
 
 
 # ------------------------------------------------------------ in the graph

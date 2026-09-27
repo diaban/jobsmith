@@ -13,7 +13,7 @@ from jobsmith.dag.builder import build_agent
 from jobsmith.dag.deps import Deps
 from jobsmith.dag.registry import CapabilityRegistry
 from jobsmith.engine.models import JobStatus
-from jobsmith.engine.runner import GraphRunner, StepFinished
+from jobsmith.engine.runner import Fact, GraphRunner
 
 
 async def test_create_run_done_with_store_contents(store, checkpointer, tmp_path):
@@ -455,13 +455,12 @@ async def test_a_chain_records_when_each_step_actually_finished(
 
 
 async def test_the_runner_reports_each_step_once(store, checkpointer, tmp_path):
-    """One `StepFinished` per capability — the cause of #53.
+    """One `step:` fact per capability, named by the step itself (→ 0053).
 
     A capability's node update carries the whole `results` channel, not its
-    own contribution: the sub-graph is seeded with the parent state by
-    `Send(node, state)` and echoes the union back. Translating every key of
-    it re-announced every earlier step on every wave, which is what
-    overwrote their timestamps (and re-saved their results, quadratically).
+    own contribution — the sub-graph is seeded with the parent state and
+    echoes the union back — so reading steps off it re-announced every earlier
+    step on every wave, overwriting their timestamps.
     """
     caps = [SlowEcho(n) for n in ("alpha", "beta", "gamma")]
     llm = FakeLLM(
@@ -470,9 +469,9 @@ async def test_the_runner_reports_each_step_once(store, checkpointer, tmp_path):
         default="A sufficiently long final answer for the job test.",
     )
     graph = build_agent(Deps(llm=llm), CapabilityRegistry(caps), checkpointer=checkpointer)
-    announced = [u.capability async for u in GraphRunner(graph).stream("r1", "chain", {})
-                 if isinstance(u, StepFinished)]
-    assert announced == ["alpha", "beta", "gamma"]
+    announced = [u.key async for u in GraphRunner(graph).stream("r1", {"query": "chain"})
+                 if isinstance(u, Fact) and u.key.startswith("step:")]
+    assert announced == ["step:alpha", "step:beta", "step:gamma"]
 
 
 def test_the_deliverable_names_its_run_and_does_not_recite_it():

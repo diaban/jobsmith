@@ -278,17 +278,17 @@ async def test_a_resumed_job_lists_each_file_exactly_once(store, checkpointer, t
 
 async def test_a_run_that_blew_up_mid_stream_still_lists_what_landed(store, tmp_path):
     """The runner itself raised — a terminal no real graph produces on demand."""
-    from jobsmith.engine.runner import PlanReady, StepFinished
+    from jobsmith.engine.runner import Fact
 
     chart = tmp_path / "artifacts" / "landed.svg"
     chart.parent.mkdir(parents=True)
     chart.write_text(SVG)
 
     class ExplodingRunner:
-        async def stream(self, job_id, query, inputs, formats=None, **document):
-            yield PlanReady({"rationale": "r",
-                             "steps": [{"capability": "chart", "depends_on": []}]})
-            yield StepFinished("chart", {"ok": True, "data": {}, "meta": artifact_meta(
+        async def stream(self, job_id, input):
+            yield Fact("plan", {"rationale": "r",
+                                "steps": [{"capability": "chart", "depends_on": []}]})
+            yield Fact("step:chart", {"ok": True, "data": {}, "meta": artifact_meta(
                 ArtifactRef(str(chart)), ArtifactRef(str(chart.parent / "half.svg")))})
             raise RuntimeError("the graph blew up")
 

@@ -7,6 +7,7 @@ or a real store again, a responsibility has leaked back into the manager.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 
 import pytest
 
@@ -14,13 +15,7 @@ from jobsmith.engine.events import InProcessEvents, job_event
 from jobsmith.engine.manager import JobManager
 from jobsmith.engine.models import Job, JobOutput, JobStatus
 from jobsmith.engine.repository import StoreJobRepository
-from jobsmith.engine.runner import (
-    DocumentWritten,
-    NodeErrors,
-    PlanReady,
-    StepFinished,
-    Terminal,
-)
+from jobsmith.engine.runner import Fact, Output
 from jobsmith.engine.usage import record_usage
 
 
@@ -36,11 +31,11 @@ class FakeRunner:
         self.updates = updates
         self.pending_nodes = tuple(pending)
         self.on_resume = on_resume
-        self.calls: list[tuple[str, str, dict]] = []
+        self.calls: list[tuple[str, dict]] = []
         self.resumed: list[str] = []
 
-    async def stream(self, job_id, query, inputs, formats=None, **document):
-        self.calls.append((job_id, query, inputs))
+    async def stream(self, job_id, input):
+        self.calls.append((job_id, input))
         for update in self.updates:
             yield update
 
@@ -106,6 +101,13 @@ class DictRepository:
 PLAN = {"rationale": "because", "steps": [{"capability": "alpha", "depends_on": []}]}
 
 
+def ended(kind, answer=None, *, message=None, errors=(), written=(), write_error=None):
+    """What a DAG run returns, reduced to the keys the job reads of it."""
+    return Output({"terminal_kind": kind, "final_answer": answer, "user_error_message": message,
+                   "errors": list(errors), "document_outputs": [asdict(o) for o in written],
+                   "document_error": write_error})
+
+
 def make_manager(tmp_path, *updates, pending=(), on_resume=None, **kwargs):
     return JobManager(
         repository=DictRepository(),
@@ -117,10 +119,9 @@ def make_manager(tmp_path, *updates, pending=(), on_resume=None, **kwargs):
 async def test_use_cases_run_without_a_graph_or_a_store(tmp_path):
     mgr = make_manager(
         tmp_path,
-        PlanReady(PLAN),
-        StepFinished("alpha", {"ok": True, "data": {"echo": "hi"}}),
-        Terminal("answer", "The final answer.", None),
-        DocumentWritten([JobOutput(path="report.md", format="markdown")], None),
+        Fact("plan", PLAN),
+        Fact("step:alpha", {"ok": True, "data": {"echo": "hi"}}),
+        ended("answer", "The final answer.", written=[JobOutput(path="report.md", format="markdown")]),
     )
     job = await mgr.create_job("do it", {"k": "v"}, session_id="s1", formats=["markdown"])
     done = await mgr.run_job(job.job_id)
@@ -131,7 +132,9 @@ async def test_use_cases_run_without_a_graph_or_a_store(tmp_path):
     assert done.step_finished_at["alpha"]
     assert done.report_path is not None
     # the runner received the job's own parameters
-    assert mgr.runner.calls == [(job.job_id, "do it", {"k": "v"})]
+    [(job_id, graph_input)] = mgr.runner.calls
+    assert job_id == job.job_id and graph_input["query"] == "do it"
+    assert graph_input["inputs"] == {"k": "v"}
     # the repository saw the plan and the step result, through the port only
     assert mgr.repo.plans[job.job_id] == PLAN
     assert (job.job_id, "alpha") in mgr.repo.results
@@ -140,8 +143,8 @@ async def test_use_cases_run_without_a_graph_or_a_store(tmp_path):
 async def test_terminal_without_answer_fails_and_writes_no_report(tmp_path):
     mgr = make_manager(
         tmp_path,
-        NodeErrors([{"source": "planner", "kind": "plan_fail", "message": "nope"}]),
-        Terminal("user_error", None, "cannot help with that"),
+        ended("user_error", message="cannot help with that",
+              errors=[{"source": "planner", "kind": "plan_fail", "message": "nope"}]),
     )
     job = await mgr.create_job("q")
     done = await mgr.run_job(job.job_id)
@@ -168,9 +171,9 @@ async def test_a_broken_runner_fails_the_job_rather_than_the_caller(tmp_path):
 async def test_resuming_goes_through_the_runner_port_too(tmp_path):
     """A resume asks the runner what is still pending and re-enters it — no
     graph, no checkpoint API, nothing the manager knows about LangGraph."""
-    mgr = make_manager(tmp_path, PlanReady(PLAN),
-                       Terminal("answer", "Finished on the second try.", None),
-                       DocumentWritten([JobOutput(path="report.md", format="markdown")], None), pending=("cap_alpha",))
+    mgr = make_manager(tmp_path, Fact("plan", PLAN),
+                       ended("answer", "Finished on the second try.", written=[JobOutput(path="report.md", format="markdown")]),
+                       pending=("cap_alpha",))
     job = await mgr.create_job("resume me", formats=["markdown"])
     await mgr.cancel_job(job.job_id)
 
@@ -183,7 +186,7 @@ async def test_resuming_goes_through_the_runner_port_too(tmp_path):
 
 
 async def test_resume_is_refused_when_the_runner_has_nothing_pending(tmp_path):
-    mgr = make_manager(tmp_path, Terminal("answer", "unreachable", None))  # pending: ()
+    mgr = make_manager(tmp_path, ended("answer", "unreachable"))  # pending: ()
     job = await mgr.create_job("q")
     await mgr.cancel_job(job.job_id)
     with pytest.raises(ValueError, match="no checkpoint to resume from"):
@@ -195,7 +198,7 @@ async def test_a_resumed_attempt_bills_on_top_of_the_stopped_one(tmp_path):
     """`job.usage` is what the JOB cost, not what its last attempt cost — the
     tokens the interrupted attempt burned were spent all the same."""
     mgr = make_manager(
-        tmp_path, Terminal("answer", "Done at last.", None), pending=("cap_alpha",),
+        tmp_path, ended("answer", "Done at last."), pending=("cap_alpha",),
         on_resume=lambda: record_usage("claude-opus-5", input_tokens=10, output_tokens=5),
     )
     job = await mgr.create_job("expensive")
@@ -220,7 +223,7 @@ async def test_manager_refuses_to_be_built_without_a_backing(tmp_path):
 
 async def test_events_are_published_through_the_port(tmp_path):
     events = InProcessEvents()
-    mgr = make_manager(tmp_path, Terminal("answer", "done.", None), events=events)
+    mgr = make_manager(tmp_path, ended("answer", "done."), events=events)
     queue = mgr.subscribe()
     job = await mgr.create_job("watched", session_id="s1")
     await mgr.run_job(job.job_id)
@@ -253,8 +256,7 @@ async def test_the_job_s_deliverables_are_what_the_run_says_it_wrote(tmp_path):
     is handed, and still knows which one is *the* report."""
     written = [JobOutput(path="r.md", format="markdown"),
                JobOutput(path="r.html", format="html", role="alternate")]
-    mgr = make_manager(tmp_path, PlanReady(PLAN), Terminal("answer", "Done.", None),
-                       DocumentWritten(written, None))
+    mgr = make_manager(tmp_path, Fact("plan", PLAN), ended("answer", "Done.", written=written))
     job = await mgr.create_job("q", formats=["markdown"])
     done = await mgr.run_job(job.job_id)
 
@@ -269,8 +271,8 @@ async def test_a_failed_report_write_leaves_the_job_done_and_persisted(tmp_path)
     """The run answered; only the file failed. That is DONE with the error the
     run reported — and, above all, *persisted*: a job with an answer nobody
     could reach is what an escaping write once left behind. → 0028"""
-    mgr = make_manager(tmp_path, PlanReady(PLAN), Terminal("answer", "The answer.", None),
-                       DocumentWritten([], "markdown: No space left on device"))
+    mgr = make_manager(tmp_path, Fact("plan", PLAN), ended(
+        "answer", "The answer.", write_error="markdown: No space left on device"))
     job = await mgr.create_job("q", formats=["markdown"])
     done = await mgr.run_job(job.job_id)
 

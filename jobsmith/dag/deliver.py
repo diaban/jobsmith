@@ -85,7 +85,7 @@ class DocumentWriter:
             return {}
         ledger = current_ledger()
         view = RunView(
-            job_id=state.get("job_id", ""),            # seeded at entry by the job runner
+            job_id=state.get("job_id", ""),            # seeded at entry by the job
             query=state["query"],
             document_name=state.get("document_name", ""),
             document_title=state.get("document_title", ""),

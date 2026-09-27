@@ -20,6 +20,7 @@ from typing import Annotated, Any, Required, TypedDict
 from langgraph.graph import StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from ..engine.facts import publish
 from ..engine.usage import current_ledger
 from .state import AgentState, CapabilityResult, NodeError, merge_results
 
@@ -154,6 +155,7 @@ class Capability(ABC):
 
     def _emit_success(self, data: dict[str, Any], meta: dict[str, Any] | None = None) -> dict:
         result: CapabilityResult = {"ok": True, "data": data, "meta": self._usage_meta(meta)}
+        publish(f"step:{self.spec.name}", result)     # the job records it as it lands
         return {
             "results": {self.spec.name: result},
             "completed_capabilities": [self.spec.name],
@@ -184,6 +186,7 @@ class Capability(ABC):
         # is worth having.
         result: CapabilityResult = {"ok": False, "error": detail,
                                     "meta": self._usage_meta(meta)}
+        publish(f"step:{self.spec.name}", result)
         return {
             "results": {self.spec.name: result},
             "completed_capabilities": [self.spec.name],

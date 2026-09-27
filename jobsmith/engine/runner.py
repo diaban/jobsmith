@@ -1,23 +1,27 @@
-"""Driving a graph run, and translating it into domain updates.
+"""Driving a graph run, and translating it into job updates.
 
-This is the **only** module that knows the shape of LangGraph's
-`astream(stream_mode="updates")` events — `{node_name: state_update}`, node
-names like `cap_<capability>`, terminal node names. Everything above it reacts
-to the small typed updates below, so the JobManager never parses graph output
-and a test can drive it with a fake runner.
+This is the **only** module that knows the shape of LangGraph's stream, and
+it knows nothing about the graph it drives (docs/design/core-v1.md, "The
+contract a graph signs"). It streams three modes, sub-graphs included, and
+yields three updates:
 
-The stream is incremental: a mounted sub-graph is published at the superstep
-it completes. What it publishes is its whole output state, though — for a
-capability that means the *accumulated* `results`, since `Send` seeds it with
-the parent's — so which step just finished is read from the node name and
-never from the payload's keys.
+    NodeFinished   a node of the ROOT graph finished — its name, no payload
+    Fact           a node, at any depth, published `key = value`
+                   (`engine/facts.py`)
+    Output         what the run returned: the last root `values`, restricted
+                   to the graph's output channels — exactly what `ainvoke`
+                   would have returned. Only a run that completed has one.
+
+A sub-graph's own steps and states are its business and never surface; its
+facts do, because `subgraphs=True` is what carries them to the parent's
+stream (checked on langgraph 1.2.11: without it they are lost).
 
 Reading progress from the stream (rather than instrumenting nodes) is what
 keeps graph nodes job-agnostic: they do not know a Job exists.
 
-There are two ways in — `stream()` starts a run from the job's query,
-`resume()` re-enters the thread's checkpoint — and both are translated by the
-same code, so the JobManager folds a resumed run exactly like a first one.
+There are two ways in — `stream()` starts a run from its input, `resume()`
+re-enters the thread's checkpoint — and both are translated by the same code,
+so the JobManager folds a resumed run exactly like a first one.
 """
 from __future__ import annotations
 
@@ -25,71 +29,33 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
-from ..dag.state import CapabilityResult, NodeError, Plan
-from .models import JobOutput
-
-_TERMINAL_NODES = ("post_process", "unanswered", "escalate", "user_error")
+from .facts import FACT_KEY
 
 
 @dataclass(frozen=True)
-class PlanReady:
-    """The planner validated a DAG."""
-    plan: Plan
+class NodeFinished:
+    """A node of the root graph finished."""
+    node: str
 
 
 @dataclass(frozen=True)
-class StepFinished:
-    """One capability produced its result (ok or not)."""
-    capability: str
-    result: CapabilityResult
+class Fact:
+    """A node published a named fact (`engine/facts.publish`)."""
+    key: str
+    value: Any
 
 
 @dataclass(frozen=True)
-class FormatsChosen:
-    """The engine's document step has finished reading the request (#90).
-
-    Three states, the same three `Job.formats` has: a list of names, `[]` for
-    "no document at all", and **`None` for "it wrote nothing"**. The last one
-    is emitted since #96, because it became a decision: a request nobody
-    named a format for and whose sentence asked for no file gets no file,
-    and this is the moment that is known. Whether `None` is that silence or
-    a caller who had already spoken (the node returns without writing when
-    the channel was seeded) is the manager's to tell — it holds the record
-    the graph was seeded from, and this module only knows the stream.
-    """
-    formats: list[str] | None
+class Output:
+    """The run completed and returned this."""
+    value: Any
 
 
-@dataclass(frozen=True)
-class NodeErrors:
-    """Errors a node accumulated; recoverable ones do not stop the run."""
-    errors: list[NodeError]
-
-
-@dataclass(frozen=True)
-class DocumentWritten:
-    """The run wrote its document (`write_document`), or failed to (#28).
-
-    `outputs` are the deliverables it wrote, the first one `main`; `error`
-    says which format failed and why, and leaves the run DONE.
-    """
-    outputs: list[JobOutput]
-    error: str | None
-
-
-@dataclass(frozen=True)
-class Terminal:
-    """The run reached a terminal node."""
-    terminal_kind: str | None
-    final_answer: str | None
-    user_error_message: str | None
-
-
-JobUpdate = PlanReady | FormatsChosen | StepFinished | NodeErrors | Terminal | DocumentWritten
+JobUpdate = NodeFinished | Fact | Output
 
 
 class GraphRunner:
-    """Runs a job's graph and yields what happened, in domain terms."""
+    """Runs a job's graph and yields what happened, in job terms."""
 
     def __init__(self, graph: Any):
         self.graph = graph
@@ -100,30 +66,9 @@ class GraphRunner:
         # cancelled or interrupted run stays addressable for a future resume.
         return {"configurable": {"thread_id": job_id}}
 
-    async def stream(
-        self,
-        job_id: str,
-        query: str,
-        inputs: dict[str, Any],
-        formats: list[str] | None = None,
-        *,
-        document_name: str = "",
-        document_title: str = "",
-    ) -> AsyncIterator[JobUpdate]:
-        """Start a run from the query.
-
-        `formats` is what the CALLER already asked the document to be, seeded
-        into the state so the graph's own document step knows whether anyone
-        has spoken (#90). `None` — the request said nothing — is what lets it
-        decide; anything else silences it before a single model call.
-        """
-        async for update in self._translate(self.graph.astream(
-            {"query": query, "inputs": inputs, "job_id": job_id,
-             "document_formats": formats, "document_name": document_name,
-             "document_title": document_title},
-            config=self._config(job_id),
-            stream_mode="updates",
-        )):
+    async def stream(self, job_id: str, input: Any) -> AsyncIterator[JobUpdate]:
+        """Start a run from `input`, which reaches the graph as it is."""
+        async for update in self._translate(input, job_id):
             yield update
 
     async def resume(self, job_id: str) -> AsyncIterator[JobUpdate]:
@@ -131,73 +76,47 @@ class GraphRunner:
 
         `None` as input is LangGraph's "carry on from where you stopped": the
         last completed superstep is replayed from the checkpoint and only the
-        tasks that were still pending are executed. A capability interrupted
-        mid-flight therefore runs again from its start, while the steps that
+        tasks that were still pending are executed. A node interrupted
+        mid-flight therefore runs again from its start, while the ones that
         had already finished are *not* re-emitted — which is why the caller
-        must keep the results it loaded from the repository.
+        must keep what it loaded from the repository.
 
         Only call this when `pending()` is non-empty: on a thread with no
         checkpoint LangGraph raises (it has no input to start from).
         """
-        async for update in self._translate(
-            self.graph.astream(None, config=self._config(job_id), stream_mode="updates")
-        ):
+        async for update in self._translate(None, job_id):
             yield update
 
     async def pending(self, job_id: str) -> tuple[str, ...]:
         """Nodes the thread would run next — what a resume would execute.
 
         Empty means there is nothing to resume: either no checkpoint exists
-        (the run never started) or the graph already reached a terminal node.
+        (the run never started) or the graph already reached its end.
         """
         snapshot = await self.graph.aget_state(self._config(job_id))
         return tuple(snapshot.next or ())
 
-    async def _translate(self, stream: AsyncIterator[dict]) -> AsyncIterator[JobUpdate]:
-        """LangGraph `updates` events → the domain updates above."""
-        async for update in stream:
-            for node, value in update.items():
-                if node == "document_intent" and not (
-                    isinstance(value, dict) and "document_formats" in value
-                ):
-                    # Finished and wrote nothing — LangGraph publishes a node
-                    # that returned `{}` as `None`. Announced all the same:
-                    # since #96 silence settles the document question too.
-                    yield FormatsChosen(None)
-                    continue
-                if not isinstance(value, dict):
-                    continue
-                if value.get("errors"):
-                    yield NodeErrors(list(value["errors"]))
-                if node == "planner" and value.get("plan"):
-                    yield PlanReady(value["plan"])
-                elif node == "document_intent" and "document_formats" in value:
-                    # The NODE NAME again, and the key's PRESENCE: the channel
-                    # was seeded at entry with what the caller asked for, so a
-                    # value in it is not news. `document_intent` writes it only
-                    # when it decided something itself, and `[]` — no document
-                    # at all — is exactly such a decision, which is why the
-                    # test is `in` and not truthiness.
-                    yield FormatsChosen(list(value["document_formats"] or []))
-                elif node.startswith("cap_"):
-                    # The NODE NAME says which step this is; the update's
-                    # `results` does not. A capability sub-graph is seeded with
-                    # the whole parent state (`Send(node, state)`) and its
-                    # output schema carries `results`, so what LangGraph
-                    # publishes here is the union of every step so far — not
-                    # this step's contribution. Reading each key of it
-                    # re-announced every earlier step on every wave (#53).
-                    capability = node[len("cap_"):]
-                    result = (value.get("results") or {}).get(capability)
-                    if result is not None:
-                        yield StepFinished(capability, result)
-                elif node == "write_document":
-                    yield DocumentWritten(
-                        [JobOutput(**o) for o in value.get("document_outputs") or []],
-                        value.get("document_error"))
-                elif node in _TERMINAL_NODES:
-                    yield Terminal(
-                        value.get("terminal_kind"),
-                        value.get("final_answer"),
-                        value.get("user_error_message"),
-                    )
+    async def _translate(self, input: Any, job_id: str) -> AsyncIterator[JobUpdate]:
+        """LangGraph's stream → the three updates above."""
+        output: Any = None
+        returned = False                    # a root `values` was seen
+        async for namespace, mode, chunk in self.graph.astream(
+            input,
+            config=self._config(job_id),
+            stream_mode=["updates", "custom", "values"],
+            subgraphs=True,
+            output_keys=self.graph.output_channels,
+        ):
+            if mode == "custom":
+                if isinstance(chunk, dict) and FACT_KEY in chunk:
+                    yield Fact(chunk[FACT_KEY], chunk.get("value"))
+            elif namespace:
+                continue                    # a sub-graph's own steps and states
+            elif mode == "updates":
+                for node in chunk:
+                    if not node.startswith("__"):       # LangGraph's own markers
+                        yield NodeFinished(node)
+            elif mode == "values":
+                output, returned = chunk, True
+        if returned:
+            yield Output(output)

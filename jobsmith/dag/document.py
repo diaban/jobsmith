@@ -28,7 +28,7 @@ Reporter is.
 
 **It fills silence and never overrides.** The gate is structural, decided
 before any model call: the graph is entered with `document_formats` seeded
-from what the caller already asked for (`engine/runner.py`), and a value there
+from what the caller already asked for (`JobManager._graph_input`), and a value there
 means somebody has spoken — the node returns immediately, free and
 deterministic, exactly as the router decides an empty registry without asking
 a model. Two interpreters that can disagree is the failure mode; a redundancy
@@ -70,6 +70,7 @@ import asyncio
 import json
 from collections.abc import Callable, Sequence
 
+from ..engine.facts import publish
 from .deps import Deps
 from .profile import DEFAULT_DOCUMENT_INTENT_TEMPLATE
 from .state import AgentState
@@ -173,8 +174,17 @@ class DocumentIntent:
     # -------- Node --------
 
     async def run(self, state: AgentState) -> dict:
+        update = await self._decide(state)
+        # The job hears the question settled, whichever way: a list, [] for
+        # "no document at all", and None for "this node wrote nothing" —
+        # silence, or a caller who had already spoken, which the job tells
+        # apart from the record it seeded the run with (#90, #96).
+        publish("formats", update["document_formats"] if "document_formats" in update else None)
+        return update
+
+    async def _decide(self, state: AgentState) -> dict:
         # Structural gates, both before any model call. `document_formats` is
-        # seeded at entry by `engine/runner.py` with what the caller asked for;
+        # seeded at entry by the job (`JobManager._graph_input`) with what the caller asked for;
         # absent (`None`) means nobody has said anything yet, which is the
         # only case this node exists for.
         if not self.formats or state.get("document_formats") is not None:
