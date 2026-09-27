@@ -2,16 +2,32 @@
 
 `subscribe()` used to fan out only what this process persisted: a `jobsmith ui`
 did not repaint for a job a `jobsmith chat` ran on the same database until F5.
-On a SQLite file it now also hears other connections' commits; on memory it
-polls nothing (→ 0100).
+On a SQLite file it now also hears other connections' commits (→ 0100), on
+Postgres their NOTIFY (→ 0138: set `$JOBSMITH_TEST_PG` to a DSN to run those
+cases, e.g. a throwaway `docker run postgres`); on memory it polls nothing.
 """
 from __future__ import annotations
 
+import os
+
+import pytest
 from support import until
 
 from jobsmith.app.agent import build_app
 from jobsmith.app.providers import KeywordChatModel, make_llm
-from jobsmith.jobs.events import InProcessEvents, SqliteWatchEvents
+from jobsmith.jobs.events import InProcessEvents, PostgresNotifyEvents, SqliteWatchEvents
+
+PG = os.environ.get("JOBSMITH_TEST_PG")
+
+
+@pytest.fixture(params=["sqlite", "postgres"])
+def shared_db(request, tmp_path):
+    """A database two apps share: a SQLite file, or the Postgres named by $JOBSMITH_TEST_PG."""
+    if request.param == "postgres":
+        if not PG:
+            pytest.skip("set $JOBSMITH_TEST_PG to a Postgres DSN")
+        return PG
+    return str(tmp_path / "jobs.db")
 
 
 async def _app(tmp_path, db):
@@ -19,8 +35,8 @@ async def _app(tmp_path, db):
                            db=db, reports_dir=str(tmp_path / "reports"))
 
 
-async def test_a_job_another_process_runs_reaches_this_subscriber(tmp_path):
-    db = str(tmp_path / "jobs.db")
+async def test_a_job_another_process_runs_reaches_this_subscriber(tmp_path, shared_db):
+    db = shared_db
     watcher, runner = await _app(tmp_path, db), await _app(tmp_path, db)
     try:
         queue = watcher.manager.subscribe()
@@ -50,8 +66,9 @@ async def _drain(queue) -> list[dict]:
     return events
 
 
-async def test_what_existed_before_subscribing_is_not_news_and_one_leaver_stops_nothing(tmp_path):
-    db = str(tmp_path / "jobs.db")
+async def test_what_existed_before_subscribing_is_not_news_and_one_leaver_stops_nothing(
+        tmp_path, shared_db):
+    db = shared_db
     watcher, runner = await _app(tmp_path, db), await _app(tmp_path, db)
     try:
         old = await runner.manager.create_job("an earlier job")
@@ -73,10 +90,11 @@ async def test_what_existed_before_subscribing_is_not_news_and_one_leaver_stops_
         await watcher.aclose()
 
 
-async def test_nothing_is_watched_before_someone_subscribes(tmp_path):
-    app = await _app(tmp_path, str(tmp_path / "jobs.db"))
+async def test_nothing_is_watched_before_someone_subscribes(tmp_path, shared_db):
+    app = await _app(tmp_path, shared_db)
     try:
-        assert isinstance(app.manager.events, SqliteWatchEvents)
+        kind = PostgresNotifyEvents if shared_db == PG else SqliteWatchEvents
+        assert isinstance(app.manager.events, kind)
         assert app.manager.events._task is None
     finally:
         await app.aclose()
