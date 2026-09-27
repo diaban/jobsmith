@@ -4,10 +4,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from pathlib import Path
 from typing import Any
-
-from ..dag.state import CapabilityResult, Plan
 
 
 def now_iso() -> str:
@@ -20,35 +17,6 @@ class JobStatus(StrEnum):
     DONE = "done"
     FAILED = "failed"
     CANCELLED = "cancelled"
-
-
-@dataclass
-class JobOutput:
-    """A file the job produced FOR THE HUMAN — the deliverable.
-
-    A job can have several. `role` says what each one is:
-
-    - "main"      the deliverable, exactly one per job — what
-                  `report_path`, `jobsmith report` and `/report` point at
-    - "alternate" the same report rendered in another format (a request
-                  naming two, or `JOBSMITH_REPORT_FORMAT=markdown,html` for a
-                  document asked for without naming one)
-    - "annex"     per-step material a capability produced (a chart, an
-                  exported table) — supporting material, not the report
-
-    `format` is free-form ("markdown", "html", "pdf", ...); `produced_by`
-    names the capability, when a step made the file.
-    """
-
-    path: str
-    format: str = "markdown"
-    title: str = ""
-    role: str = "main"
-    produced_by: str | None = None      # capability name, when a step made it
-
-    @property
-    def name(self) -> str:
-        return Path(self.path).name
 
 
 @dataclass
@@ -78,13 +46,15 @@ class Job:
     session_id: str | None = None           # chat session that launched it, if any
     created_at: str = ""                    # ISO timestamps
     updated_at: str = ""
-    plan: Plan | None = None
-    results: dict[str, CapabilityResult] = field(default_factory=dict)
-    step_finished_at: dict[str, str] = field(default_factory=dict)  # cap name → ISO ts
+    # What the run published while it ran (`engine/facts.py`): the graph's own
+    # words, meaningless here. Values only in the full view (`load`), since
+    # they can be large; when each arrived travels in every summary.
+    facts: dict[str, Any] = field(default_factory=dict)
+    facts_at: dict[str, str] = field(default_factory=dict)     # key → ISO ts
+    steps: dict[str, str] = field(default_factory=dict)        # root node → ISO ts
     final_answer: str | None = None
     terminal_kind: str | None = None
     error: str | None = None
-    outputs: list[JobOutput] = field(default_factory=list)   # the deliverables
     # Was a deliverable meant to be written at all (#84)? False says the
     # absence of one is the *decision* and not a failure — the request asked
     # for no document (`formats == []`), or it said nothing about one
@@ -103,45 +73,9 @@ class Job:
     # is, and the per-step breakdown lives in each result's `meta["usage"]`.
     usage: dict[str, Any] = field(default_factory=dict)
 
-    @property
-    def report_path(self) -> str | None:
-        """Path of the main deliverable (kept as the common shortcut).
-
-        `None` is not one answer but three, and a caller that prints "no
-        report available" for all of them is wrong twice:
-
-        - the run never got there — `status` is FAILED or CANCELLED;
-        - it answered and the **write failed** — DONE, and `error` names the
-          format and the cause (#28);
-        - **no document was ever going to be written** — `deliverable_expected`
-          is False, `error` is untouched, and nothing went wrong (#84).
-        """
-        main = next((o for o in self.outputs if o.role == "main"), None)
-        return main.path if main else None
-
-    def ordered_results(self) -> list[tuple[str, CapabilityResult]]:
-        """Results in PLAN order — the only deterministic order there is.
-
-        `results` is filled by parallel waves, so its insertion order is
-        arrival order (see the caveat in `dag/state.py`). Anything a human
-        reads — the report's annexes, the files a step produced — must be
-        stable across two runs of the same plan, so it is ordered here once
-        rather than in each consumer. A result with no plan step (a plan that
-        never made it to the store) keeps its dict order, at the end.
-        """
-        order = [step["capability"] for step in (self.plan or {}).get("steps", [])] \
-            if self.plan else []
-        names = sorted(self.results, key=lambda n: order.index(n) if n in order else len(order))
-        return [(name, self.results[name]) for name in names]
-
-    def step_usage(self, capability: str) -> dict[str, Any]:
-        """What one step spent — empty when it made no LLM call, or predates
-        usage tracking."""
-        return ((self.results.get(capability) or {}).get("meta") or {}).get("usage") or {}
-
     def to_dict(self) -> dict[str, Any]:
-        """Full view for API/CLI consumers (asdict would drop the properties)."""
-        return asdict(self) | {"status": self.status.value, "report_path": self.report_path}
+        """Full view, facts included."""
+        return asdict(self) | {"status": self.status.value}
 
     def summary(self) -> dict[str, Any]:
         """The record stored in the ("jobs", "index") namespace."""
@@ -155,12 +89,11 @@ class Job:
             "session_id": self.session_id,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
-            "step_finished_at": self.step_finished_at,
+            "facts_at": self.facts_at,
+            "steps": self.steps,
             "terminal_kind": self.terminal_kind,
             "final_answer": self.final_answer,
             "error": self.error,
-            "outputs": [asdict(o) for o in self.outputs],
-            "report_path": self.report_path,      # derived, for consumers
             "deliverable_expected": self.deliverable_expected,
             "announced": self.announced,
             "usage": self.usage,

@@ -102,7 +102,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 from langgraph.types import interrupt
 
-from ..dag.jobs import DagJobs
+from ..dag.jobs import DagJob, DagJobs
 from ..dag.report import (
     available_formats,
     document_stem,
@@ -115,7 +115,7 @@ from ..dag.state import (
     SOURCE_FILES_INPUT_KEY,
     TERMINAL_UNANSWERED,
 )
-from ..engine.models import Job, JobStatus
+from ..engine.models import JobStatus
 from .runner import CUSTOM_ANSWER, CUSTOM_JOB_PLANNED, CUSTOM_JOB_STARTED
 
 #: How much of a referenced job's query the notice carries (#104): enough to
@@ -124,7 +124,7 @@ from .runner import CUSTOM_ANSWER, CUSTOM_JOB_PLANNED, CUSTOM_JOB_STARTED
 REFERENCE_QUERY_MAX = 60
 
 
-def job_reference(job: Job) -> dict[str, str]:
+def job_reference(job: DagJob) -> dict[str, str]:
     """A job a run builds on, as the notice shows it: its id and the start of
     its query. Plain values, because this crosses HTTP and both backings must
     answer with the same JSON."""
@@ -241,7 +241,7 @@ def recent_conversation(messages: Iterable[Any]) -> str:
     return "\n".join(reversed(turns))
 
 
-def _line(job: Job) -> str:
+def _line(job: DagJob) -> str:
     return f"{job.job_id[:8]} [{job.status.value}] {job.query[:60]!r}"
 
 
@@ -253,7 +253,7 @@ def _line(job: Job) -> str:
 # notification middleware (push).
 
 
-def running_steps(job: Job) -> list[str]:
+def running_steps(job: DagJob) -> list[str]:
     """Plan steps whose dependencies have all landed but which have not
     finished yet — i.e. the executor's current wave.
 
@@ -285,7 +285,7 @@ def elapsed_since(timestamp: str) -> str:
     return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}"
 
 
-def progress_line(job: Job) -> str:
+def progress_line(job: DagJob) -> str:
     """One compact line: how far an in-flight job has got.
 
     Deliberately one line: it is re-injected (fresh, never accumulated) into a
@@ -305,7 +305,7 @@ def progress_line(job: Job) -> str:
     return f"{head}: {' · '.join(parts)}{tail}"
 
 
-def progress_signature(job: Job) -> str:
+def progress_signature(job: DagJob) -> str:
     """What must change before a job is worth reporting again: its status, the
     shape of its plan, and how many steps have landed. Elapsed time is
     deliberately excluded — otherwise every single turn would look like news.
@@ -314,7 +314,7 @@ def progress_signature(job: Job) -> str:
     return f"{job.status.value}:{plan_size}:{len(job.step_finished_at)}"
 
 
-async def _find(manager: DagJobs, session_id: str, prefix: str) -> Job | None:
+async def _find(manager: DagJobs, session_id: str, prefix: str) -> DagJob | None:
     """Resolve a job-id prefix among THIS session's jobs only."""
     jobs = await manager.list_jobs(session_id=session_id, limit=None)
     matches = [j for j in jobs if j.job_id.startswith(prefix)]
@@ -383,11 +383,11 @@ async def announce_plan(manager: DagJobs, job_id: str,
             return
 
 
-def _files_of(job: Job) -> str:
+def _files_of(job: DagJob) -> str:
     return ", ".join(output.path for output in job.outputs)
 
 
-def _delivered(job: Job) -> str:
+def _delivered(job: DagJob) -> str:
     """What the model is told about a job that finished inside the turn.
 
     Deliberately NOT the answer. The user has already read it — the tool
@@ -454,7 +454,7 @@ def _delivered(job: Job) -> str:
     return "\n".join(done)
 
 
-def _promoted(job: Job, waited: float) -> str:
+def _promoted(job: DagJob, waited: float) -> str:
     """What the model is told about a run that outlived the wait.
 
     The turn has to end saying so — the answer is not coming in it — and the
@@ -587,7 +587,7 @@ def make_job_tools(
         # run, like an unusable format — the model can fix it on the spot,
         # where a job that silently dropped it would answer a different
         # question from the one the user asked.
-        referenced: list[Job] = []
+        referenced: list[DagJob] = []
         for prefix in (str(j).strip() for j in from_jobs or []):
             if not prefix:
                 continue

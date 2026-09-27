@@ -57,7 +57,7 @@ async def running_in_slow(mgr: JobManager, job_id: str) -> Job | None:
     dispatch lie between (#113). A test that needs the step started waits on
     the step itself (`start_slow_job`)."""
     job = await mgr.get_job(job_id)
-    if job and job.status is JobStatus.RUNNING and "alpha" in job.results:
+    if job and job.status is JobStatus.RUNNING and "step:alpha" in job.facts:
         return job
     return None
 
@@ -162,7 +162,7 @@ async def test_a_cancel_from_another_process_stops_the_run(tmp_path):
         await asyncio.sleep(0.3)                   # several heartbeats later...
         final = await other.get_job(job.job_id)
         assert final.status is JobStatus.CANCELLED  # ...still what was answered
-        assert set(final.results) == {"alpha"}
+        assert {k for k in final.facts if k.startswith("step:")} == {"step:alpha"}
         assert (await owner.repo.load_control(job.job_id)).lease is None  # released
 
 
@@ -180,8 +180,8 @@ async def test_resume_works_after_a_cross_process_cancel(tmp_path):
         assert done.status is JobStatus.DONE
         alpha, _ = owner.caps                          # type: ignore[attr-defined]
         assert alpha.runs == 1                         # the finished step was kept
-        assert done.results["alpha"]["data"]["echo"] == "alpha#1"
-        assert done.results["slow"]["data"]["echo"] == "slow#1"   # run by `other`
+        assert done.facts["step:alpha"]["data"]["echo"] == "alpha#1"
+        assert done.facts["step:slow"]["data"]["echo"] == "slow#1"   # run by `other`
 
 
 @pytest.mark.slow  # waits out real lease timings
@@ -424,7 +424,7 @@ async def test_a_cancel_crosses_a_real_process_boundary_and_resumes(tmp_path):
 
             done = await here.resume_job(job_id)
             assert done.status is JobStatus.DONE
-            assert done.results["alpha"]["data"]["echo"] == "alpha@0.0"  # the owner's
+            assert done.facts["step:alpha"]["data"]["echo"] == "alpha@0.0"  # the owner's
     finally:
         if proc.returncode is None:
             proc.kill()

@@ -26,9 +26,9 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import SystemMessage
 
-from ..dag.jobs import DagJobs
+from ..dag.jobs import DagJob, DagJobs
 from ..dag.state import TERMINAL_UNANSWERED
-from ..engine.models import Job, JobStatus
+from ..engine.models import JobStatus
 from .runner import CUSTOM_ANSWER
 from .tools import make_job_tools, progress_line, progress_signature, stream_writer
 
@@ -144,7 +144,7 @@ class JobNotificationMiddleware(AgentMiddleware):
         # daemon restart the worst case is one repeated progress line.
         self._reported: dict[str, str] = {}
 
-    def _deliver(self, job: Job) -> bool:
+    def _deliver(self, job: DagJob) -> bool:
         """Write a finished job's answer into the turn, verbatim, when the
         conversation is where it belongs (#85).
 
@@ -191,7 +191,7 @@ class JobNotificationMiddleware(AgentMiddleware):
         return True
 
     @staticmethod
-    def _notice_for(job: Job, *, delivered: bool) -> str:
+    def _notice_for(job: DagJob, *, delivered: bool) -> str:
         """What the model is told about one finished job.
 
         A DONE job can have no main deliverable for two unrelated reasons,
@@ -308,7 +308,7 @@ class JobNotificationMiddleware(AgentMiddleware):
                 f"Full answer (synthesize it, do not paste it):\n{job.final_answer}")
         return "\n".join(lines)
 
-    async def _finished_notice(self) -> tuple[SystemMessage | None, list[Job]]:
+    async def _finished_notice(self) -> tuple[SystemMessage | None, list[DagJob]]:
         finished = await self.manager.list_finished_unannounced(self.session_id)
         if not finished:
             return None, []
@@ -326,7 +326,7 @@ class JobNotificationMiddleware(AgentMiddleware):
             + "\n\n".join(notices)
         ), finished
 
-    async def _in_flight(self) -> tuple[list[Job], int]:
+    async def _in_flight(self) -> tuple[list[DagJob], int]:
         """The session's running/queued jobs, newest first, loaded in full.
 
         `list_jobs` returns index summaries, which carry the status and the
@@ -345,7 +345,7 @@ class JobNotificationMiddleware(AgentMiddleware):
         shown = [job for job in loaded if job is not None and job.status in IN_FLIGHT]
         return shown, max(len(in_flight) - len(shown), 0)
 
-    async def _progress_notice(self) -> tuple[SystemMessage | None, list[Job]]:
+    async def _progress_notice(self) -> tuple[SystemMessage | None, list[DagJob]]:
         shown, others = await self._in_flight()
         moved = [
             job for job in shown

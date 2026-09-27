@@ -11,18 +11,20 @@ saying what it is, and the notice that reaches the conversation.
 from __future__ import annotations
 
 from conftest import FakeLLM, plan_json
-from support import SlowEcho
+from support import SlowEcho, dag_job
 
+from jobsmith.artifacts.store import JobOutput
 from jobsmith.chat.session import JobNotificationMiddleware
 from jobsmith.dag.builder import build_agent
 from jobsmith.dag.deps import Deps
 from jobsmith.dag.generation import split_declaration
+from jobsmith.dag.jobs import DagJobs
 from jobsmith.dag.registry import CapabilityRegistry
 from jobsmith.dag.report import UNANSWERED_NOTICE, MarkdownReport, build_document
 from jobsmith.dag.report_html import HtmlReport
 from jobsmith.dag.state import TERMINAL_UNANSWERED
 from jobsmith.engine.manager import JobManager
-from jobsmith.engine.models import Job, JobOutput, JobStatus
+from jobsmith.engine.models import JobStatus
 
 REFUSAL = (
     "NO_ANSWER: the quarterly report the request names was never provided\n"
@@ -122,7 +124,7 @@ async def test_a_declared_refusal_is_never_refined(checkpointer):
 
 def make_manager(store, checkpointer, tmp_path, answer: str) -> JobManager:
     graph, _ = make_graph(checkpointer, answer, tmp_path / "artifacts")
-    return JobManager(graph, store)
+    return DagJobs(JobManager(graph, store))
 
 
 async def test_the_job_is_done_keeps_its_work_and_says_it_did_not_answer(
@@ -148,7 +150,7 @@ async def test_the_job_is_done_keeps_its_work_and_says_it_did_not_answer(
 # ------------------------------------------------------ the deliverable
 
 def _doc(terminal_kind: str):
-    return build_document(Job(
+    return build_document(dag_job(
         job_id="abcdef0123", status=JobStatus.DONE, query="summarize the report",
         final_answer="The figures were never provided.", terminal_kind=terminal_kind,
     ))
@@ -171,7 +173,7 @@ def test_both_formats_open_by_saying_the_run_did_not_answer():
 def test_the_conversation_is_told_the_job_could_not_answer():
     """Announcing it like a job that answered is how someone who waited three
     minutes finds out only by reading the file."""
-    job = Job(job_id="abcdef0123", status=JobStatus.DONE, query="summarize the report",
+    job = dag_job(job_id="abcdef0123", status=JobStatus.DONE, query="summarize the report",
               terminal_kind=TERMINAL_UNANSWERED,
               final_answer="The figures were never provided.",
               outputs=[JobOutput(path="/tmp/abcdef0123.md")])
@@ -192,7 +194,7 @@ def test_the_conversation_is_told_the_job_could_not_answer():
 
 
 def test_a_job_that_answered_is_announced_exactly_as_before():
-    job = Job(job_id="abcdef0123", status=JobStatus.DONE, query="q",
+    job = dag_job(job_id="abcdef0123", status=JobStatus.DONE, query="q",
               terminal_kind="answer", final_answer="The answer.",
               outputs=[JobOutput(path="/tmp/abcdef0123.md")])
     notice = JobNotificationMiddleware._notice_for(job, delivered=True)

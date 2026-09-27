@@ -11,17 +11,19 @@ from types import SimpleNamespace
 
 import pytest
 from conftest import FakeLLM, plan_json
-from support import OneStep
+from support import OneStep, dag_job
 
 from jobsmith.app.providers import KeywordLLM
+from jobsmith.artifacts.store import JobOutput
 from jobsmith.dag.builder import build_agent
 from jobsmith.dag.capability import CapabilityBaseState
 from jobsmith.dag.clients import AnthropicLLMClient, OpenAILLMClient
 from jobsmith.dag.deps import Deps
+from jobsmith.dag.jobs import DagJob, DagJobs
 from jobsmith.dag.registry import CapabilityRegistry
 from jobsmith.dag.report import MarkdownReport, build_document, format_step_usage, format_usage
 from jobsmith.engine.manager import JobManager
-from jobsmith.engine.models import Job, JobOutput, JobStatus
+from jobsmith.engine.models import JobStatus
 from jobsmith.engine.usage import (
     UNATTRIBUTED,
     ModelPrice,
@@ -195,7 +197,7 @@ def make_manager(store, checkpointer, tmp_path, caps_spec, *, fail=()):
     )
     caps = [Metered(name, llm, calls=calls, fail=name in fail) for name, calls in caps_spec]
     graph = build_agent(Deps(llm=llm), CapabilityRegistry(caps), checkpointer=checkpointer, reports_dir=tmp_path / "artifacts")
-    return JobManager(graph, store), llm
+    return DagJobs(JobManager(graph, store)), llm
 
 
 # ---------------------------------------------------------------- end to end
@@ -269,8 +271,8 @@ async def test_explicit_capability_meta_wins():
 # ---------------------------------------------------------------- reporting
 
 
-def make_job(**over) -> Job:
-    job = Job(
+def make_job(**over) -> DagJob:
+    base: dict = dict(
         job_id="j1", status=JobStatus.DONE, query="analyse the thing",
         created_at="2026-09-01T00:00:00Z", final_answer="Here it is.",
         plan={"steps": [{"capability": "research", "depends_on": []},
@@ -287,9 +289,7 @@ def make_job(**over) -> Job:
         usage=Usage(input_tokens=20_000, cached_input_tokens=1_000, output_tokens=5_000,
                     calls=6, cost_usd=0.225, models=("claude-opus-5",)).to_dict(),
     )
-    for key, value in over.items():
-        setattr(job, key, value)
-    return job
+    return dag_job(**(base | over))
 
 
 def test_formatters_stay_readable():
@@ -478,7 +478,7 @@ async def test_two_jobs_running_at_once_never_bill_each_other(store, checkpointe
                       default="A sufficiently long final answer for this run.")
         graph = build_agent(Deps(llm=llm), CapabilityRegistry([capability]),
                             checkpointer=MemorySaver(), reports_dir=tmp_path / "artifacts")
-        return JobManager(graph, store)
+        return DagJobs(JobManager(graph, store))
 
     alpha, beta = manager_for("alpha", 100), manager_for("beta", 7)
     job_a = await alpha.create_job("A")

@@ -9,9 +9,9 @@ each of them can change (or be swapped) for its own reasons:
     JobEvents       how progress is broadcast                  (events.py)
 
 The defaults wire the v1 stack (LangGraph store, LangGraph graph, in-process
-events), so `JobManager(graph, store)` still works. The deliverable is not
-among them: the run writes its own document and says what it wrote
-(`document_outputs`, in its output), and the manager records that.
+events), so `JobManager(graph, store)` still works. What a run produced —
+its steps' results, its files — reaches the job as facts the graph published
+(`engine/facts.py`), which the manager records without reading.
 
 Cancellation semantics: `cancel_job` cancels the in-process asyncio.Task;
 cancellation propagates into the running invocation, the checkpointer retains
@@ -37,13 +37,11 @@ from __future__ import annotations
 import asyncio
 import sys
 import uuid
-from pathlib import Path
 from typing import Any
 
 from ..dag.state import TERMINAL_UNANSWERED, NodeError
-from .artifacts import artifact_refs
 from .events import InProcessEvents, JobEvents, job_event
-from .models import Job, JobOutput, JobStatus, now_iso
+from .models import Job, JobStatus, now_iso
 from .ownership import (
     Heartbeat,
     JobControl,
@@ -53,7 +51,7 @@ from .ownership import (
     owner_is_gone,
 )
 from .repository import JobRepository, StoreJobRepository
-from .runner import Fact, GraphRunner, JobUpdate, Output
+from .runner import Fact, GraphRunner, JobUpdate, NodeFinished, Output
 from .usage import Usage, UsageLedger, current_ledger, usage_ledger
 
 # Statuses a job can be resumed from — see `JobManager._begin_resume`.
@@ -75,9 +73,6 @@ ANNOUNCEABLE = (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED)
 # — the checkpoint has nothing pending, so `resume_job` refuses it) or add a
 # sixth status every consumer would have to learn.
 DELIVERED = ("answer", TERMINAL_UNANSWERED)
-
-# The fact a DAG step publishes its result under: `step:<capability>`.
-STEP_FACT = "step:"
 
 # Ledger scope carrying what previous attempts of a resumed job already spent.
 EARLIER_ATTEMPTS = "earlier attempts"
@@ -264,7 +259,6 @@ class JobManager:
         like a first one.
         """
         errors: list[NodeError] = []
-        written: list[JobOutput] = []       # the deliverables the run reports writing
         # One ledger per run — a fresh one, so a job launched from inside
         # another run can never bill its parent. Every LLM call underneath
         # books into it, attributed to the graph step that made it.
@@ -282,14 +276,13 @@ class JobManager:
         with usage_ledger(ledger):
             try:
                 async for update in updates:
-                    await self._apply(job, update, errors, written)
+                    await self._apply(job, update, errors)
             except asyncio.CancelledError:
                 if watch is not None:
                     watch.stop()        # before any await: nothing may cancel the settling
                     if watch.lost:
                         return await self._abandon(job, watch)
                 job.status = JobStatus.CANCELLED
-                self._collect_artifacts(job)       # the steps that did finish left files
                 await self._persist_summary(job)   # cancelled work was still paid for
                 if watch is not None:
                     await self._release(job, watch)
@@ -307,7 +300,6 @@ class JobManager:
                     watch.stop()
                 job.status = JobStatus.FAILED
                 job.error = str(e)
-                self._collect_artifacts(job)
                 await self._persist_summary(job)
                 if watch is not None:
                     await self._release(job, watch)
@@ -330,9 +322,6 @@ class JobManager:
                 # for `[]`, the document step for silence); this is the
                 # backstop for a graph with no document step at all.
                 job.deliverable_expected = False
-            # What the run wrote (only a DONE run gets that far), then the
-            # files its steps left behind, which are this job's either way.
-            self._collect_artifacts(job, deliverables=written)
             await self._persist_summary(job)
             if watch is not None:
                 await self._release(job, watch)
@@ -399,151 +388,26 @@ class JobManager:
         """
         return bool(job.formats)
 
-    def _collect_artifacts(
-        self,
-        job: Job,
-        *,
-        deliverables: list[JobOutput] | None = None,
-    ) -> None:
-        """Record the files the steps left behind, as this job's annexes.
-
-        Called for **every** terminal a run reaches, not only for an answer.
-        A chart a step produced exists whether or not the run that followed
-        it reached a conclusion, and this project has twice already chosen to
-        keep the evidence over discarding it: usage is booked for a step that
-        failed, and `ReportWriteError` carries the outputs already on disk. A
-        file recorded nowhere is "a deliverable nobody can find", which is the
-        defect #28 fixed — and for a FAILED job it is usually permanent, since
-        a run that reached `escalate`/`user_error` has an empty frontier and
-        `resume_job` refuses it.
-
-        Annexes come AFTER the deliverables and are never "main": #28's
-        invariant (exactly one main, the first format asked for) is what
-        `report_path`, `jobsmith report` and `/report` read, and a step's
-        chart must not become the thing the report points at. A job that did
-        not answer — and one nobody asked a document of (#84) — passes no
-        deliverables at all, so it has no `main`, `report_path` stays None
-        and `/report` still 404s. The annexes are offered as what they are,
-        not dressed up as a partial success; and a run that wanted no report
-        can still have produced files, which is why this half never depends
-        on the other.
-
-        `job.outputs` is **assigned**, never appended to: a cancelled job that
-        collects and is then resumed keeps the earlier attempt's results (the
-        repository loads them), so the second collection re-derives the same
-        list rather than doubling it.
-        """
-        annexes, missing = self._capability_outputs(job)
-        job.outputs = list(deliverables or []) + annexes
-        # Said out loud whatever the terminal. A declaration can only exist on
-        # a step that FINISHED (`_apply` writes `results` on a `step:` fact
-        # alone), so a ref with no file is a capability that promised what it
-        # did not leave — a defect the run stopping afterwards cannot explain
-        # away. It is appended after the failure reason, so "why the run
-        # stopped" still reads first, and a run someone is already inspecting
-        # is the last place to hide a second bug.
-        if missing:
-            job.error = "; ".join(filter(None, [job.error, missing]))
-
-    def _capability_outputs(self, job: Job) -> tuple[list[JobOutput], str]:
-        """The files the steps produced, as annexes — plus what went missing.
-
-        A capability declares what it wrote in its result's `meta`
-        (`engine/artifacts.py`); this reads those declarations back, in plan
-        order so two runs of one plan list their files the same way.
-
-        **A ref whose file is not there is dropped, and said out loud.**
-        Recording it would repeat exactly the defect #28 fixed — a JobOutput
-        for a file nobody can open, offered by `jobsmith outputs` and by
-        `GET /jobs/{id}/outputs/{name}` and failing there instead of here.
-        Staying silent is no better, **whatever terminal the run reached**: a
-        declaration only exists on a step that FINISHED (`_apply` writes
-        `results` on a `step:` fact alone), so a ref with no file behind it is
-        a capability that promised what it did not leave, and a run stopping
-        later cannot retroactively explain a promise made by a completed step.
-        It lands in `job.error` — the same channel, and the same reasoning, as
-        a failed report write: the job keeps the status the work earned, and
-        the error says which part of the delivery did not happen. Appended
-        after any failure reason already there, so "why the run stopped" is
-        still the first thing read.
-
-        Two capabilities that wrote the same path are recorded once: the
-        second would list one file twice in `Job.outputs`, which is the same
-        ambiguity `compose_reporters` refuses at composition time.
-        """
-        outputs: list[JobOutput] = []
-        seen: set[str] = set()
-        gone: list[str] = []
-        for name, result in job.ordered_results():
-            for ref in artifact_refs(result.get("meta")):
-                if ref.path in seen:
-                    continue
-                seen.add(ref.path)
-                if not Path(ref.path).is_file():
-                    gone.append(f"{name} → {ref.path}")
-                    continue
-                outputs.append(JobOutput(
-                    path=ref.path, format=ref.file_format, title=ref.title,
-                    role="annex", produced_by=name,
-                ))
-        missing = (
-            f"{len(gone)} file(s) a step reported producing are missing: "
-            f"{', '.join(gone)}" if gone else ""
-        )
-        return outputs, missing
-
-    async def _apply(self, job: Job, update: JobUpdate, errors: list[NodeError],
-                     written: list[JobOutput]) -> None:
+    async def _apply(self, job: Job, update: JobUpdate, errors: list[NodeError]) -> None:
         """Fold one update from the runner into the job.
 
-        The keys read here are the planner DAG's (`dag/`): the facts it
-        publishes while it runs, and the state it returns. They leave the
-        engine at step 6b of the core split, with the record fields they
-        fill (docs/design/core-v1.md).
+        A fact is recorded as it arrives, whatever it says (`engine/facts.py`):
+        persisted under its key, stamped with when it came, and announced — a
+        fact is progress. A root node that finished is noted, and travels with
+        the next write. What remains below of the planner DAG's words
+        (`formats`, the keys of its output) leaves at step 6b.3 of the core
+        split, with the record fields it fills (docs/design/core-v1.md).
         """
         match update:
-            case Fact("formats", None):
-                # The document step finished and wrote nothing. For a caller
-                # who had already spoken that is the node standing aside —
-                # nothing to record. For a request nobody named a format for,
-                # it is the decision #96 made: silence is no file, and this is
-                # the moment it is known — so recorded now, as `create_job`
-                # records `[]`, rather than left for the terminal to discover.
-                # `formats` stays `None`: "said nothing" and "said no file"
-                # remain two facts on the record (#84), with one outcome.
-                if job.formats is None and job.deliverable_expected:
-                    job.deliverable_expected = False
-                    await self._persist_summary(job)
-            case Fact("formats", formats):
-                # The engine read the request for a document the caller said
-                # nothing about (#90). It reaches the record the way every
-                # other graph fact does — the node wrote to state, the runner
-                # translated it, and the fold happens here: a node that called
-                # the repository itself would be the first one that does.
-                job.formats = formats
-                if not formats:
-                    # Known now, so recorded now, exactly as `create_job`
-                    # records it for a caller who asked for no file. The flag
-                    # only ever goes True → False, and this is the True → False.
-                    job.deliverable_expected = False
+            case Fact(key, value):
+                job.facts[key] = value
+                job.facts_at[key] = now_iso()
+                await self.repo.save_fact(job.job_id, key, value)
+                if key == "formats":
+                    self._fold_formats(job, value)
                 await self._persist_summary(job)
-            case Fact("plan", plan):
-                job.plan = plan
-                await self.repo.save_plan(job.job_id, plan)
-                # The plan is the first thing a watcher can see of a run, and
-                # it exists long before the first step lands. Without a
-                # summary here the event stream says nothing until then, and
-                # a UI drawing the DAG shows "no plan yet" for the whole of
-                # the first step — a picture that was stale when it was drawn.
-                await self._persist_summary(job)
-            case Fact(key, result) if key.startswith(STEP_FACT):
-                # The step names itself in the fact's key: never read which
-                # step finished off the accumulated `results` (#53).
-                capability = key[len(STEP_FACT):]
-                job.results[capability] = result
-                job.step_finished_at[capability] = now_iso()
-                await self.repo.save_result(job.job_id, capability, result)
-                await self._persist_summary(job)   # touch updated_at for progress
+            case NodeFinished(node):
+                job.steps[node] = now_iso()
             case Output(value) if isinstance(value, dict):
                 errors.extend(value.get("errors") or [])
                 job.terminal_kind = value.get("terminal_kind")
@@ -553,14 +417,38 @@ class JobManager:
                     # A declared refusal has no such message: nothing went
                     # wrong, and what was missing is in the answer itself.
                     job.error = value.get("user_error_message")
-                # What the run's document step wrote (`dag/deliver.py`). A
-                # write that failed leaves the run DONE (#28): the answer is
-                # the work, and the error says which format and why.
-                written[:] = [JobOutput(**o) for o in value.get("document_outputs") or []]
+                # A document write that failed leaves the run DONE (#28): the
+                # answer is the work, and the error says which format and why.
                 if value.get("document_error"):
                     job.error = "; ".join(filter(None, [job.error, value["document_error"]]))
             case _:
-                pass    # a root node finished: nothing on this record says so yet (6b)
+                pass
+
+    @staticmethod
+    def _fold_formats(job: Job, formats: list[str] | None) -> None:
+        if formats is None:
+                # The document step finished and wrote nothing. For a caller
+                # who had already spoken that is the node standing aside —
+                # nothing to record. For a request nobody named a format for,
+                # it is the decision #96 made: silence is no file, and this is
+                # the moment it is known — so recorded now, as `create_job`
+                # records `[]`, rather than left for the terminal to discover.
+                # `formats` stays `None`: "said nothing" and "said no file"
+                # remain two facts on the record (#84), with one outcome.
+            if job.formats is None:
+                job.deliverable_expected = False
+            return
+                # The engine read the request for a document the caller said
+                # nothing about (#90). It reaches the record the way every
+                # other graph fact does — the node wrote to state, the runner
+                # translated it, and the fold happens here: a node that called
+                # the repository itself would be the first one that does.
+        job.formats = formats
+        if not formats:
+            # Known now, so recorded now, exactly as `create_job` records it
+            # for a caller who asked for no file. The flag only ever goes
+            # True → False, and this is the True → False.
+            job.deliverable_expected = False
 
     def start_job(self, job_id: str) -> asyncio.Task:
         """Fire-and-forget: run the job in a background task (cancellable)."""
@@ -754,14 +642,8 @@ class JobManager:
         whose owner is alive is left to it, and both are said on stderr.
         QUEUED jobs are left alone — they never started and can still be run.
 
-        The fourth terminal, and the one that does NOT collect artifacts
-        (`_collect_artifacts`), for two reasons that point the same way. It
-        works from index summaries, which carry neither the plan nor the
-        results — collecting would mean re-loading every stale record in full
-        at startup to read declarations this process never saw. And it is the
-        one FAILED that keeps a live frontier: the checkpoint is retained on
-        purpose, so a resume settles through `_drive`, which collects. Nothing
-        is lost here that the next attempt cannot record.
+        It is the one FAILED that keeps a live frontier: the checkpoint is
+        retained on purpose, so a resume settles through `_drive`.
         """
         running = [j for j in await self.list_jobs(status=JobStatus.RUNNING, limit=None)
                    if j.job_id not in self._tasks]

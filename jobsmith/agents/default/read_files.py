@@ -21,7 +21,7 @@ the reader of the deliverable would never learn that a document they named
 was never opened.
 
 **Nothing here knows what a path is allowed to be.** The port refuses, the
-capability reports what it was told. That rule lives in `engine/paths.py` and
+capability reports what it was told. That rule lives in `artifacts/paths.py` and
 is the deployment's to configure — a capability that could widen it would be
 a capability that could read anything.
 """

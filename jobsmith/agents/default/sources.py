@@ -23,7 +23,7 @@ service — which is what makes them usable in tests and in CI:
   docstrings say so rather than implying retrieval quality the code does not
   have. A vector-store adapter is the next implementation of that port.
 - `LocalFileReader` for `DocumentReader` — a file named by the request, if it
-  lands inside a root the deployment declared readable (`engine/paths.py`).
+  lands inside a root the deployment declared readable (`artifacts/paths.py`).
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from ...engine.paths import PathRefused, resolve_within
+from ...artifacts.paths import PathRefused, resolve_within
 
 # Text-ish files worth reading. Binary formats (pdf, docx) need a parser and
 # belong in their own adapter, not in a widening list here.
@@ -181,7 +181,7 @@ class LocalFileReader:
     """`DocumentReader` over a fixed set of readable roots.
 
     The roots come from the composition root (`AgentContext.readable_roots`
-    plus whatever the agent already exposes), and `engine.paths.resolve_within`
+    plus whatever the agent already exposes), and `artifacts.paths.resolve_within`
     is the entire access rule: a reference is resolved — symlinks followed,
     `..` collapsed — and then has to land inside one of them. Nothing here
     inspects the spelling of a path, so `../../etc/passwd`, a symlink out of

@@ -34,11 +34,11 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any
 
+from ..artifacts.store import ArtifactStore
 from ..dag.capability import Capability
 from ..dag.deps import LLMClient
 from ..dag.prior_jobs import PriorJobSource
 from ..dag.profile import AgentProfile
-from ..engine.artifacts import ArtifactStore
 
 
 @dataclass(frozen=True)
@@ -50,7 +50,7 @@ class AgentContext:
     agent's signature.
 
     `artifacts` is the store a capability that produces a FILE writes to
-    (`engine/artifacts.py`). It is here rather than in `resources` because it is
+    (`artifacts/store.py`). It is here rather than in `resources` because it is
     the composition root's to provide, not the agent's to open: where a job's
     files live is decided next to `reports_dir`, by the same reasoning that
     keeps a capability from knowing that layout. `build_app` always supplies
@@ -60,7 +60,7 @@ class AgentContext:
 
     `readable_roots` is the other half of that, and the same kind of fact: the
     local directories this deployment lets a capability READ a file out of
-    when the request names one (`engine/paths.py` says what "inside a root"
+    when the request names one (`artifacts/paths.py` says what "inside a root"
     means, and refuses everything else). It is the composition root's to
     decide for exactly the reason `artifacts` is — where a job's files live is
     decided next to `reports_dir`, and a capability that could widen its own

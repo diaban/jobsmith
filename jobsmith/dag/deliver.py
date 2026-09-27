@@ -4,9 +4,9 @@ A run that reached `post_process` (it answered) or `unanswered` (it declared
 it could not, #59) and whose request asked for a file ends here. What was
 asked is `document_formats`: named by the caller, or read out of the sentence
 by `document_intent` (#90); empty or absent is no file (#96). The Reporters
-render it, and the step reports what it wrote (`document_outputs`) and what
-failed (`document_error`), which the job engine records without knowing what
-a format is (core split, step 5: docs/design/core-v1.md).
+render it; the step declares each file it wrote (`artifacts.store.declare`)
+and returns what failed (`document_error`), neither of which the job engine
+understands (core split: docs/design/core-v1.md).
 
 A write that fails does not fail the run (#28): the answer is in the state,
 only the file is missing, so the step returns the error instead of raising —
@@ -15,10 +15,11 @@ a raise would make an answered run FAILED, and resumable into the same write.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..artifacts.store import declare
 from ..engine.usage import current_ledger
 from .report import Reporter, ReportWriteError, compose_reporters
 from .state import AgentState, CapabilityResult, Plan
@@ -103,4 +104,6 @@ class DocumentWriter:
             failure = e if isinstance(e, ReportWriteError) else ReportWriteError(
                 getattr(reporter, "format", None) or ",".join(formats), e)
             outputs, error = failure.outputs, str(failure)   # keep what made it to disk
-        return {"document_outputs": [asdict(o) for o in outputs], "document_error": error}
+        for output in outputs:
+            declare(output)
+        return {"document_error": error}

@@ -21,6 +21,7 @@ import pytest
 from conftest import FakeLLM
 
 from jobsmith.agents.default.profile import DEFAULT_APP_PROFILE
+from jobsmith.artifacts.store import ArtifactRef, artifact_meta
 from jobsmith.dag.deps import Deps
 from jobsmith.dag.generation import (
     ANSWER_FILE_RULE,
@@ -34,7 +35,6 @@ from jobsmith.dag.generation import (
 )
 from jobsmith.dag.profile import AgentProfile
 from jobsmith.dag.registry import CapabilityRegistry
-from jobsmith.engine.artifacts import ArtifactRef, artifact_meta
 
 
 def _state(**extra: Any) -> dict[str, Any]:

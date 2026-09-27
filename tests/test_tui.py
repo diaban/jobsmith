@@ -21,6 +21,7 @@ from langchain_core.messages import AIMessage
 from support import (
     Gate,
     SlowEcho,
+    dag_job,
     launch_call,
     make_manager,
     planned_manager,
@@ -30,7 +31,8 @@ from support import (
 from textual.content import Content
 from textual.widgets import Input, ListView, Static
 
-from jobsmith.engine.models import Job, JobOutput, JobStatus
+from jobsmith.artifacts.store import JobOutput
+from jobsmith.engine.models import Job, JobStatus
 from jobsmith.engine.usage import Usage
 from jobsmith.service import AgentService, ServiceUnavailable
 from jobsmith.tui import MISSING, TuiUnavailable
@@ -78,7 +80,7 @@ def spend(tokens: int, cost: float) -> dict[str, Any]:
 
 def canned_jobs() -> list[Job]:
     """Five jobs, one per status — real records with frozen timestamps."""
-    running = Job(
+    running = dag_job(
         job_id="9b7e3011-0000-4000-8000-000000000001",
         status=JobStatus.RUNNING,
         query="how well is sixel supported across terminal emulators?",
@@ -93,7 +95,7 @@ def canned_jobs() -> list[Job]:
         outputs=[JobOutput(path="/tmp/a/sixel-matrix.svg", format="svg", role="annex",
                            title="support matrix", produced_by="web_search")],
     )
-    done = Job(
+    done = dag_job(
         job_id="4f2a1c22-0000-4000-8000-000000000002",
         status=JobStatus.DONE, query="compare the vendor proposals",
         created_at=T0, updated_at=T3, plan=PLAN,
@@ -102,7 +104,7 @@ def canned_jobs() -> list[Job]:
         final_answer="The second proposal is cheaper and shorter to exit.",
         outputs=[JobOutput(path="/tmp/a/4f2a1c22.md", format="markdown", role="main")],
     )
-    failed = Job(
+    failed = dag_job(
         job_id="1d5c8833-0000-4000-8000-000000000003",
         status=JobStatus.FAILED, query="summarise the Q3 board deck",
         created_at=T0, updated_at=T1, plan=PLAN,

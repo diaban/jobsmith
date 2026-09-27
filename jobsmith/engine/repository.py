@@ -1,16 +1,14 @@
 """Where job records live.
 
 `JobRepository` is the port: the vocabulary the JobManager uses to persist and
-reload jobs, expressed in domain terms (a Job, a plan, one capability's
-result). `StoreJobRepository` is the implementation over a LangGraph
+reload jobs, expressed in domain terms (a Job, the facts its run published). `StoreJobRepository` is the implementation over a LangGraph
 BaseStore, and it is the **only** place that knows the namespace schema:
 
 | namespace                     | key        | value                                  |
 |-------------------------------|------------|----------------------------------------|
 | ("jobs", "index")             | job_id     | summary record (status, query, ...)    |
-| ("jobs", job_id, "meta")      | "plan"     | validated plan + rationale             |
 | ("jobs", job_id, "meta")      | "errors"   | accumulated NodeError list             |
-| ("jobs", job_id, "results")   | cap name   | that capability's CapabilityResult     |
+| ("jobs", job_id, "facts")     | fact key   | {"value": what the run published}      |
 | ("jobs", job_id, "control")   | "lease"    | the owner's claim on a running job     |
 | ("jobs", job_id, "control")   | "cancel"   | a stop requested from any process      |
 
@@ -33,8 +31,8 @@ from typing import Any, Protocol
 
 from langgraph.store.memory import InMemoryStore
 
-from ..dag.state import CapabilityResult, NodeError, Plan
-from .models import Job, JobOutput, JobStatus
+from ..dag.state import NodeError
+from .models import Job, JobStatus
 from .ownership import JobControl, Lease
 
 CONTROL = "control"
@@ -55,9 +53,8 @@ class JobRepository(Protocol):
         self, *, session_id: str | None = None, status: JobStatus | None = None,
         announced: bool | None = None, updated_since: str | None = None,
     ) -> list[Job]: ...
-    async def save_plan(self, job_id: str, plan: Plan) -> None: ...
     async def save_errors(self, job_id: str, errors: list[NodeError]) -> None: ...
-    async def save_result(self, job_id: str, capability: str, result: CapabilityResult) -> None: ...
+    async def save_fact(self, job_id: str, key: str, value: Any) -> None: ...
     # -- control: only used when `shared` (see ownership.py) --
     async def save_lease(self, job_id: str, lease: Lease) -> None: ...
     async def release_lease(self, job_id: str) -> None: ...
@@ -104,15 +101,12 @@ class StoreJobRepository:
     async def save_summary(self, job: Job) -> None:
         await self._io("aput", ("jobs", "index"), job.job_id, job.summary())
 
-    async def save_plan(self, job_id: str, plan: Plan) -> None:
-        await self._io("aput", ("jobs", job_id, "meta"), "plan", plan)
-
     async def save_errors(self, job_id: str, errors: list[NodeError]) -> None:
         await self._io("aput", ("jobs", job_id, "meta"), "errors", list(errors))
 
-    async def save_result(self, job_id: str, capability: str, result: CapabilityResult) -> None:
-        """A capability's own output — intermediate material, not a deliverable."""
-        await self._io("aput", ("jobs", job_id, "results"), capability, result)
+    async def save_fact(self, job_id: str, key: str, value: Any) -> None:
+        """A fact the run published: one key, last write wins."""
+        await self._io("aput", ("jobs", job_id, "facts"), key, {"value": value})
 
     # -------- control (#10) --------
 
@@ -147,11 +141,8 @@ class StoreJobRepository:
         if item is None:
             return None
         job = self._from_summary(job_id, item.value)
-        plan_item = await self._io("aget", ("jobs", job_id, "meta"), "plan")
-        if plan_item is not None:
-            job.plan = plan_item.value
-        for result in await self._io("asearch", ("jobs", job_id, "results"), limit=100):
-            job.results[result.key] = result.value
+        for fact in await self._io("asearch", ("jobs", job_id, "facts"), limit=_EVERY_ROW):
+            job.facts[fact.key] = fact.value["value"]
         return job
 
     async def load_all(
@@ -160,7 +151,7 @@ class StoreJobRepository:
     ) -> list[Job]:
         """Every summary matching the filters — complete, however long the history.
 
-        Summaries only; plan and results are loaded by `load`. The filters are
+        Summaries only; fact values are loaded by `load`. The filters are
         applied BY the store and nothing is cut after them. A `limit` here once
         kept the OLDEST rows of the whole base (a store returns them in
         insertion order), so past a hundred jobs the newest vanished from
@@ -196,11 +187,11 @@ class StoreJobRepository:
             session_id=s.get("session_id"),
             created_at=s.get("created_at", ""),
             updated_at=s.get("updated_at", ""),
-            step_finished_at=s.get("step_finished_at") or {},
+            facts_at=s.get("facts_at") or {},
+            steps=s.get("steps") or {},
             terminal_kind=s.get("terminal_kind"),
             final_answer=s.get("final_answer"),
             error=s.get("error"),
-            outputs=[JobOutput(**o) for o in (s.get("outputs") or [])],
             deliverable_expected=bool(s.get("deliverable_expected", True)),
             announced=bool(s.get("announced")),
             usage=s.get("usage") or {},      # absent on records written before #2

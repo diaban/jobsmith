@@ -17,13 +17,13 @@ PACKAGE = Path(__file__).resolve().parent.parent / "jobsmith"
 #: What each layer may import from `jobsmith`, besides itself.
 MAY_IMPORT: dict[str, set[str]] = {
     "engine": set(),
-    "dag": {"engine"},
+    "artifacts": {"engine"},
+    "dag": {"engine", "artifacts"},
 }
 
 #: (importing file, imported module) crossings still to be removed.
 ALLOWED: set[tuple[str, str]] = {
     ("engine/manager.py", "jobsmith.dag.state"),
-    ("engine/models.py", "jobsmith.dag.state"),
     ("engine/repository.py", "jobsmith.dag.state"),
 }
 
