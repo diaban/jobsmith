@@ -25,7 +25,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
-from ..core.state import CapabilityResult, NodeError, Plan
+from ..dag.state import CapabilityResult, NodeError, Plan
 
 _TERMINAL_NODES = ("post_process", "unanswered", "escalate", "user_error")
 

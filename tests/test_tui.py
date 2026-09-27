@@ -30,8 +30,8 @@ from support import (
 from textual.content import Content
 from textual.widgets import Input, ListView, Static
 
-from jobsmith.core.usage import Usage
-from jobsmith.jobs.models import Job, JobOutput, JobStatus
+from jobsmith.engine.models import Job, JobOutput, JobStatus
+from jobsmith.engine.usage import Usage
 from jobsmith.service import AgentService, ServiceUnavailable
 from jobsmith.tui import MISSING, TuiUnavailable
 from jobsmith.tui.app import (

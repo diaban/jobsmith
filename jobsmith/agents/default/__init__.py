@@ -28,7 +28,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
-from ...core.capability import Capability
+from ...dag.capability import Capability
 from ..base import AgentContext, AgentDefinition
 from .analysis import AnalysisCapability
 from .critique import CritiqueCapability

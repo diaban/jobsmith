@@ -30,9 +30,9 @@ from typing import Any
 
 from textual.markup import escape
 
-from ..core.state import plan_depths, plan_waves
-from ..core.usage import Usage
-from ..jobs.report import format_cost, format_usage
+from ..dag.report import format_cost, format_usage
+from ..dag.state import plan_depths, plan_waves
+from ..engine.usage import Usage
 
 # The roles, once. Nothing below names a colour, and nothing invents a variable.
 RUNNING, DONE, FAILED = "$text-accent", "$text-success", "$text-error"
@@ -236,7 +236,7 @@ _ARRIVAL_PAD = 2
 def dag(job: dict[str, Any]) -> str:
     """The plan drawn on a character grid: waves as columns, edges between.
 
-    The columns are `core.state.plan_depths` — the same longest-path layout
+    The columns are `dag.state.plan_depths` — the same longest-path layout
     the HTML deliverable uses, so the two drawings of one plan agree. Nodes
     are placed first; then each edge accumulates a *set of directions* per
     cell it crosses, and the box character is picked once at the end.

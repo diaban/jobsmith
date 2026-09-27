@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from jobsmith.core.capability import Capability, CapabilitySpec
-from jobsmith.core.registry import CapabilityRegistry
+from jobsmith.dag.capability import Capability, CapabilitySpec
+from jobsmith.dag.registry import CapabilityRegistry
 
 
 class StubCap(Capability):

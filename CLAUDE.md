@@ -61,7 +61,7 @@ jobsmith --agent banking chat | serve                       # any agent, same sh
   **Gotchas** (verified): a venv is path-specific — never symlink or copy one across worktrees; `.env`/`agent.db`/`artifacts/` are gitignored, so a fresh worktree has no API key until `make worktree` copies it. → 0000
 - `make coverage`: the interactive layers (`cli/`, `chat/tools.py`) are the thin ones — a change there brings its tests with it. → 0000
 
-Domain-leakage gate (`make leak-check`, must return nothing): `grep -ri --include="*.py" "banking\|banquier\|votre\|analyste" jobsmith/core jobsmith/jobs jobsmith/chat jobsmith/api jobsmith/app jobsmith/cli jobsmith/tui jobsmith/agents/default jobsmith/agents/base.py` — note it scans `agents/default` and `agents/base.py`, **not** `agents/banking`, which is allowed to be as domain-specific as it likes.
+Domain-leakage gate (`make leak-check`, must return nothing): `grep -ri --include="*.py" "banking\|banquier\|votre\|analyste" jobsmith/engine jobsmith/dag jobsmith/chat jobsmith/api jobsmith/app jobsmith/cli jobsmith/tui jobsmith/agents/default jobsmith/agents/base.py` — note it scans `agents/default` and `agents/base.py`, **not** `agents/banking`, which is allowed to be as domain-specific as it likes.
 
 ### The inbound port (`service.py`)
 
@@ -86,7 +86,7 @@ The point of this layer: **a job must outlive the command that launched it**. `j
 - **All diagnostics go to stderr** (banners, tool activity); stdout stays pipeable and carries the answer's tokens; both are flushed per write. → 0000
 - The REPL renders the flow with no fallback branch and never prints the terminal (the tokens delivered it); a mid-turn `ChatStreamError` is said on stderr and the loop continues. → 0050
 - **The job notice is on stdout**, one `job_lines` renderer for notice and proposal, ending `stop it : /cancel <id>`. → 0083
-- **The plan is activity, not record**: `job_planned` goes to stderr as `… plan: a + b → c` (waves from `core.state.plan_waves`); the TUI says it on the activity line, never in the conversation. → 0086
+- **The plan is activity, not record**: `job_planned` goes to stderr as `… plan: a + b → c` (waves from `dag.state.plan_waves`); the TUI says it on the activity line, never in the conversation. → 0086
 - `run_repl` wraps each command in one `except ServiceUnavailable`; `run_command` likewise (exit 1). → 0064
 - `cli/main.py` — argparse; `--llm` is exported as `$JOBSMITH_LLM` so `pick_provider` sees it from both stacks. Bare `jobsmith` == `jobsmith chat`.
 - Sessions are **rebuildable by id**: the API's registry is only a cache, the conversation lives in the checkpointer under `thread_id=session_id`, so `jobsmith chat --session <id>` resumes across a daemon restart (and gets the finished-job announcement). `session_factory` therefore takes an optional `session_id`.
@@ -139,17 +139,17 @@ Wiring only, no content — everything here is domain-neutral:
 
 ### The OO pattern
 
-Every graph step is a class instance owning its deps and config. Node logic is **async instance methods** registered directly (`g.add_node("planner", self.planner.run)`); routers are **sync methods**; capabilities expose `.build()` returning a compiled sub-graph mounted as one parent node. `AgentBuilder` (`core/builder.py`) is the composition root and holds references to every step instance (swap one before `.build()` in tests).
+Every graph step is a class instance owning its deps and config. Node logic is **async instance methods** registered directly (`g.add_node("planner", self.planner.run)`); routers are **sync methods**; capabilities expose `.build()` returning a compiled sub-graph mounted as one parent node. `AgentBuilder` (`dag/builder.py`) is the composition root and holds references to every step instance (swap one before `.build()` in tests).
 
 ### Core concepts (read these files first)
 
-- **`core/capability.py`** — `Capability` ABC + `CapabilitySpec` (name, description, JSON-schema dicts, `requires_inputs`). Capabilities take *exactly the clients they need* in their constructors; the framework never introspects them. Terminal sub-graph nodes call `_emit_success`/`_emit_failure` so every capability reports uniformly.
-- **`core/registry.py`** — `CapabilityRegistry`: single source of truth for what the agent can do. The planner prompt, executor Send targets, and builder node map all derive from it. **Frozen at `build()`** — a compiled graph's capability set is fixed; new capability ⇒ new `AgentBuilder` (compilation is milliseconds).
-- **`core/state.py`** — capability results live in one `results: dict[str, CapabilityResult]` with a dict-union reducer. Fan-in safety: each capability writes only its own key; registry-unique names + no-duplicate plan steps ⇒ disjoint keys. **Determinism caveat:** consumers must iterate in *plan order*, never dict order (ContextMerger does).
-- **`core/usage.py`** — an **ambient ledger** (`ContextVar` per run) adapters push into with `record_usage`; scope from the root of `checkpoint_ns`, else `unattributed`; `$JOBSMITH_PRICES`; unpriced ⇒ `cost_usd: None`; chat-layer calls are not counted. → 0002
-- **`core/paths.py`** — `safe_name` (one component) and `resolve_within` (refused unless it **lands** in a declared root; resolves before comparing). → 0060
-- **`core/prior_jobs.py`** — the `PriorJobSource` port, in `core/` because the composition root supplies it. → 0074
-- **`core/profile.py`** — `AgentProfile` is the entire domain surface: prompt templates, user-facing messages, input/output validation rules (plain callables), `max_refine`. Core defaults are neutral English; the banking example overrides them (French messages live *only* in `agents/banking/profile.py`).
+- **`dag/capability.py`** — `Capability` ABC + `CapabilitySpec` (name, description, JSON-schema dicts, `requires_inputs`). Capabilities take *exactly the clients they need* in their constructors; the framework never introspects them. Terminal sub-graph nodes call `_emit_success`/`_emit_failure` so every capability reports uniformly.
+- **`dag/registry.py`** — `CapabilityRegistry`: single source of truth for what the agent can do. The planner prompt, executor Send targets, and builder node map all derive from it. **Frozen at `build()`** — a compiled graph's capability set is fixed; new capability ⇒ new `AgentBuilder` (compilation is milliseconds).
+- **`dag/state.py`** — capability results live in one `results: dict[str, CapabilityResult]` with a dict-union reducer. Fan-in safety: each capability writes only its own key; registry-unique names + no-duplicate plan steps ⇒ disjoint keys. **Determinism caveat:** consumers must iterate in *plan order*, never dict order (ContextMerger does).
+- **`engine/usage.py`** — an **ambient ledger** (`ContextVar` per run) adapters push into with `record_usage`; scope from the root of `checkpoint_ns`, else `unattributed`; `$JOBSMITH_PRICES`; unpriced ⇒ `cost_usd: None`; chat-layer calls are not counted. → 0002
+- **`engine/paths.py`** — `safe_name` (one component) and `resolve_within` (refused unless it **lands** in a declared root; resolves before comparing). → 0060
+- **`dag/prior_jobs.py`** — the `PriorJobSource` port, in `dag/` because the composition root supplies it. → 0074
+- **`dag/profile.py`** — `AgentProfile` is the entire domain surface: prompt templates, user-facing messages, input/output validation rules (plain callables), `max_refine`. Core defaults are neutral English; the banking example overrides them (French messages live *only* in `agents/banking/profile.py`).
 
 ### Graph flow
 
@@ -164,32 +164,32 @@ validate_input → document_intent → router ─(direct | empty registry)→ di
 errors: execution_error → escalate (some ok result) | user_error (none) → END
 ```
 
-- **Router** (`core/router.py`) is a dedicated triage node — the planner never decides *whether* to plan. Routes live in `Router.routes` (`plan`, `direct` → `DirectResponder`); **fail-open** to `plan`. New route = `Router.routes` entry + node + `AgentBuilder.route_targets` entry. → 0000
+- **Router** (`dag/router.py`) is a dedicated triage node — the planner never decides *whether* to plan. Routes live in `Router.routes` (`plan`, `direct` → `DirectResponder`); **fail-open** to `plan`. New route = `Router.routes` entry + node + `AgentBuilder.route_targets` entry. → 0000
   - An **empty registry** routes `"direct"` structurally, before the LLM call, fallback included. → 0038
   - **The direct route is told the files the run delivers**; asked for as a file, its reply is that document (`DIRECT_DOCUMENT_RULE`) — the request is never moved to the planner for it. → 0080
-- **Document intent** (`core/document.py`), a decision node **before triage**: fills silence, never overrides (a seeded `document_formats` returns before any model call), chooses from `available_formats(registry)` and proves a choice (`confirm`) so it cannot refuse, fail-open (writes nothing = no file), writes only to state (`FormatsChosen`, folded by `JobManager._apply`). → 0090, 0108
+- **Document intent** (`dag/document.py`), a decision node **before triage**: fills silence, never overrides (a seeded `document_formats` returns before any model call), chooses from `available_formats(registry)` and proves a choice (`confirm`) so it cannot refuse, fail-open (writes nothing = no file), writes only to state (`FormatsChosen`, folded by `JobManager._apply`). → 0090, 0108
   - **No document unless asked**: `_deliverable_wanted` is `bool(job.formats)`; silence is `FormatsChosen(None)`. **`None` (may be filled) and `[]` (never overridden) are two facts** — never `formats or []`. → 0096
   - **A file asked for in words is asked for**: "save it to a file" is `requested` whatever else the request asks; a file it is only about is not (`FILE_REQUEST_RULE`). → 0125
-- **Planner** (`core/planner.py`) renders its prompt from `registry.specs()`, validates the LLM's JSON DAG: names against the registry, drops steps whose `is_applicable(state)` is false (generalizes "vision only if image" via `spec.requires_inputs`), **prunes dropped names from surviving `depends_on`**, Kahn cycle check.
+- **Planner** (`dag/planner.py`) renders its prompt from `registry.specs()`, validates the LLM's JSON DAG: names against the registry, drops steps whose `is_applicable(state)` is false (generalizes "vision only if image" via `spec.requires_inputs`), **prunes dropped names from surviving `depends_on`**, Kahn cycle check.
   - A plan emptied by applicability routes to `direct_answer` (`_route_after_planner`); `{"steps": []}` from the model is still an error. → 0038
 - **A refusal is data**: `split_declaration` reads a first-line marker only; `_route_validate_output` sends it to `unanswered`, never to refine; the job stays DONE, `terminal_kind` says so. → 0059
-- **Executor** (`core/executor.py`) is a pass-through node + router: computes ready capabilities each wave and returns `list[Send]`; capability nodes edge back to `executor_dispatch`. This executes an arbitrary DAG without a baked-in schedule.
+- **Executor** (`dag/executor.py`) is a pass-through node + router: computes ready capabilities each wave and returns `list[Send]`; capability nodes edge back to `executor_dispatch`. This executes an arbitrary DAG without a baked-in schedule.
 - **Two error channels**: `NodeError.recoverable=False` (planner/generation failures) hard-stops into `execution_error`; capability failures are recoverable — they land in `results` with `ok: False` and the run degrades gracefully.
 
 ### Critical invariant: capability output schema
 
 Capability `build()` MUST use `self.state_graph(PrivateState)` (which sets `output_schema=CapabilityOutputState`). Without it, the sub-graph echoes its full state (including `query`) to the parent, and two capabilities finishing in the same superstep collide with `InvalidUpdateError`. Private states extend `CapabilityBaseState`.
 
-### Jobs layer (`jobs/`)
+### Jobs layer (`engine/`)
 
 `JobManager` holds **only the use cases** — `create_job` / `run_job` (awaitable) / `start_job` (background task) / `resume_job` (awaitable) / `start_resume` (background) / `get_job` / `list_jobs` / `cancel_job` / `recover_interrupted`. Everything else is a collaborator behind a port, so each changes for its own reason:
 
 | collaborator | responsibility | file |
 |---|---|---|
-| `JobRepository` | where records live + **the store schema** | `jobs/repository.py` |
-| `GraphRunner` | drives the run, translates it to domain updates | `jobs/runner.py` |
-| `JobEvents` | broadcasts progress | `jobs/events.py` |
-| `Reporter` | produces the deliverable | `jobs/report.py` |
+| `JobRepository` | where records live + **the store schema** | `engine/repository.py` |
+| `GraphRunner` | drives the run, translates it to domain updates | `engine/runner.py` |
+| `JobEvents` | broadcasts progress | `engine/events.py` |
+| `Reporter` | produces the deliverable | `dag/report.py` |
 
 Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `repository=`/`runner=`/`events=` to swap one. `tests/test_job_seams.py` drives the whole lifecycle with **no graph and no store** — if that stops being possible, a responsibility has leaked back in.
 
@@ -197,12 +197,12 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
   - `PlanReady` persists a summary as soon as the plan exists. **Which step finished is read from the `cap_*` node name**, never from `results`. → 0048, 0053
 - **Only `repository.py` knows the schema**: `("jobs","index")/job_id` → summary; `("jobs",job_id,"meta")` → plan/errors; `("jobs",job_id,"results")/cap_name` → per-capability result. Fine-grained state stays in the checkpointer under `thread_id == job_id`. Moving job records to SQL is another implementation of this port.
 - **`load_all` is complete**: filters applied by the store, one query, nothing cut; `list_jobs` orders newest first, **then** cuts; what must see everything (announcements, an id, orphans, events) passes `limit=None` — never a bigger number. `tests/test_job_history.py` seeds 250 jobs on every backend. → 0141
-- **`jobs/prior.py`** (`RepositoryPriorJobs`) is the only place that knows how a finished run's material is reached. → 0074
-- **Ownership is on the record** (`jobs/ownership.py`, `("jobs", id, "control")`): a lease written **before** RUNNING, heartbeat 2 s, TTL 30 s; **a cancel is a request the owner acts on**, never a status written over its run. → 0010
+- **`dag/prior.py`** (`RepositoryPriorJobs`) is the only place that knows how a finished run's material is reached. → 0074
+- **Ownership is on the record** (`engine/ownership.py`, `("jobs", id, "control")`): a lease written **before** RUNNING, heartbeat 2 s, TTL 30 s; **a cancel is a request the owner acts on**, never a status written over its run. → 0010
 - **Events cross processes on a shared database** (`WatchedEvents`, watching **only while someone is subscribed**, announcing a job whose `updated_at` moved): SQLite polls `PRAGMA data_version` on its own read-only connection and, only when it moved, re-reads what changed since its last look; Postgres `NOTIFY`s on publish and `LISTEN`s on a connection off the pool; memory stays `InProcessEvents`. Postgres tests run when `$JOBSMITH_TEST_PG` names a DSN. → 0100, 0138
 - **Resume** re-enters with `None`, gated on CANCELLED/FAILED **and** non-empty `runner.pending()`; seeds usage; `_begin_resume` clears `job.error` and `job.announced`. No partial re-run of a finished DAG. → 0005
 - **Vocabulary**: an **output** is what the job produces for the human (`Job.outputs`, role `main`|`alternate`|`annex`); a **result** is a capability's payload (`results`). `Job.report_path` = the main output's path. → 0000
-- **Reporters** (`jobs/report.py`): `build_document` → `JobDocument` → `FileReporter` subclasses (`render`, or `serialize` for bytes); `is_binary_format`. → 0009
+- **Reporters** (`dag/report.py`): `build_document` → `JobDocument` → `FileReporter` subclasses (`render`, or `serialize` for bytes); `is_binary_format`. → 0009
 - **Exactly one output is `role="main"`** (the first format; the rest `alternate`, never `annex`); `compose_reporters` refuses two Reporters on one extension. `pick_report_formats()` only says *which* file when one is wanted and none was named. A failed write leaves the job DONE with `job.error`. → 0028, 0096
 - **An annex is a file a step declared** via `ArtifactStore` + `artifact_meta(...)`, collected in plan order at **every** terminal, assigned never appended; a declared-but-absent file goes in `job.error`. → 0035, 0041
 - **Name, title and formats are facts on the job**, refused in `create_job`; a title is cut on a word (`document_title`). → 0055, 0054
@@ -249,7 +249,7 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 1. Subclass `Capability`; define `spec` (unique snake_case name), constructor taking needed clients, async node methods, `build()` via `self.state_graph(...)`, terminal nodes returning `self._emit_success(...)`/`self._emit_failure(...)`, and `render_context()` if its result should feed generation.
 2. Register it in the composition root before `AgentBuilder(...).build()`. Nothing else: planner prompt, dispatch, merging all pick it up from the registry.
 3. To **read a named file**: `requires_inputs=(SOURCE_FILES_INPUT_KEY,)`, a port in the constructor, never `Path.read_text`; let the port refuse. → 0060
-4. To read an **earlier job**: `requires_inputs=(FROM_JOBS_INPUT_KEY,)`, `ctx.prior_jobs`, never reach into `jobs/`; bound what travels and write every cut into the text. → 0074
+4. To read an **earlier job**: `requires_inputs=(FROM_JOBS_INPUT_KEY,)`, `ctx.prior_jobs`, never reach into `engine/`; bound what travels and write every cut into the text. → 0074
 5. To produce a **file**: `ctx.artifacts.write(state.get("job_id", ""), name, data)` and `meta=artifact_meta(ArtifactRef(path, title=...))` on `_emit_success` (or `_emit_failure`); never build a path. → 0035
 
 ## Testing conventions

@@ -1,7 +1,7 @@
 """Real LLM clients implementing the framework protocols.
 
-Both classes satisfy `core.deps.LLMClient` (chat) and the banking example's
-`VisionClient` (vision):
+Both classes satisfy `dag.deps.LLMClient` (chat) and the `VisionClient` port a
+vision capability declares (vision):
 
 - `AnthropicLLMClient` — official `anthropic` SDK.  pip install -e ".[anthropic]"
   Credentials from ANTHROPIC_API_KEY or an `ant auth login` profile.
@@ -24,9 +24,9 @@ Protocol impedance notes (LLMClient was shaped after an OpenAI-style API):
   only surfaced after the fallback chain also declined.
 
 Both adapters book every response into the ambient usage ledger
-(`core.usage.record_usage`) instead of dropping the `usage` object the SDK
+(`engine.usage.record_usage`) instead of dropping the `usage` object the SDK
 already returns. `chat` keeps returning `str`: what a call cost belongs to the
-run, not to the call's signature — see `core/usage.py` for that argument. The
+run, not to the call's signature — see `engine/usage.py` for that argument. The
 model is taken from the RESPONSE, so a server-side fallback is priced as the
 model that actually served it.
 """
@@ -36,7 +36,7 @@ import base64
 import os
 from typing import Any
 
-from .core.usage import record_usage
+from ..engine.usage import record_usage
 
 DEFAULT_MODEL = "claude-opus-5"
 DEFAULT_MAX_TOKENS = 16000

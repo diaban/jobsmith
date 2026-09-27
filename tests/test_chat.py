@@ -48,9 +48,9 @@ from jobsmith.chat.tools import (
     recent_conversation,
     running_steps,
 )
-from jobsmith.clients import DEFAULT_MODEL as ANTHROPIC_MODEL
-from jobsmith.core.state import CONVERSATION_INPUT_KEY
-from jobsmith.jobs.models import Job, JobOutput, JobStatus, now_iso
+from jobsmith.dag.clients import DEFAULT_MODEL as ANTHROPIC_MODEL
+from jobsmith.dag.state import CONVERSATION_INPUT_KEY
+from jobsmith.engine.models import Job, JobOutput, JobStatus, now_iso
 
 
 def assert_notices_hoisted(system):

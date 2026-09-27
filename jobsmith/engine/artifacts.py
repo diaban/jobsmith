@@ -8,11 +8,11 @@ the two, and it is two small things:
     ArtifactStore   the port: "keep these bytes for this job" (write.py-shaped
                     by the need, not by a filesystem)
     ArtifactRef     what the capability then *declares*, in its result's
-                    `meta["artifacts"]` — the key `core/state.py` already
+                    `meta["artifacts"]` — the key `dag/state.py` already
                     documented as carrying "artifact refs"
 
 The manager turns those refs into `JobOutput`s next to the deliverables it
-already writes (`jobs/manager.py`), which is the only place that knows where
+already writes (`engine/manager.py`), which is the only place that knows where
 a job's files live and how a failed write is survived.
 
 **Why a port rather than raw filesystem I/O in the capability.** Same reason
@@ -146,7 +146,7 @@ class LocalArtifactStore:
         `name` is a filename, not a path: only its last component is kept, so
         a capability cannot escape the job's directory with `../` — it does
         not know the layout and must not be able to reach outside it. That
-        rule lives in `core/paths.py` (`safe_name`) rather than here, because
+        rule lives in `engine/paths.py` (`safe_name`) rather than here, because
         a *name* chosen by a model is one question this project answers in
         several places — see that module.
 

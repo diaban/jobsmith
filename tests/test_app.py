@@ -7,7 +7,7 @@ from langgraph.types import Command
 
 from jobsmith.app import build_app
 from jobsmith.app.providers import KeywordChatModel, KeywordLLM
-from jobsmith.jobs.models import JobStatus
+from jobsmith.engine.models import JobStatus
 
 
 async def make_app(tmp_path, *, db: str = "memory"):

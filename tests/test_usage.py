@@ -14,12 +14,15 @@ from conftest import FakeLLM, plan_json
 from support import OneStep
 
 from jobsmith.app.providers import KeywordLLM
-from jobsmith.clients import AnthropicLLMClient, OpenAILLMClient
-from jobsmith.core.builder import build_agent
-from jobsmith.core.capability import CapabilityBaseState
-from jobsmith.core.deps import Deps
-from jobsmith.core.registry import CapabilityRegistry
-from jobsmith.core.usage import (
+from jobsmith.dag.builder import build_agent
+from jobsmith.dag.capability import CapabilityBaseState
+from jobsmith.dag.clients import AnthropicLLMClient, OpenAILLMClient
+from jobsmith.dag.deps import Deps
+from jobsmith.dag.registry import CapabilityRegistry
+from jobsmith.dag.report import MarkdownReport, build_document, format_step_usage, format_usage
+from jobsmith.engine.manager import JobManager
+from jobsmith.engine.models import Job, JobOutput, JobStatus
+from jobsmith.engine.usage import (
     UNATTRIBUTED,
     ModelPrice,
     Usage,
@@ -31,9 +34,6 @@ from jobsmith.core.usage import (
     reset_price_overrides,
     usage_ledger,
 )
-from jobsmith.jobs.manager import JobManager
-from jobsmith.jobs.models import Job, JobOutput, JobStatus
-from jobsmith.jobs.report import MarkdownReport, build_document, format_step_usage, format_usage
 
 # ---------------------------------------------------------------- the tally
 
@@ -455,7 +455,7 @@ async def test_two_jobs_running_at_once_never_bill_each_other(store, checkpointe
 
     from langgraph.checkpoint.memory import MemorySaver
 
-    from jobsmith.jobs.manager import JobManager
+    from jobsmith.engine.manager import JobManager
 
     class Burner(OneStep):
         def __init__(self, name: str, tokens: int):

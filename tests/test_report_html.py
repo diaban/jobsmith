@@ -17,9 +17,8 @@ from support import done_job, make_document
 from jobsmith.app import build_app
 from jobsmith.app.agent import pick_report_formats
 from jobsmith.app.providers import KeywordChatModel, KeywordLLM
-from jobsmith.jobs import report as report_module
-from jobsmith.jobs.models import Job, JobOutput, JobStatus
-from jobsmith.jobs.report import (
+from jobsmith.dag import report as report_module
+from jobsmith.dag.report import (
     MarkdownReport,
     MultiReporter,
     PlanRow,
@@ -27,7 +26,8 @@ from jobsmith.jobs.report import (
     compose_reporters,
     make_reporter,
 )
-from jobsmith.jobs.report_html import HtmlReport, dag_svg, markdown_to_html
+from jobsmith.dag.report_html import HtmlReport, dag_svg, markdown_to_html
+from jobsmith.engine.models import Job, JobOutput, JobStatus
 
 
 def tags_of(html: str) -> list[str]:

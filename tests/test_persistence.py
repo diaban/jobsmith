@@ -22,8 +22,8 @@ from jobsmith.app.persistence import (
     pick_reports_dir,
 )
 from jobsmith.app.providers import KeywordChatModel, KeywordLLM
-from jobsmith.core.state import SOURCE_FILES_INPUT_KEY
-from jobsmith.jobs.models import JobStatus
+from jobsmith.dag.state import SOURCE_FILES_INPUT_KEY
+from jobsmith.engine.models import JobStatus
 
 
 async def open_app(tmp_path, db: str):

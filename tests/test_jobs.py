@@ -9,11 +9,11 @@ import pytest
 from conftest import FakeLLM, plan_json
 from support import SlowEcho, cancelled_midway, make_manager
 
-from jobsmith.core.builder import build_agent
-from jobsmith.core.deps import Deps
-from jobsmith.core.registry import CapabilityRegistry
-from jobsmith.jobs.models import JobStatus
-from jobsmith.jobs.runner import GraphRunner, StepFinished
+from jobsmith.dag.builder import build_agent
+from jobsmith.dag.deps import Deps
+from jobsmith.dag.registry import CapabilityRegistry
+from jobsmith.engine.models import JobStatus
+from jobsmith.engine.runner import GraphRunner, StepFinished
 
 
 async def test_create_run_done_with_store_contents(store, checkpointer, tmp_path):
@@ -346,8 +346,8 @@ async def test_annexes_are_opt_in_and_rendered_by_the_capability(store, checkpoi
         def render_context(self, result):
             return str(result["data"]["docs"])
 
-    from jobsmith.core.registry import CapabilityRegistry
-    from jobsmith.jobs.report import MarkdownReport
+    from jobsmith.dag.registry import CapabilityRegistry
+    from jobsmith.dag.report import MarkdownReport
 
     caps = [ProseCap("prose"), StructuredCap("structured")]
     registry = CapabilityRegistry(caps)
@@ -371,7 +371,7 @@ def test_a_title_is_never_cut_mid_word():
     before deciding whether to read the rest, and every long request produced
     something like "…adaptées à un utilisate", with nothing saying it was cut.
     """
-    from jobsmith.jobs.report import DEFAULT_TITLE, TITLE_MAX, document_title
+    from jobsmith.dag.report import DEFAULT_TITLE, TITLE_MAX, document_title
 
     long = ("Réaliser un comparatif détaillé des chaises ergonomiques adaptées "
             "à un utilisateur travaillant à domicile")
@@ -395,8 +395,8 @@ def test_a_title_is_never_cut_mid_word():
 
 def test_the_deliverable_carries_that_title(store, checkpointer, tmp_path):
     """One place decides it, and all three Reporters read `JobDocument.title`."""
-    from jobsmith.jobs.models import Job, JobStatus
-    from jobsmith.jobs.report import build_document
+    from jobsmith.dag.report import build_document
+    from jobsmith.engine.models import Job, JobStatus
 
     request = ("Réaliser un comparatif détaillé des chaises ergonomiques "
                "adaptées à un utilisateur travaillant à domicile")
@@ -409,7 +409,7 @@ def test_the_deliverable_carries_that_title(store, checkpointer, tmp_path):
 def test_mermaid_draws_isolated_steps_once():
     """A root that feeds another step is drawn by its edge; a step wired to
     nothing at all still needs its own line or it vanishes from the DAG."""
-    from jobsmith.jobs.report import JobDocument, MarkdownReport, PlanRow
+    from jobsmith.dag.report import JobDocument, MarkdownReport, PlanRow
 
     doc = JobDocument(
         title="t", request="t", job_id="j", created_at="", finished_at="", answer="a",
@@ -485,8 +485,8 @@ def test_the_deliverable_names_its_run_and_does_not_recite_it():
     to read an answer. `with_provenance` is the archive switch, exactly as
     `with_annexes` is.
     """
-    from jobsmith.jobs.models import Job, JobStatus
-    from jobsmith.jobs.report import MarkdownReport, build_document
+    from jobsmith.dag.report import MarkdownReport, build_document
+    from jobsmith.engine.models import Job, JobStatus
 
     job = Job(job_id="j85abcdef", status=JobStatus.DONE,
               query="compare the two options",

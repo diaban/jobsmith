@@ -116,7 +116,7 @@ Rules:
 # that the context does not let it answer. Saying that in prose is right for
 # the reader and useless to the graph: the run then ends exactly like one that
 # answered (#59). So the same decision is asked for as DATA — one marker line,
-# emitted only in that case — which `core/generation.py` reads and turns into
+# emitted only in that case — which `dag/generation.py` reads and turns into
 # a terminal of its own, the way the router and the planner return decisions
 # rather than sentences.
 #

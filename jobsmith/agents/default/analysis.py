@@ -1,7 +1,7 @@
 """ANALYSIS capability (LLM-only): findings, tensions, implications."""
 from __future__ import annotations
 
-from ...core.capability import CapabilitySpec
+from ...dag.capability import CapabilitySpec
 from ._step import SingleStepCapability
 
 

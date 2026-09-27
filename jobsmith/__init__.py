@@ -16,21 +16,21 @@ Quick start:
 
 See jobsmith/agents/banking for a complete domain agent.
 """
-from .core.builder import AgentBuilder, build_agent
-from .core.capability import (
+from .dag.builder import AgentBuilder, build_agent
+from .dag.capability import (
     Capability,
     CapabilityBaseState,
     CapabilityOutputState,
     CapabilitySpec,
 )
-from .core.deps import Deps, LLMClient
-from .core.document import DocumentIntent
-from .core.profile import AgentProfile
-from .core.registry import CapabilityRegistry
-from .core.router import Router
-from .core.state import AgentState, CapabilityResult, NodeError, Plan, PlanStep
-from .jobs.manager import JobManager
-from .jobs.models import Job, JobStatus
+from .dag.deps import Deps, LLMClient
+from .dag.document import DocumentIntent
+from .dag.profile import AgentProfile
+from .dag.registry import CapabilityRegistry
+from .dag.router import Router
+from .dag.state import AgentState, CapabilityResult, NodeError, Plan, PlanStep
+from .engine.manager import JobManager
+from .engine.models import Job, JobStatus
 
 __all__ = [
     "AgentBuilder",

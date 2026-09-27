@@ -34,11 +34,11 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any
 
-from ..core.artifacts import ArtifactStore
-from ..core.capability import Capability
-from ..core.deps import LLMClient
-from ..core.prior_jobs import PriorJobSource
-from ..core.profile import AgentProfile
+from ..dag.capability import Capability
+from ..dag.deps import LLMClient
+from ..dag.prior_jobs import PriorJobSource
+from ..dag.profile import AgentProfile
+from ..engine.artifacts import ArtifactStore
 
 
 @dataclass(frozen=True)
@@ -50,7 +50,7 @@ class AgentContext:
     agent's signature.
 
     `artifacts` is the store a capability that produces a FILE writes to
-    (`core/artifacts.py`). It is here rather than in `resources` because it is
+    (`engine/artifacts.py`). It is here rather than in `resources` because it is
     the composition root's to provide, not the agent's to open: where a job's
     files live is decided next to `reports_dir`, by the same reasoning that
     keeps a capability from knowing that layout. `build_app` always supplies
@@ -60,7 +60,7 @@ class AgentContext:
 
     `readable_roots` is the other half of that, and the same kind of fact: the
     local directories this deployment lets a capability READ a file out of
-    when the request names one (`core/paths.py` says what "inside a root"
+    when the request names one (`engine/paths.py` says what "inside a root"
     means, and refuses everything else). It is the composition root's to
     decide for exactly the reason `artifacts` is — where a job's files live is
     decided next to `reports_dir`, and a capability that could widen its own
@@ -74,7 +74,7 @@ class AgentContext:
     capability reads an EARLIER RUN's material through — its answer and its
     per-step results — when the request builds on one. It is the composition
     root's for the same reason the two above are, and for one more: where job
-    records live is the deployment's persistence choice (`jobs/repository.py`),
+    records live is the deployment's persistence choice (`engine/repository.py`),
     which is not something an agent may open for itself. `build_app` always
     supplies one; `None` means no job history is reachable, and a capability
     that needs one then stays out of the registry.

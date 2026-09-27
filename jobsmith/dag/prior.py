@@ -1,6 +1,6 @@
 """`PriorJobSource` over the job records — the adapter for #74.
 
-The port is `core/prior_jobs.py`; the capability that consumes it
+The port is `dag/prior_jobs.py`; the capability that consumes it
 (`agents/default/prior_jobs.py`) imports neither this module nor anything
 else in this package. This is where the two meet, and it lives here because
 everything it has to know is this layer's: that a job's records are reached
@@ -24,9 +24,9 @@ one thing this adapter refuses to do is invent a shape for it.
 """
 from __future__ import annotations
 
-from ..core.capability import default_result_markdown
-from ..core.prior_jobs import PriorJob, PriorJobUnavailable, PriorStep
-from .repository import JobRepository
+from ..engine.repository import JobRepository
+from .capability import default_result_markdown
+from .prior_jobs import PriorJob, PriorJobUnavailable, PriorStep
 
 
 class RepositoryPriorJobs:

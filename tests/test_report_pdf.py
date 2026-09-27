@@ -36,11 +36,10 @@ from support import (
     requires_pdf,
 )
 
-from jobsmith.core.deps import Deps
-from jobsmith.core.document import DocumentIntent
-from jobsmith.jobs import report_pdf
-from jobsmith.jobs.models import JobStatus
-from jobsmith.jobs.report import (
+from jobsmith.dag import report_pdf
+from jobsmith.dag.deps import Deps
+from jobsmith.dag.document import DocumentIntent
+from jobsmith.dag.report import (
     MultiReporter,
     ReportWriteError,
     available_formats,
@@ -49,8 +48,9 @@ from jobsmith.jobs.report import (
     make_reporter,
     renderable_formats,
 )
-from jobsmith.jobs.report_html import HtmlReport, dag_svg
-from jobsmith.jobs.report_pdf import DAG_STYLE, PAGED_STYLE, PdfReport
+from jobsmith.dag.report_html import HtmlReport, dag_svg
+from jobsmith.dag.report_pdf import DAG_STYLE, PAGED_STYLE, PdfReport
+from jobsmith.engine.models import JobStatus
 
 
 @pytest.fixture(autouse=True)
@@ -185,7 +185,7 @@ def _compose_in_a_fresh_process(tmp_path: Path, **env: str) -> dict:
     script = textwrap.dedent("""
         import asyncio, json, sys
         from jobsmith.app.agent import build_app
-        from jobsmith.jobs.report import available_formats
+        from jobsmith.dag.report import available_formats
 
         async def main():
             app = await build_app(db="memory", llm="fake")

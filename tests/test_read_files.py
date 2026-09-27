@@ -2,7 +2,7 @@
 
 Three layers, tested where each one actually decides something:
 
-- `core/paths.py` — what a path is allowed to be. Every refusal here is a
+- `engine/paths.py` — what a path is allowed to be. Every refusal here is a
   security property, so each is asserted on its own rather than through a
   capability that might be swallowing it.
 - `LocalFileReader` — the adapter, against a real directory, because "a
@@ -28,12 +28,12 @@ from jobsmith.agents.default.sources import Document, DocumentUnavailable, Local
 from jobsmith.app import build_app
 from jobsmith.app.providers import KeywordChatModel, KeywordLLM
 from jobsmith.chat import JobStarted
-from jobsmith.core.builder import build_agent
-from jobsmith.core.deps import Deps
-from jobsmith.core.paths import PathRefused, resolve_within, safe_name
-from jobsmith.core.registry import CapabilityRegistry
-from jobsmith.core.state import SOURCE_FILES_INPUT_KEY
-from jobsmith.jobs.models import JobStatus
+from jobsmith.dag.builder import build_agent
+from jobsmith.dag.deps import Deps
+from jobsmith.dag.registry import CapabilityRegistry
+from jobsmith.dag.state import SOURCE_FILES_INPUT_KEY
+from jobsmith.engine.models import JobStatus
+from jobsmith.engine.paths import PathRefused, resolve_within, safe_name
 
 # --------------------------------------------------------------- the policy
 

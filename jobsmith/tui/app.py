@@ -48,7 +48,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.markup import escape
 from textual.widgets import ContentSwitcher, Footer, Header, Input, ListItem, ListView, Static
 
-from ..jobs.report import deliverable_filenames
+from ..dag.report import deliverable_filenames
 from ..service import TERMINAL_EVENTS, AgentService, ChatStreamError, ServiceUnavailable
 from . import render
 from .themes import DEFAULT_THEME, THEMES, pick_theme

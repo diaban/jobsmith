@@ -7,7 +7,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from ..core.state import CapabilityResult, Plan
+from ..dag.state import CapabilityResult, Plan
 
 
 def now_iso() -> str:
@@ -98,7 +98,7 @@ class Job:
     # already said it would not write.
     deliverable_expected: bool = True
     announced: bool = False                 # completion surfaced in its chat session
-    # What the run spent, all steps together (core.usage.Usage.to_dict()).
+    # What the run spent, all steps together (engine.usage.Usage.to_dict()).
     # Kept as a plain dict: it is persisted, served over HTTP and rendered as
     # is, and the per-step breakdown lives in each result's `meta["usage"]`.
     usage: dict[str, Any] = field(default_factory=dict)
@@ -123,7 +123,7 @@ class Job:
         """Results in PLAN order — the only deterministic order there is.
 
         `results` is filled by parallel waves, so its insertion order is
-        arrival order (see the caveat in `core/state.py`). Anything a human
+        arrival order (see the caveat in `dag/state.py`). Anything a human
         reads — the report's annexes, the files a step produced — must be
         stable across two runs of the same plan, so it is ordered here once
         rather than in each consumer. A result with no plan step (a plan that

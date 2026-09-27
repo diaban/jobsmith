@@ -31,8 +31,8 @@ from typing import Any
 
 from jobsmith.app.agent import build_app, pick_report_formats
 from jobsmith.app.providers import KeywordChatModel, make_llm, pick_provider
-from jobsmith.core.executor import Executor
-from jobsmith.jobs.report import available_formats, renderable_formats
+from jobsmith.dag.executor import Executor
+from jobsmith.dag.report import available_formats, renderable_formats
 
 from .cases import FIXTURE_NAME, FIXTURE_REF, FIXTURE_TEXT, EvalCase
 from .deliverable import ensure_readable

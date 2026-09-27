@@ -15,8 +15,8 @@ from conftest import FakeLLM, plan_json
 from jobsmith.agents import AGENTS, agent_names, get_agent
 from jobsmith.agents.base import AgentContext, AgentDefinition, open_agent_resources
 from jobsmith.app.agent import build_app
-from jobsmith.core.capability import Capability, CapabilityBaseState, CapabilitySpec
-from jobsmith.core.profile import AgentProfile
+from jobsmith.dag.capability import Capability, CapabilityBaseState, CapabilitySpec
+from jobsmith.dag.profile import AgentProfile
 
 
 def test_registry_lists_both_shipped_agents():

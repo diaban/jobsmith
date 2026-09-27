@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jobsmith.clients import AnthropicLLMClient, OpenAILLMClient
+from jobsmith.dag.clients import AnthropicLLMClient, OpenAILLMClient
 
 
 def make_response(text="hello", stop_reason="end_turn", category=None):

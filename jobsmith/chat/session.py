@@ -26,9 +26,9 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import SystemMessage
 
-from ..core.state import TERMINAL_UNANSWERED
-from ..jobs.manager import JobManager
-from ..jobs.models import Job, JobStatus
+from ..dag.state import TERMINAL_UNANSWERED
+from ..engine.manager import JobManager
+from ..engine.models import Job, JobStatus
 from .runner import CUSTOM_ANSWER
 from .tools import make_job_tools, progress_line, progress_signature, stream_writer
 
