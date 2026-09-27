@@ -698,8 +698,8 @@ async def make_running_job(
     job = await manager.create_job(query, session_id=session_id)
     job.status = status
     job.step_finished_at = {name: now_iso() for name in done}
-    await manager.repo.save_summary(job)
-    await manager.repo.save_plan(job.job_id, {
+    await manager.engine.repo.save_summary(job)
+    await manager.engine.repo.save_plan(job.job_id, {
         "steps": [{"capability": s, "depends_on": (deps or {}).get(s, [])} for s in steps],
         "rationale": "test plan",
     })
@@ -710,7 +710,7 @@ async def advance(manager, job, capability):
     """One more step lands."""
     fresh = await manager.get_job(job.job_id)
     fresh.step_finished_at[capability] = now_iso()
-    await manager.repo.save_summary(fresh)
+    await manager.engine.repo.save_summary(fresh)
     return fresh
 
 

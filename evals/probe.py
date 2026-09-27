@@ -108,7 +108,7 @@ async def probe(
                               chat_model=KeywordChatModel(), db="memory",
                               reports_dir=scratch)
         try:
-            nodes = app.manager.graph.nodes
+            nodes = app.manager.engine.graph.nodes
             if node not in nodes:
                 raise ValueError(f"no node {node!r}; this agent has: "
                                  f"{', '.join(sorted(k for k in nodes if not k.startswith('__')))}")

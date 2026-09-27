@@ -19,6 +19,7 @@ from langgraph.constants import END
 from jobsmith.dag.builder import build_agent
 from jobsmith.dag.capability import Capability, CapabilityBaseState, CapabilitySpec
 from jobsmith.dag.deps import Deps
+from jobsmith.dag.jobs import DagJobs
 from jobsmith.dag.registry import CapabilityRegistry
 from jobsmith.dag.report import FileReporter, JobDocument, PlanRow
 from jobsmith.engine.manager import JobManager
@@ -146,7 +147,7 @@ def make_manager(
     store, checkpointer, tmp_path, *, caps=None, llm=None,
     document_formats: tuple[str, ...] = (), default_formats: tuple[str, ...] = ("markdown",),
     reporter=None, reporter_for=None,
-) -> JobManager:
+) -> DagJobs:
     """A manager over stub capabilities whose planner plans them all.
 
     `document_formats` wires the document step (off by default: no format to
@@ -158,7 +159,7 @@ def make_manager(
                         default_document_formats=default_formats if document_formats else (),
                         reports_dir=tmp_path / "artifacts", reporter=reporter,
                         reporter_for=reporter_for)
-    return JobManager(graph, store, default_formats=default_formats)
+    return DagJobs(JobManager(graph, store), default_formats=default_formats)
 
 
 def planning(*steps: str, deps: dict[str, list[str]] | None = None, **script: str) -> FakeLLM:

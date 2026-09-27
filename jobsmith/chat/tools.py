@@ -102,6 +102,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 from langgraph.types import interrupt
 
+from ..dag.jobs import DagJobs
 from ..dag.report import (
     available_formats,
     document_stem,
@@ -114,7 +115,6 @@ from ..dag.state import (
     SOURCE_FILES_INPUT_KEY,
     TERMINAL_UNANSWERED,
 )
-from ..engine.manager import JobManager
 from ..engine.models import Job, JobStatus
 from .runner import CUSTOM_ANSWER, CUSTOM_JOB_PLANNED, CUSTOM_JOB_STARTED
 
@@ -314,7 +314,7 @@ def progress_signature(job: Job) -> str:
     return f"{job.status.value}:{plan_size}:{len(job.step_finished_at)}"
 
 
-async def _find(manager: JobManager, session_id: str, prefix: str) -> Job | None:
+async def _find(manager: DagJobs, session_id: str, prefix: str) -> Job | None:
     """Resolve a job-id prefix among THIS session's jobs only."""
     jobs = await manager.list_jobs(session_id=session_id, limit=None)
     matches = [j for j in jobs if j.job_id.startswith(prefix)]
@@ -348,7 +348,7 @@ def stream_writer() -> Callable[[dict[str, Any]], None]:
         return lambda _payload: None
 
 
-async def announce_plan(manager: JobManager, job_id: str,
+async def announce_plan(manager: DagJobs, job_id: str,
                         events: asyncio.Queue,
                         write: Callable[[dict[str, Any]], None]) -> None:
     """Write the job's plan into the turn the moment it is decided (#86).
@@ -473,7 +473,7 @@ def _promoted(job: Job, waited: float) -> str:
 
 
 def make_job_tools(
-    manager: JobManager,
+    manager: DagJobs,
     session_id: str,
     *,
     sync_timeout: float | None = None,
