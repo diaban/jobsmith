@@ -109,8 +109,8 @@ generic at step 2. Two more come in by extraction:
 8. **Composition and usage.** Lands `AgentDefinition.graph`, optional chat, `JobService`/`ChatService` and the LangChain callback. G1 and G4 land and the allowlist is empty.
 9. **The contract leaves the bench.** The launch tool, the notification middleware and the delivered-ids channel move to `adapters/langchain/`, generic over a `GraphSpec` plus an input builder given by the app. `chat/` keeps the persona and the DAG's arguments. G5 lands. After that the process unfreezes: the single refonte record points here, and the scribe rewrites `CLAUDE.md`.
 
-## Open questions
+## Decided (2026-09-27, the three recommendations approved)
 
-1. **Existing `jobs.db` records.** Start clean (recommended): the namespace moves from `jobs` to `jobs_v1`, and old rows are left untouched and unread. The alternative is a read shim of about 20 lines, plus `prior_jobs` reading the legacy `meta`.
-2. **JSON shape of a job over HTTP.** Only our own CLI and TUI read it, so change it in place (recommended), without versioning.
-3. **Several graphs per engine** (`graph` on the record). Recommended: yes, since G1 and G2 already make two graphs. The alternative is one graph per engine and no field.
+1. **Existing `jobs.db` records: start clean.** The namespace moves from `jobs` to `jobs_v1`, and old rows are left untouched and unread. No read shim.
+2. **JSON shape of a job over HTTP: changed in place**, without versioning. Only our own CLI and TUI read it.
+3. **Several graphs per engine: yes.** `graph` goes on the record, and resume finds its graph by that name.
