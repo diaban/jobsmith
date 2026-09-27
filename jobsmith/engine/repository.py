@@ -33,7 +33,7 @@ from typing import Any, Protocol
 
 from langgraph.store.memory import InMemoryStore
 
-from ..core.state import CapabilityResult, NodeError, Plan
+from ..dag.state import CapabilityResult, NodeError, Plan
 from .models import Job, JobOutput, JobStatus
 from .ownership import JobControl, Lease
 

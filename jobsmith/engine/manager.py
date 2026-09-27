@@ -40,9 +40,14 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from ..core.artifacts import artifact_refs
-from ..core.state import TERMINAL_UNANSWERED, NodeError
-from ..core.usage import Usage, UsageLedger, current_ledger, usage_ledger
+from ..dag.report import (
+    ReportWriteError,
+    compose_reporters,
+    document_stem,
+    ensure_formats_available,
+)
+from ..dag.state import TERMINAL_UNANSWERED, NodeError
+from .artifacts import artifact_refs
 from .events import InProcessEvents, JobEvents, job_event
 from .models import Job, JobOutput, JobStatus, now_iso
 from .ownership import (
@@ -52,12 +57,6 @@ from .ownership import (
     ProcessIdentity,
     death_is_certain,
     owner_is_gone,
-)
-from .report import (
-    ReportWriteError,
-    compose_reporters,
-    document_stem,
-    ensure_formats_available,
 )
 from .repository import JobRepository, StoreJobRepository
 from .runner import (
@@ -69,6 +68,7 @@ from .runner import (
     StepFinished,
     Terminal,
 )
+from .usage import Usage, UsageLedger, current_ledger, usage_ledger
 
 # Statuses a job can be resumed from — see `JobManager._begin_resume`.
 RESUMABLE = (JobStatus.CANCELLED, JobStatus.FAILED)
@@ -573,7 +573,7 @@ class JobManager:
         """The files the steps produced, as annexes — plus what went missing.
 
         A capability declares what it wrote in its result's `meta`
-        (`core/artifacts.py`); this reads those declarations back, in plan
+        (`engine/artifacts.py`); this reads those declarations back, in plan
         order so two runs of one plan list their files the same way.
 
         **A ref whose file is not there is dropped, and said out loud.**

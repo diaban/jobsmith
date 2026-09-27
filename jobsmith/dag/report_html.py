@@ -24,7 +24,6 @@ from __future__ import annotations
 import re
 from html import escape
 
-from ..core.state import plan_depths
 from .report import (
     UNANSWERED_NOTICE,
     FileReporter,
@@ -34,6 +33,7 @@ from .report import (
     format_usage,
     job_reference,
 )
+from .state import plan_depths
 
 # ------------------------------------------------------------------ markdown
 
@@ -221,7 +221,7 @@ CHAR_WIDTH = 7.6          # ~13px monospace, wide enough for snake_case names
 def _depths(doc: JobDocument) -> dict[str, int]:
     """Longest-path depth per step — the column each one is drawn in.
 
-    The layout itself is `core.state.plan_depths`, shared with the terminal
+    The layout itself is `dag.state.plan_depths`, shared with the terminal
     UI: two drawings of one plan must agree on where a step belongs, and a
     second copy of the relaxation would be where they stop agreeing.
     """

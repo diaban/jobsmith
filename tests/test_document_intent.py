@@ -1,4 +1,4 @@
-"""The document step (`core/document.py`): what file the request asked for.
+"""The document step (`dag/document.py`): what file the request asked for.
 
 It fills silence and never overrides, writes only to state, chooses only
 what this deployment renders, and fails open to silence (= no file). → 0090, 0096
@@ -12,11 +12,11 @@ import pytest
 from conftest import FakeLLM
 from support import SlowEcho, make_manager
 
-from jobsmith.core.deps import Deps
-from jobsmith.core.document import DocumentIntent
-from jobsmith.core.profile import FILE_REQUEST_RULE
-from jobsmith.jobs.models import JobStatus
-from jobsmith.jobs.runner import FormatsChosen, GraphRunner, PlanReady
+from jobsmith.dag.deps import Deps
+from jobsmith.dag.document import DocumentIntent
+from jobsmith.dag.profile import FILE_REQUEST_RULE
+from jobsmith.engine.models import JobStatus
+from jobsmith.engine.runner import FormatsChosen, GraphRunner, PlanReady
 
 RENDERABLE = ("html", "markdown", "pdf")
 NAMED_HTML = json.dumps({"document": "named", "formats": ["html"]})

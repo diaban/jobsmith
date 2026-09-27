@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 from jobsmith.agents.banking.profile import BANKING_PROFILE, rule_citations_when_search
-from jobsmith.core.profile import AgentProfile
-from jobsmith.core.validate import InputValidator, OutputValidator
+from jobsmith.dag.profile import AgentProfile
+from jobsmith.dag.validate import InputValidator, OutputValidator
 
 
 async def test_default_profile_rejects_empty_query_in_english():

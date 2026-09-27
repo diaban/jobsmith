@@ -21,9 +21,9 @@ import sys
 from collections.abc import AsyncIterator
 from typing import Any
 
-from ..core.state import plan_waves
-from ..core.usage import Usage
-from ..jobs.report import deliverable_filenames, format_step_usage, format_usage
+from ..dag.report import deliverable_filenames, format_step_usage, format_usage
+from ..dag.state import plan_waves
+from ..engine.usage import Usage
 from ..service import TERMINAL_EVENTS, BinaryDeliverable, ChatStreamError, ServiceUnavailable
 from .client import AgentClient
 
@@ -35,7 +35,7 @@ BANNER = "\n".join(
 # What a tool call is called in front of a human. The event carries the tool's
 # real name (`launch_job`); this is the presentation layer, so this is where it
 # becomes something worth reading — the same reason REPORT_MEDIA_TYPES lives in
-# the HTTP adapter and not in jobs/report.py. A TUI will word these its own way,
+# the HTTP adapter and not in dag/report.py. A TUI will word these its own way,
 # and neither wording belongs in chat/runner.py.
 TOOL_ACTIVITY = {
     "launch_job": "running the task",

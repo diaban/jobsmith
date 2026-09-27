@@ -65,7 +65,7 @@ class AgentBuilder:
         # What this deployment can render (`available_formats`), for the one
         # node that has to choose among them. Empty — the default — leaves
         # `document_intent` silent: `core/` never learns what a Reporter is,
-        # so a builder nobody told cannot invent a format. See core/document.py.
+        # so a builder nobody told cannot invent a format. See dag/document.py.
         self.document_formats = tuple(document_formats)
         # ...and which of them a request gets when it asks for a document
         # without naming a format (#96) — the deployment's, never guessed

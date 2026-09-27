@@ -496,7 +496,7 @@ download instead, because "no report" would be false — the job has one, on
 disk. `jobsmith report <id>` says the same thing in the terminal.
 
 **A capability can hand back a file** — `slide_deck` is the one that ships.
-It writes through the `ArtifactStore` port (`core/artifacts.py`) — `write(job_id, name, data) -> path`, backed by a
+It writes through the `ArtifactStore` port (`engine/artifacts.py`) — `write(job_id, name, data) -> path`, backed by a
 directory today and by object storage the day that matters — and names what it
 wrote in its result's `meta`; the job records each one as an annex, attributed
 to the step. Annexes never disturb the report: they come after the
@@ -602,8 +602,8 @@ connection is a bug waiting to happen.
 
 ```
 jobsmith/
-  core/         the engine: router, planner, executor, generation, registry
-  jobs/         the job use cases + their ports (repository, runner, events, reporter)
+  engine/       the job engine: use cases, runner, repository, ownership, events, usage, artifacts
+  dag/          the reference graph: router, planner, executor, generation, registry, reporters
   chat/         conversational layer (LangChain create_agent) + job tools
   service.py    ★ the inbound port: what any front-end can ask of a running app
   api/          adapter — FastAPI: sessions, jobs, outputs, SSE
@@ -626,8 +626,8 @@ whether the work runs in this process or in a daemon — which is what makes a
 UI or a bot one more adapter rather than a rewrite.
 
 Two LLM stacks, deliberately: the chat layer uses **LangChain** models (they
-handle per-provider tool formats), the job engine uses a dependency-light
-`LLMClient` protocol (`jobsmith/clients.py`).
+handle per-provider tool formats), the planner DAG uses a dependency-light
+`LLMClient` protocol (`jobsmith/dag/clients.py`).
 
 ---
 

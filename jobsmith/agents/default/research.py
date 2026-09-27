@@ -25,9 +25,9 @@ from typing import ClassVar, Literal
 
 from langgraph.constants import END
 
-from ...core.capability import Capability, CapabilityBaseState, CapabilitySpec
-from ...core.deps import LLMClient
-from ...core.state import CapabilityResult
+from ...dag.capability import Capability, CapabilityBaseState, CapabilitySpec
+from ...dag.deps import LLMClient
+from ...dag.state import CapabilityResult
 from ._step import SUBJECT_ONLY_RULE
 
 TRUNCATION_NOTE = "\n\n…[truncated: only the first {kept} characters of this document]"
@@ -79,7 +79,7 @@ class ResearchCapability(Capability):
     #: named and what the web says today are complementary, and dropping one
     #: because another matched first would lose material nobody can recover
     #: later. Fixed order, so the prompt is deterministic (the `results` dict
-    #: arrives in wave order — see the determinism caveat in `core/state.py`).
+    #: arrives in wave order — see the determinism caveat in `dag/state.py`).
     #:
     #: `prior_jobs` (#74) is here for the reason #81 exists at all: the
     #: material of an earlier run reaching only the final generator is the

@@ -32,7 +32,7 @@ from collections import Counter
 from dataclasses import dataclass
 from html import unescape
 
-from jobsmith.jobs.report import is_binary_format
+from jobsmith.dag.report import is_binary_format
 
 # Markup that carries no text: dropped whole, contents included.
 _DROP_BLOCKS = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.I | re.S)

@@ -1,6 +1,6 @@
 """Driving one conversational turn, and translating it into domain events.
 
-This is the chat twin of `jobs/runner.py`, and it exists for the same reason:
+This is the chat twin of `engine/runner.py`, and it exists for the same reason:
 it is the **only** module that knows the shape of what LangGraph's `astream`
 emits for a chat agent — the `("messages", (chunk, metadata))` pairs, the
 `("updates", {node: update})` ones, the `model`/`tools` node names, the
@@ -26,7 +26,7 @@ this stream — one implementation of the turn, not two.
 `ToolStarted` carries the tool's real name (`launch_job`), never a phrase for
 a human. Turning it into readable prose is the presentation layer's business,
 for the same reason `REPORT_MEDIA_TYPES` lives in `api/app.py` and not in
-`jobs/report.py`: the CLI and a future TUI word it differently, and neither
+`dag/report.py`: the CLI and a future TUI word it differently, and neither
 wording belongs in the thing that reports the fact.
 
 **A third stream mode, and the sixth event** (#83). A task now runs *inside*

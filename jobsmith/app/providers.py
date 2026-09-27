@@ -28,9 +28,9 @@ from langchain_core.messages import (
 )
 from langchain_core.outputs import ChatGeneration, ChatResult
 
-from ..core.generation import FILES_HEADING
-from ..core.profile import NO_ANSWER_MARKER
-from ..core.usage import record_usage
+from ..dag.generation import FILES_HEADING
+from ..dag.profile import NO_ANSWER_MARKER
+from ..engine.usage import record_usage
 
 # ---------------------------------------------------------------- env / choice
 
@@ -69,13 +69,13 @@ def pick_provider() -> str:
 def make_llm(choice: str) -> Any:
     """LLMClient for the JOB ENGINE (planner/capabilities/generation)."""
     if choice == "anthropic":
-        from ..clients import AnthropicLLMClient
+        from ..dag.clients import AnthropicLLMClient
 
         llm = AnthropicLLMClient()
         print(f"[jobs llm: Claude via AnthropicLLMClient — {llm.model}]", file=sys.stderr)
         return llm
     if choice == "openai":
-        from ..clients import OpenAILLMClient
+        from ..dag.clients import OpenAILLMClient
 
         llm = OpenAILLMClient()
         print(f"[jobs llm: OpenAI via OpenAILLMClient — {llm.model}]", file=sys.stderr)

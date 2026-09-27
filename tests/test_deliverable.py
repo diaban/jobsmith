@@ -30,17 +30,17 @@ from support import (
 )
 
 from jobsmith.chat import ChatRunner, JobStarted
-from jobsmith.core.artifacts import LocalArtifactStore
-from jobsmith.core.capability import CapabilitySpec
-from jobsmith.jobs.models import JobStatus
-from jobsmith.jobs.report import (
+from jobsmith.dag.capability import CapabilitySpec
+from jobsmith.dag.report import (
     NAME_MAX,
     available_formats,
     compose_reporters,
     deliverable_filenames,
     document_stem,
 )
-from jobsmith.jobs.repository import StoreJobRepository
+from jobsmith.engine.artifacts import LocalArtifactStore
+from jobsmith.engine.models import JobStatus
+from jobsmith.engine.repository import StoreJobRepository
 
 NAME = "chair_comparison"
 
@@ -405,7 +405,7 @@ async def test_a_format_that_cannot_be_written_is_not_launched_and_says_what_can
     store, checkpointer, tmp_path, monkeypatch, fmt, cause
 ):
     """Refused in `create_job`, in front of whoever asked. → 0055, 0108"""
-    from jobsmith.jobs import report_pdf
+    from jobsmith.dag import report_pdf
 
     monkeypatch.setattr(report_pdf, "_probed", None)
     if fmt == "pdf":

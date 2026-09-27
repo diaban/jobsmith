@@ -4,13 +4,13 @@ This is the domain surface that used to be hardcoded in the framework.
 """
 from __future__ import annotations
 
-from ...core.profile import (
+from ...dag.profile import (
     NO_ANSWER_INSTRUCTION,
     AgentProfile,
     rule_min_answer_len,
     rule_nonempty_answer,
 )
-from ...core.state import AgentState
+from ...dag.state import AgentState
 
 MAX_QUERY_LEN = 4000
 

@@ -22,7 +22,7 @@ Totality, and why `query` is the exception:
   These schemas are `total=False` because a LangGraph node returns a *partial*
   update — that is right for writes. It is wrong for reads: pyright's
   `reportTypedDictNotRequiredAccess` then rejects `state["query"]` even though
-  the graph is only ever entered with a query (`jobs/runner.py` invokes it with
+  the graph is only ever entered with a query (`engine/runner.py` invokes it with
   `{"query", "inputs", "job_id"}`, and a resume replays that same checkpoint).
   `Required[str]` states that truthfully, and costs nothing on the write side
   because no node is annotated `-> AgentState`: they all return plain `dict`.
@@ -53,7 +53,7 @@ def plan_depths(steps: Iterable[tuple[str, Iterable[str]]]) -> dict[str, int]:
 
     It lives next to `Plan` because it is a property of the DAG rather than
     of any one way of showing it: the HTML deliverable lays the plan out in
-    columns (`jobs/report_html.py`) and so does the terminal UI
+    columns (`dag/report_html.py`) and so does the terminal UI
     (`tui/render.py`), and two copies of this would be two layouts that drift.
 
     Relaxed to a fixpoint rather than walked in order: a plan is validated
@@ -128,7 +128,7 @@ CONVERSATION_INPUT_KEY = "conversation"
 # parameter, shown at the approval interrupt), and whichever capability
 # declares `requires_inputs=("source_files",)` consumes it. The framework
 # carries the key and never opens anything — reading is a port's job, and what
-# a path is allowed to be is `core/paths.py`.
+# a path is allowed to be is `engine/paths.py`.
 SOURCE_FILES_INPUT_KEY = "source_files"
 
 # The jobs a request builds ON — ids of earlier runs whose material this one
@@ -139,7 +139,7 @@ SOURCE_FILES_INPUT_KEY = "source_files"
 # it (`chat/tools.py`), having resolved each reference against the session's
 # own jobs, and whichever capability declares
 # `requires_inputs=("from_jobs",)` consumes it through the `PriorJobSource`
-# port (`core/prior_jobs.py`). Ids, never material: the framework carries the
+# port (`dag/prior_jobs.py`). Ids, never material: the framework carries the
 # key and reads nothing.
 FROM_JOBS_INPUT_KEY = "from_jobs"
 
@@ -182,15 +182,15 @@ class AgentState(TypedDict, total=False):
     rejection_reason: str | None
 
     # --- Routing (triage decision) ---
-    route: str | None           # "plan" | "direct" (see core/router.py)
+    route: str | None           # "plan" | "direct" (see dag/router.py)
 
-    # --- What document this run is to leave behind (see core/document.py) ---
-    # Seeded at entry with what the CALLER already asked for (`jobs/runner.py`
+    # --- What document this run is to leave behind (see dag/document.py) ---
+    # Seeded at entry with what the CALLER already asked for (`engine/runner.py`
     # passes the job's own `formats`), so the three states are the ones
     # `Job.formats` has: a list of format names, `[]` for "no document at
     # all", and absent for "nobody has said". `document_intent` writes it only
     # in the last case — which is what keeps a caller that spoke authoritative
-    # — and `jobs/runner.py` reads the write back off that node's name.
+    # — and `engine/runner.py` reads the write back off that node's name.
     document_formats: list[str] | None
 
     # --- Planner output ---
@@ -204,7 +204,7 @@ class AgentState(TypedDict, total=False):
     merged_context: str | None
     draft_answer: str | None
     # The generator's own verdict on whether the context let it answer, read
-    # from its structural declaration (see core/generation.py). Absent means
+    # from its structural declaration (see dag/generation.py). Absent means
     # "nobody said otherwise", which is why every reader defaults it to True:
     # a model that never declares anything runs exactly as it did before.
     answered: bool

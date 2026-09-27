@@ -15,9 +15,9 @@ from typing import Literal
 
 from langgraph.constants import END
 
-from ...core.capability import Capability, CapabilityBaseState, CapabilitySpec
-from ...core.deps import LLMClient
-from ...core.state import CapabilityResult
+from ...dag.capability import Capability, CapabilityBaseState, CapabilitySpec
+from ...dag.deps import LLMClient
+from ...dag.state import CapabilityResult
 from .sources import Document, DocumentSource
 
 

@@ -24,10 +24,10 @@ from jobsmith.agents.default.profile import (
 from jobsmith.agents.default.read_files import ReadFilesCapability
 from jobsmith.agents.default.research import UNREADABLE_RULE, ResearchCapability
 from jobsmith.agents.default.sources import Document
-from jobsmith.core.builder import build_agent
-from jobsmith.core.deps import Deps
-from jobsmith.core.registry import CapabilityRegistry
-from jobsmith.core.state import SOURCE_FILES_INPUT_KEY
+from jobsmith.dag.builder import build_agent
+from jobsmith.dag.deps import Deps
+from jobsmith.dag.registry import CapabilityRegistry
+from jobsmith.dag.state import SOURCE_FILES_INPUT_KEY
 
 CHAIN = {"analysis": ["research"], "critique": ["analysis"]}
 FINAL = "A sufficiently long final answer built from the pack context."

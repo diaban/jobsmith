@@ -1,6 +1,6 @@
 """Banking-domain dependency protocols and aggregate container.
 
-The framework core only knows LLMClient (core/deps.py). The domain clients
+The framework core only knows LLMClient (dag/deps.py). The domain clients
 below are consumed directly by the banking capabilities' constructors —
 `BankingDeps` is just a convenience aggregate for the composition root.
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-from ...core.deps import Deps
+from ...dag.deps import Deps
 
 
 @runtime_checkable

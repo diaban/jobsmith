@@ -11,12 +11,12 @@ from pathlib import Path
 
 import pytest
 
-from jobsmith.core.usage import record_usage
-from jobsmith.jobs.events import InProcessEvents, job_event
-from jobsmith.jobs.manager import JobManager
-from jobsmith.jobs.models import Job, JobOutput, JobStatus
-from jobsmith.jobs.repository import StoreJobRepository
-from jobsmith.jobs.runner import NodeErrors, PlanReady, StepFinished, Terminal
+from jobsmith.engine.events import InProcessEvents, job_event
+from jobsmith.engine.manager import JobManager
+from jobsmith.engine.models import Job, JobOutput, JobStatus
+from jobsmith.engine.repository import StoreJobRepository
+from jobsmith.engine.runner import NodeErrors, PlanReady, StepFinished, Terminal
+from jobsmith.engine.usage import record_usage
 
 
 class FakeRunner:
@@ -307,7 +307,7 @@ async def test_deliverables_already_written_survive_a_later_failure(tmp_path):
     """Markdown lands, HTML raises: the markdown file exists, so it stays a
     deliverable of the job. Dropping it would leave a file on disk that
     `/jobs/{id}/outputs` never mentions."""
-    from jobsmith.jobs.report import MarkdownReport, MultiReporter
+    from jobsmith.dag.report import MarkdownReport, MultiReporter
 
     class Boom:
         format, extension = "html", "html"

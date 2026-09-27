@@ -18,7 +18,7 @@ It answers in the three states `Job.formats` already has, and in no others:
 - nothing at all (`{}`, no write) — the request said nothing, which is the
   ordinary case. Since #96 it means **no file**, on every door: nothing else
   reads the request for a document, so this silence is where that decision
-  is taken, and `jobs/manager.py` records it as such.
+  is taken, and `engine/manager.py` records it as such.
 
 The fourth answer the prompt offers ("a document, no format named") is not a
 fourth state: it resolves to names here, so the record says what will be
@@ -28,7 +28,7 @@ Reporter is.
 
 **It fills silence and never overrides.** The gate is structural, decided
 before any model call: the graph is entered with `document_formats` seeded
-from what the caller already asked for (`jobs/runner.py`), and a value there
+from what the caller already asked for (`engine/runner.py`), and a value there
 means somebody has spoken — the node returns immediately, free and
 deterministic, exactly as the router decides an empty registry without asking
 a model. Two interpreters that can disagree is the failure mode; a redundancy
@@ -55,7 +55,7 @@ is still the only side this node can fail on without refusing.
 deployment has *installed*, answered without loading any engine — proving
 that PDF renders costs a ~4 s import that composing the app must not pay. So
 a choice is confirmed before it is written (`confirm`, handed down with the
-list, `jobs/report.py::renderable_formats`): the first run whose request
+list, `dag/report.py::renderable_formats`): the first run whose request
 chose PDF probes the engine there, still before any work, and a format that
 cannot render is dropped like any other name outside the list. No job
 reaches its end to discover its format was never renderable.
@@ -174,7 +174,7 @@ class DocumentIntent:
 
     async def run(self, state: AgentState) -> dict:
         # Structural gates, both before any model call. `document_formats` is
-        # seeded at entry by `jobs/runner.py` with what the caller asked for;
+        # seeded at entry by `engine/runner.py` with what the caller asked for;
         # absent (`None`) means nobody has said anything yet, which is the
         # only case this node exists for.
         if not self.formats or state.get("document_formats") is not None:

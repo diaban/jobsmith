@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .artifacts import artifact_refs
+from ..engine.artifacts import artifact_refs
 from .deps import Deps
 from .profile import NO_ANSWER_MARKER, AgentProfile
 from .registry import CapabilityRegistry
@@ -117,7 +117,7 @@ def delivered_files(state: AgentState) -> list[str]:
     """The files this run delivers, as far as generation time can know.
 
     Two sources, and they are the whole truth: the document the request asked
-    for (`document_formats`, decided before the plan by `core/document.py` or
+    for (`document_formats`, decided before the plan by `dag/document.py` or
     seeded from `Job.formats` — a list means a file in those formats, `[]` or
     silence means none, #96), and the files a step declared through
     `artifact_meta` (#35), read in PLAN order like `ContextMerger`. A declared

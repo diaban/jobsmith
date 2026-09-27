@@ -4,9 +4,9 @@ from __future__ import annotations
 from conftest import FakeLLM, plan_json
 from support import SlowEcho
 
-from jobsmith.core.builder import AgentBuilder, build_agent
-from jobsmith.core.deps import Deps
-from jobsmith.core.registry import CapabilityRegistry
+from jobsmith.dag.builder import AgentBuilder, build_agent
+from jobsmith.dag.deps import Deps
+from jobsmith.dag.registry import CapabilityRegistry
 
 
 def EchoCapability(name: str, payload: str, **kwargs) -> SlowEcho:  # noqa: N802

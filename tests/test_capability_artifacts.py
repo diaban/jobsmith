@@ -17,17 +17,17 @@ from support import (
     until,
 )
 
-from jobsmith.core.artifacts import (
+from jobsmith.dag.capability import CapabilityBaseState
+from jobsmith.dag.report import compose_reporters
+from jobsmith.engine.artifacts import (
     ArtifactRef,
     ArtifactStore,
     LocalArtifactStore,
     artifact_meta,
     artifact_refs,
 )
-from jobsmith.core.capability import CapabilityBaseState
-from jobsmith.jobs.manager import JobManager
-from jobsmith.jobs.models import JobStatus
-from jobsmith.jobs.report import compose_reporters
+from jobsmith.engine.manager import JobManager
+from jobsmith.engine.models import JobStatus
 
 
 class PhantomCapability(ChartCapability):
@@ -194,7 +194,7 @@ async def test_the_composition_root_hands_a_capability_a_store(tmp_path):
     from jobsmith.agents import AGENTS
     from jobsmith.agents.base import AgentContext, AgentDefinition
     from jobsmith.app.agent import build_app
-    from jobsmith.core.profile import AgentProfile
+    from jobsmith.dag.profile import AgentProfile
 
     seen: dict[str, ArtifactStore | None] = {}
 
@@ -278,7 +278,7 @@ async def test_a_resumed_job_lists_each_file_exactly_once(store, checkpointer, t
 
 async def test_a_run_that_blew_up_mid_stream_still_lists_what_landed(store, tmp_path):
     """The runner itself raised — a terminal no real graph produces on demand."""
-    from jobsmith.jobs.runner import PlanReady, StepFinished
+    from jobsmith.engine.runner import PlanReady, StepFinished
 
     chart = tmp_path / "artifacts" / "landed.svg"
     chart.parent.mkdir(parents=True)

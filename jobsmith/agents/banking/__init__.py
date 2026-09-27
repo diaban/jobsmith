@@ -12,7 +12,7 @@ from __future__ import annotations
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 
-from ...core.capability import Capability
+from ...dag.capability import Capability
 from ..base import AgentContext, AgentDefinition
 from .capabilities.refs import RefsCapability
 from .capabilities.search import SearchCapability

@@ -19,11 +19,11 @@ from jobsmith.agents.default.research import ResearchCapability
 from jobsmith.app import build_app
 from jobsmith.app.providers import KeywordChatModel, KeywordLLM
 from jobsmith.chat.runner import JobStarted
-from jobsmith.core.prior_jobs import PriorJob, PriorJobUnavailable, PriorStep
-from jobsmith.core.state import FROM_JOBS_INPUT_KEY
-from jobsmith.jobs.models import Job, JobStatus
-from jobsmith.jobs.prior import RepositoryPriorJobs
-from jobsmith.jobs.repository import StoreJobRepository
+from jobsmith.dag.prior import RepositoryPriorJobs
+from jobsmith.dag.prior_jobs import PriorJob, PriorJobUnavailable, PriorStep
+from jobsmith.dag.state import FROM_JOBS_INPUT_KEY
+from jobsmith.engine.models import Job, JobStatus
+from jobsmith.engine.repository import StoreJobRepository
 
 
 class FakePriorJobs:
@@ -55,14 +55,14 @@ async def run(capability: PriorJobsCapability, *refs: str, query: str = "one-pag
 # ---------------- the port's own shape ----------------
 
 
-def test_nothing_in_the_capability_reaches_the_jobs_layer():
+def test_nothing_in_the_capability_reaches_the_job_engine():
     """The layering the port exists for, asserted where it can be: the module
-    the capability lives in imports `core` and nothing else of ours. A
+    the capability lives in imports `dag` and nothing else of ours. A
     capability that knew `JobRepository` would be a capability that knows a
     store namespace, and the port would be decoration."""
     source = Path(prior_jobs_module.__file__ or "").read_text()
-    assert "from ...jobs" not in source
-    assert "jobsmith.jobs" not in source
+    assert "from ...engine" not in source
+    assert "jobsmith.engine" not in source
 
 
 async def test_the_adapter_reads_the_record_in_plan_order(store):

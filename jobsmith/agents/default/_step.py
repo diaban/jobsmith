@@ -14,9 +14,9 @@ from typing import ClassVar, Literal
 
 from langgraph.constants import END
 
-from ...core.capability import Capability, CapabilityBaseState, CapabilitySpec
-from ...core.deps import LLMClient
-from ...core.state import CapabilityResult
+from ...dag.capability import Capability, CapabilityBaseState, CapabilitySpec
+from ...dag.deps import LLMClient
+from ...dag.state import CapabilityResult
 
 #: Appended to the system prompt of every step of this pack (#58).
 #:

@@ -17,8 +17,8 @@ from support import OneStep
 from jobsmith.agents import AGENTS
 from jobsmith.agents.base import AgentContext, AgentDefinition
 from jobsmith.app.agent import build_app
-from jobsmith.core.capability import CapabilityBaseState
-from jobsmith.core.profile import AgentProfile
+from jobsmith.dag.capability import CapabilityBaseState
+from jobsmith.dag.profile import AgentProfile
 
 
 class FakePool:

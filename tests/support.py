@@ -16,14 +16,14 @@ from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.constants import END
 
-from jobsmith.core.builder import build_agent
-from jobsmith.core.capability import Capability, CapabilityBaseState, CapabilitySpec
-from jobsmith.core.deps import Deps
-from jobsmith.core.registry import CapabilityRegistry
-from jobsmith.core.usage import Usage
-from jobsmith.jobs.manager import JobManager
-from jobsmith.jobs.models import Job, JobStatus
-from jobsmith.jobs.report import FileReporter, JobDocument, PlanRow
+from jobsmith.dag.builder import build_agent
+from jobsmith.dag.capability import Capability, CapabilityBaseState, CapabilitySpec
+from jobsmith.dag.deps import Deps
+from jobsmith.dag.registry import CapabilityRegistry
+from jobsmith.dag.report import FileReporter, JobDocument, PlanRow
+from jobsmith.engine.manager import JobManager
+from jobsmith.engine.models import Job, JobStatus
+from jobsmith.engine.usage import Usage
 
 ANSWER = "A sufficiently long final answer for the job test."
 CFG = {"configurable": {"thread_id": "chat-1"}}
@@ -129,7 +129,7 @@ class ChartCapability(OneStep):
         self.seen_job_id: str | None = None
 
     async def work(self, state: CapabilityBaseState) -> dict:
-        from jobsmith.core.artifacts import ArtifactRef, artifact_meta
+        from jobsmith.engine.artifacts import ArtifactRef, artifact_meta
 
         self.seen_job_id = state.get("job_id", "")
         path = await self.artifacts.write(self.seen_job_id, self.filename, SVG)
@@ -423,7 +423,7 @@ def no_libraries(monkeypatch) -> None:
     import importlib.util
     import sys
 
-    from jobsmith.jobs import report_pdf
+    from jobsmith.dag import report_pdf
 
     real_find_spec = importlib.util.find_spec
 
