@@ -17,6 +17,7 @@ from support import until
 from jobsmith.app.agent import build_app
 from jobsmith.app.providers import KeywordChatModel, make_llm
 from jobsmith.engine.events import InProcessEvents, PostgresNotifyEvents, SqliteWatchEvents
+from jobsmith.engine.models import Job, JobStatus
 
 PG = os.environ.get("JOBSMITH_TEST_PG")
 
@@ -118,6 +119,24 @@ async def test_a_job_moved_before_the_watch_first_looks_is_still_news(tmp_path, 
     finally:
         await runner.aclose()
         await watcher.aclose()
+
+
+async def test_the_first_look_is_quiet_only_about_what_moved_before_subscribing(tmp_path):
+    """A job moved at the very instant of the subscription is news: a spare
+    announcement costs a re-read, a lost one costs the news."""
+    stamp = "2026-09-27T12:00:00.000000+00:00"
+    moved = {"before": "2026-09-27T11:59:59.999999+00:00", "at": stamp,
+             "after": "2026-09-27T12:00:00.000001+00:00"}
+    jobs = [Job(job_id=name, status=JobStatus.DONE, query=name, updated_at=at)
+            for name, at in moved.items()]
+
+    async def load_since(_since):
+        return jobs
+
+    events = SqliteWatchEvents(tmp_path / "unused.db", load_since)
+    queue = InProcessEvents.subscribe(events)      # the fan-out alone, no watch
+    await events._refresh(quiet_before=stamp)
+    assert [e["job_id"] for e in await _drain(queue)] == ["at", "after"]
 
 
 async def test_nothing_is_watched_before_someone_subscribes(tmp_path, shared_db):
