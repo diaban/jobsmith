@@ -51,7 +51,10 @@ class JobRepository(Protocol):
 
     async def save_summary(self, job: Job) -> None: ...
     async def load(self, job_id: str) -> Job | None: ...
-    async def load_all(self, *, limit: int = 50) -> list[Job]: ...
+    async def load_all(
+        self, *, session_id: str | None = None, status: JobStatus | None = None,
+        announced: bool | None = None, updated_since: str | None = None,
+    ) -> list[Job]: ...
     async def save_plan(self, job_id: str, plan: Plan) -> None: ...
     async def save_errors(self, job_id: str, errors: list[NodeError]) -> None: ...
     async def save_result(self, job_id: str, capability: str, result: CapabilityResult) -> None: ...
@@ -61,6 +64,11 @@ class JobRepository(Protocol):
     async def request_cancel(self, job_id: str, at: str) -> None: ...
     async def clear_cancel(self, job_id: str) -> None: ...
     async def load_control(self, job_id: str) -> JobControl: ...
+
+
+#: "No limit" for a store search, which requires one: the largest a Postgres
+#: INTEGER takes, far beyond any job history.
+_EVERY_ROW = 2**31 - 1
 
 
 class StoreJobRepository:
@@ -146,9 +154,33 @@ class StoreJobRepository:
             job.results[result.key] = result.value
         return job
 
-    async def load_all(self, *, limit: int = 50) -> list[Job]:
-        """Summaries only — plan and results are loaded by `load`."""
-        items = await self._io("asearch", ("jobs", "index"), limit=limit)
+    async def load_all(
+        self, *, session_id: str | None = None, status: JobStatus | None = None,
+        announced: bool | None = None, updated_since: str | None = None,
+    ) -> list[Job]:
+        """Every summary matching the filters — complete, however long the history.
+
+        Summaries only; plan and results are loaded by `load`. The filters are
+        applied BY the store and nothing is cut after them. A `limit` here once
+        kept the OLDEST rows of the whole base (a store returns them in
+        insertion order), so past a hundred jobs the newest vanished from
+        announcements, cancellation, events and listings (#141). A listing
+        for humans orders and cuts in `JobManager.list_jobs`, after this.
+
+        One query rather than pages: Postgres orders a search by prefix only,
+        so paging by offset could skip or repeat rows.
+        """
+        where: dict[str, Any] = {}
+        if session_id is not None:
+            where["session_id"] = session_id
+        if status is not None:
+            where["status"] = status.value
+        if announced is not None:
+            where["announced"] = announced
+        if updated_since is not None:       # ISO timestamps order as text
+            where["updated_at"] = {"$gte": updated_since}
+        items = await self._io("asearch", ("jobs", "index"), filter=where or None,
+                               limit=_EVERY_ROW)
         return [self._from_summary(item.key, item.value) for item in items]
 
     @staticmethod

@@ -316,7 +316,7 @@ def progress_signature(job: Job) -> str:
 
 async def _find(manager: JobManager, session_id: str, prefix: str) -> Job | None:
     """Resolve a job-id prefix among THIS session's jobs only."""
-    jobs = await manager.list_jobs(session_id=session_id, limit=100)
+    jobs = await manager.list_jobs(session_id=session_id, limit=None)
     matches = [j for j in jobs if j.job_id.startswith(prefix)]
     return matches[0] if len(matches) == 1 else None
 

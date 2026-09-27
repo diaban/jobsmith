@@ -335,8 +335,10 @@ class JobNotificationMiddleware(AgentMiddleware):
         instead of just "running". The cap bounds both the store reads and the
         tokens: beyond it the notice only counts.
         """
-        summaries = await self.manager.list_jobs(session_id=self.session_id, limit=100)
-        in_flight = [job for job in summaries if job.status in IN_FLIGHT]
+        in_flight = [job for status in IN_FLIGHT
+                     for job in await self.manager.list_jobs(
+                         session_id=self.session_id, status=status, limit=None)]
+        in_flight.sort(key=lambda j: j.created_at, reverse=True)
         loaded = [await self.manager.get_job(job.job_id) for job in in_flight[:MAX_PROGRESS_JOBS]]
         # A job can settle between the listing and the reload; leave it to the
         # completion notice rather than reporting it as still running.

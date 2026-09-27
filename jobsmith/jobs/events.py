@@ -122,7 +122,7 @@ class SqliteWatchEvents(WatchedEvents):
     SQLite has no push (#100). The watch asks a dedicated read-only
     connection for `PRAGMA data_version` every `interval` seconds: a single
     call, and its value moves only when another connection committed. Only
-    then are the index summaries re-read.
+    then are the summaries updated since the last look re-read.
 
     The connection is this class's own, never the saver's or the store's: a
     pragma on a live connection is the SQLite gotcha in CLAUDE.md.
@@ -131,13 +131,14 @@ class SqliteWatchEvents(WatchedEvents):
     def __init__(
         self,
         path: str | Path,
-        load_all: Callable[[], Awaitable[list[Job]]],
+        load_since: Callable[[str | None], Awaitable[list[Job]]],
         *,
         interval: float = 1.0,
     ) -> None:
         super().__init__()
         self._path = str(path)
-        self._load_all = load_all
+        self._load_since = load_since
+        self._watermark: str | None = None
         self._interval = interval
 
     def _connect(self) -> sqlite3.Connection:
@@ -149,8 +150,13 @@ class SqliteWatchEvents(WatchedEvents):
         return conn.execute("PRAGMA data_version").fetchall()[0][0]
 
     async def _refresh(self, *, announce: bool) -> None:
-        for job in await self._load_all():
+        # Only what moved since the last look (`$gte`, so a job persisted in
+        # the same instant is not lost; `_announce` drops what was seen): the
+        # whole index is read once, when the watch starts (#141).
+        for job in await self._load_since(self._watermark):
             self._announce(job, quietly=not announce)
+            if self._watermark is None or job.updated_at > self._watermark:
+                self._watermark = job.updated_at
 
     async def _watch(self) -> None:
         conn = await asyncio.to_thread(self._connect)

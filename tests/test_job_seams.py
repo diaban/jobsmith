@@ -88,8 +88,14 @@ class DictRepository:
                 job.results[capability] = result
         return job
 
-    async def load_all(self, *, limit=50):
-        return [StoreJobRepository._from_summary(jid, s) for jid, s in self.summaries.items()]
+    async def load_all(self, *, session_id=None, status=None, announced=None,
+                       updated_since=None):
+        jobs = [StoreJobRepository._from_summary(jid, s) for jid, s in self.summaries.items()]
+        return [j for j in jobs
+                if (session_id is None or j.session_id == session_id)
+                and (status is None or j.status is status)
+                and (announced is None or j.announced == announced)
+                and (updated_since is None or j.updated_at >= updated_since)]
 
 
 PLAN = {"rationale": "because", "steps": [{"capability": "alpha", "depends_on": []}]}

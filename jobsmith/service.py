@@ -356,6 +356,7 @@ class AgentService(ABC):
         job = await self.get_job(prefix)
         if job is not None:
             return job
+        # Among the newest listed (#141): the prefixes `jobsmith jobs` prints.
         matches = [j for j in await self.list_jobs() if j["job_id"].startswith(prefix)]
         if len(matches) != 1:
             return None
