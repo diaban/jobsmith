@@ -26,6 +26,7 @@ from ..core.artifacts import LocalArtifactStore
 from ..core.builder import AgentBuilder
 from ..core.deps import Deps
 from ..core.registry import CapabilityRegistry
+from ..jobs.events import SqliteWatchEvents
 from ..jobs.manager import JobManager
 from ..jobs.prior import RepositoryPriorJobs
 from ..jobs.report import (
@@ -36,7 +37,7 @@ from ..jobs.report import (
     renderable_formats,
 )
 from ..jobs.repository import StoreJobRepository
-from .persistence import open_persistence, pick_db, pick_reports_dir
+from .persistence import open_persistence, pick_db, pick_reports_dir, sqlite_file
 from .providers import make_chat_model, make_llm, pick_provider
 
 
@@ -117,7 +118,8 @@ async def build_app(
 
     stack = AsyncExitStack()
     try:
-        checkpointer, store = await open_persistence(pick_db(db), stack)
+        db_spec = pick_db(db)
+        checkpointer, store = await open_persistence(db_spec, stack)
         # One repository over that store, shared by the manager that writes
         # job records and by the port a capability reads an earlier run's
         # material through (#74). Built here rather than left to `JobManager`
@@ -187,8 +189,13 @@ async def build_app(
         def reporter_for(formats: Sequence[str]) -> Any:
             return compose_reporters(formats, registry)
 
+        # On a SQLite file, `subscribe()` also hears the jobs another process
+        # runs on it (#100); memory keeps the in-process fan-out, polls nothing.
+        watched = sqlite_file(db_spec)
+        events = (SqliteWatchEvents(watched, lambda: repository.load_all(limit=200))
+                  if watched is not None else None)
         manager = JobManager(
-            graph, store, repository=repository,
+            graph, store, repository=repository, events=events,
             reporter_factory=reporter_for,
             default_formats=default_formats,
             reports_dir=reports_root,

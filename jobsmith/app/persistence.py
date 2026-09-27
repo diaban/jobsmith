@@ -118,6 +118,18 @@ def pick_reports_dir(explicit: str | os.PathLike[str] | None = None) -> Path:
     return Path(raw).expanduser().resolve()
 
 
+def sqlite_file(spec: str) -> Path | None:
+    """The SQLite file `spec` names, resolved as `open_persistence` resolves it, or None.
+
+    What a cross-process event feed watches (#100): memory has no other
+    process to hear from, and Postgres would be LISTEN/NOTIFY, not a file.
+    """
+    if spec in (MEMORY, "", ":memory:") or spec.startswith(_POSTGRES_SCHEMES):
+        return None
+    path = spec.split(":", 1)[1] if spec.startswith("sqlite:") else spec
+    return Path(path).expanduser().resolve()
+
+
 async def open_persistence(spec: str, stack: AsyncExitStack) -> tuple[Any, Any]:
     """Open (checkpointer, store) for `spec`, teardown registered on `stack`."""
     if spec in (MEMORY, "", ":memory:"):

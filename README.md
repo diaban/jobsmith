@@ -793,8 +793,9 @@ Honest v1 boundaries:
   database (SQLite, Postgres) a cancel from any process reaches the one running
   the job within about two seconds, and a second `jobsmith chat` no longer
   mistakes the first one's running jobs for crashed ones. Progress events
-  (`/events`, the TUI's live repaint) still only see jobs the same process runs
-  (#100); `jobsmith jobs` and F5 read the database and see them all.
+  (`/events`, the TUI's live repaint) see every process's jobs on a SQLite
+  database (within about a second, #100); on Postgres they still see only the
+  same process's (#138), and F5 reads the database.
 - **The answer lives in the turn and in a file, and nothing yet decides which.**
   A task that finishes in the conversation delivers its answer there word for
   word *and* writes the report; a promoted one only writes it. That is a
