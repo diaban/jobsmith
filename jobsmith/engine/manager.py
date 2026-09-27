@@ -37,11 +37,9 @@ from __future__ import annotations
 import asyncio
 import sys
 import uuid
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from ..dag.report import document_stem, ensure_formats_available
 from ..dag.state import TERMINAL_UNANSWERED, NodeError
 from .artifacts import artifact_refs
 from .events import InProcessEvents, JobEvents, job_event
@@ -91,7 +89,6 @@ class JobManager:
         graph: Any = None,
         store: Any = None,
         *,
-        default_formats: Sequence[str] = ("markdown",),
         repository: JobRepository | None = None,
         runner: GraphRunner | None = None,
         events: JobEvents | None = None,
@@ -105,12 +102,6 @@ class JobManager:
         self.repo: JobRepository = repository or StoreJobRepository(store)
         self.runner: GraphRunner = runner or GraphRunner(graph)
         self.events: JobEvents = events or InProcessEvents()
-        # What "a document" means when a request wants one and names no
-        # format (#96): the names `DEFAULT_FORMATS_ALIAS` resolves to in
-        # `create_job`. The composition root passes `$JOBSMITH_REPORT_FORMAT`
-        # here and hands the same list to the graph's document step, so the
-        # two ways of asking — the argument and the sentence — agree.
-        self.default_formats: list[str] = list(default_formats)
         self._tasks: dict[str, asyncio.Task] = {}  # in-process cancellation handles
         # Who this manager is on the leases it writes, and the timings of
         # ownership (#10). Only consulted when the repository is `shared`:
@@ -139,47 +130,25 @@ class JobManager:
         session_id: str | None = None,
         document_name: str = "",
         document_title: str = "",
-        formats: Sequence[str] | str | None = None,
+        formats: list[str] | None = None,
     ) -> Job:
-        """Record a job, including what the requester asked the document to be.
+        """Record a job, QUEUED, as the caller already checked it (`dag/jobs.py`).
 
-        Both document decisions are checked HERE, before a job exists, because
-        this is the last point at which whoever asked is still listening: the
-        chat tool calls it behind the notice it just wrote, the API answers a
-        request, the CLI a command. A name with a separator in it and a
-        format nothing can render are the two ways to ask for a file this
-        deployment cannot produce, and both refuse in the caller's terms —
-        never three minutes later, at the write, in a run that already spent
-        its tokens.
-
-        `formats` also carries the decision #55 stopped one field short of
-        (#84): `None` says the caller named nothing and leaves the reading of
-        the sentence to the graph's document step, while **`[]` says there is
-        to be no file**. The second is recorded as `deliverable_expected=False`
-        here and now, because it is known here and now — and a QUEUED job that
-        reads as expecting a document it will never get is exactly the
-        confusion this field exists to remove. `None` is not yet a decision —
-        "write me a report" may still be read out of the query — so it stays
-        True until that step has read it (`_apply`, the `formats` fact).
-
-        `DEFAULT_FORMATS_ALIAS` ("default") is resolved here into this
-        deployment's `default_formats` (#96): it is how a caller asks for a
-        document without naming its format, and the record carries the names
-        it became, never the alias.
+        `formats == []` — no file at all — is recorded as
+        `deliverable_expected=False` here and now, because it is known here
+        and now (#84); `None` is not yet a decision — "write me a report" may
+        still be read out of the query — so it stays True until the graph's
+        document step has read it (`_apply`, the `formats` fact).
         """
-        # In a thread: a request for PDF is where its engine is first loaded
-        # (#108), seconds of import that must not stall every other session.
-        wanted = await asyncio.to_thread(
-            ensure_formats_available, formats, default=self.default_formats)
         job = Job(
             job_id=uuid.uuid4().hex,
             status=JobStatus.QUEUED,
             query=query,
             inputs=inputs or {},
-            document_name=document_stem(document_name) if document_name.strip() else "",
-            document_title=document_title.strip(),
-            formats=wanted,
-            deliverable_expected=wanted != [],
+            document_name=document_name,
+            document_title=document_title,
+            formats=formats,
+            deliverable_expected=formats != [],
             session_id=session_id,
             created_at=now_iso(),
         )

@@ -99,7 +99,7 @@ async def test_start_and_cancel_running_job(store, checkpointer, tmp_path):
     assert cancelled.status is JobStatus.CANCELLED
     assert task.cancelled()
     # checkpoint retained for the thread → future resume is possible
-    snapshot = await mgr.graph.aget_state({"configurable": {"thread_id": job.job_id}})
+    snapshot = await mgr.engine.graph.aget_state({"configurable": {"thread_id": job.job_id}})
     assert snapshot is not None and snapshot.values.get("plan") is not None
 
 

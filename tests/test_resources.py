@@ -175,6 +175,6 @@ async def test_the_default_agent_has_no_document_source_unless_configured(monkey
     app = await build_app(agent="default", llm=object(), chat_model=object(), db="memory")
     try:
         assert app.resources.documents is None
-        assert not [n for n in app.manager.graph.nodes if n == "cap_documents"]
+        assert not [n for n in app.manager.engine.graph.nodes if n == "cap_documents"]
     finally:
         await app.aclose()

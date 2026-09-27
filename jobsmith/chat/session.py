@@ -26,8 +26,8 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import SystemMessage
 
+from ..dag.jobs import DagJobs
 from ..dag.state import TERMINAL_UNANSWERED
-from ..engine.manager import JobManager
 from ..engine.models import Job, JobStatus
 from .runner import CUSTOM_ANSWER
 from .tools import make_job_tools, progress_line, progress_signature, stream_writer
@@ -130,7 +130,7 @@ class JobNotificationMiddleware(AgentMiddleware):
 
     def __init__(
         self,
-        manager: JobManager,
+        manager: DagJobs,
         session_id: str,
         *,
         inline_answer_max: int | None = None,
@@ -411,7 +411,7 @@ class JobNotificationMiddleware(AgentMiddleware):
 class ChatSession:
     def __init__(
         self,
-        manager: JobManager,
+        manager: DagJobs,
         model: Any,
         *,
         session_id: str | None = None,

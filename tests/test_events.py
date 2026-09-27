@@ -55,7 +55,7 @@ async def test_a_job_another_process_runs_reaches_this_subscriber(tmp_path, shar
         event = await until(heard_it_done, what="the other process's job reaching the subscriber")
         assert event["query"] == "compare A and B"
         watcher.manager.unsubscribe(queue)
-        assert watcher.manager.events._task is None      # nobody listening: nothing polls
+        assert watcher.manager.engine.events._task is None      # nobody listening: nothing polls
     finally:
         await runner.aclose()
         await watcher.aclose()
@@ -97,7 +97,7 @@ async def test_a_job_moved_before_the_watch_first_looks_is_still_news(tmp_path, 
     can come after another process already moved a job: moved since subscribing
     is news all the same, whenever the watch gets to look."""
     watcher, runner = await _app(tmp_path, shared_db), await _app(tmp_path, shared_db)
-    events = watcher.manager.events
+    events = watcher.manager.engine.events
     gate, watch = asyncio.Event(), events._watch
 
     async def late_watch():
@@ -143,8 +143,8 @@ async def test_nothing_is_watched_before_someone_subscribes(tmp_path, shared_db)
     app = await _app(tmp_path, shared_db)
     try:
         kind = PostgresNotifyEvents if shared_db == PG else SqliteWatchEvents
-        assert isinstance(app.manager.events, kind)
-        assert app.manager.events._task is None
+        assert isinstance(app.manager.engine.events, kind)
+        assert app.manager.engine.events._task is None
     finally:
         await app.aclose()
 
@@ -152,6 +152,6 @@ async def test_nothing_is_watched_before_someone_subscribes(tmp_path, shared_db)
 async def test_memory_keeps_the_in_process_fan_out_and_polls_nothing(tmp_path):
     app = await _app(tmp_path, "memory")
     try:
-        assert type(app.manager.events) is InProcessEvents
+        assert type(app.manager.engine.events) is InProcessEvents
     finally:
         await app.aclose()

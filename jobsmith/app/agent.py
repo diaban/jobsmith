@@ -24,6 +24,7 @@ from ..agents.base import AgentContext, open_agent_resources
 from ..chat import DEFAULT_CHAT_SYSTEM_PROMPT, ChatSession
 from ..dag.builder import AgentBuilder
 from ..dag.deps import Deps
+from ..dag.jobs import DagJobs
 from ..dag.prior import RepositoryPriorJobs
 from ..dag.registry import CapabilityRegistry
 from ..dag.report import (
@@ -51,7 +52,7 @@ from .providers import make_chat_model, make_llm, pick_provider
 class AgentApp:
     """A ready-to-serve agent: its job engine + a factory for chat sessions."""
 
-    manager: JobManager
+    manager: DagJobs
     session_factory: Callable[..., ChatSession]   # optional session_id argument
     agent_name: str = "default"
     resources: Any = None                         # whatever the agent opened
@@ -210,8 +211,8 @@ async def build_app(
                 dsn, repository.load, lambda since: repository.load_all(updated_since=since))
         if events is not None:
             stack.push_async_callback(events.aclose)
-        manager = JobManager(
-            graph, store, repository=repository, events=events,
+        manager = DagJobs(
+            JobManager(graph, store, repository=repository, events=events),
             default_formats=default_formats,
         )
         # A previous process may have died mid-run: settle those jobs first.

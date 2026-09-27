@@ -108,7 +108,7 @@ async def _final_state(app: Any, job_id: str) -> dict[str, Any]:
     and `Job` records the answer, never the input).
     """
     try:
-        snapshot = await app.manager.graph.aget_state(
+        snapshot = await app.manager.engine.graph.aget_state(
             {"configurable": {"thread_id": job_id}}
         )
     except Exception:
@@ -266,5 +266,5 @@ def registry_names(app: Any) -> tuple[str, ...]:
     without a document source, whichever agent was composed.
     """
     prefix = Executor.node_name("")
-    nodes = getattr(app.manager.graph, "nodes", {}) or {}
+    nodes = getattr(app.manager.engine.graph, "nodes", {}) or {}
     return tuple(sorted(n[len(prefix):] for n in nodes if n.startswith(prefix)))

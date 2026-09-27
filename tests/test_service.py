@@ -216,7 +216,7 @@ async def _serving(app):
 
 async def _await_subscription(service) -> None:
     """The daemon-backed subscription connects in the background: wait for it."""
-    await until(lambda: service.manager.events._subscribers,
+    await until(lambda: service.manager.engine.events._subscribers,
                 what="the event stream reaching the service")
 
 
@@ -362,7 +362,7 @@ async def test_the_plan_is_shown_while_the_run_is_still_going(store, checkpointe
 
     await asyncio.wait_for(turn(), timeout=10)
     assert gate.open.is_set(), "the turn ended without ever showing the plan"
-    assert not manager.events._subscribers, "the turn left its subscription behind"
+    assert not manager.engine.events._subscribers, "the turn left its subscription behind"
 
 
 async def test_a_run_faster_than_its_watch_still_has_its_plan_said_first(
@@ -377,7 +377,7 @@ async def test_a_run_faster_than_its_watch_still_has_its_plan_said_first(
 
     def lagging_subscribe(*, max_queue=256):
         queue = Lagging(maxsize=max_queue)
-        manager.events._subscribers.add(queue)
+        manager.engine.events._subscribers.add(queue)
         return queue
 
     monkeypatch.setattr(manager, "subscribe", lagging_subscribe)
@@ -413,7 +413,7 @@ async def test_a_promoted_run_says_nothing_of_its_plan_once_the_turn_is_over(
     session_id = await service.new_session()
     kinds = [e["type"] async for e in service.stream(session_id, "please analyse it")]
     assert "job_started" in kinds and "job_planned" not in kinds
-    assert not manager.events._subscribers, "the watch outlived the turn"
+    assert not manager.engine.events._subscribers, "the watch outlived the turn"
 
     (job,) = await service.list_jobs(session_id=session_id)
     async def planned():                       # the run goes on, unwatched

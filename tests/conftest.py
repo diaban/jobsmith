@@ -224,7 +224,7 @@ def registered_capabilities(app: Any, *, gated: bool = False) -> list[str]:
     registry.
     """
     prefix = "cap_"
-    names = [n[len(prefix):] for n in app.manager.graph.nodes if n.startswith(prefix)]
+    names = [n[len(prefix):] for n in app.manager.engine.graph.nodes if n.startswith(prefix)]
     registry = getattr(app, "registry", None) or getattr(
         getattr(app, "app", None), "registry", None)
     if gated or registry is None:

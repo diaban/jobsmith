@@ -11,7 +11,8 @@ evals stay at 100% on each PR.
 
 | package | holds | may import |
 |---|---|---|
-| `jobsmith/engine/` | `jobs/{models,manager,runner,repository,ownership,events}`, `core/{usage,paths,artifacts}`, `delivery.py` | nothing from `jobsmith` outside itself |
+| `jobsmith/engine/` | `jobs/{models,manager,runner,repository,ownership,events}`, `core/usage`, `delivery.py` | nothing from `jobsmith` outside itself |
+| `jobsmith/artifacts/` | **optional, outside the core** (decided 2026-09-27): the per-job file store, path safety (`core/{artifacts,paths}`), and `declare`, which publishes a file as a fact | `engine` |
 | `jobsmith/dag/` | the rest of `core/` (router, planner, executor, generation, document intent, registry, capability, profile, state, deps, `prior_jobs`), `jobs/report*.py`, `jobs/prior.py`, `clients.py` | `engine` |
 | `jobsmith/adapters/langchain/` | **the job ↔ conversation contract, built at step 9**: the launch tool (promotion within the turn, verbatim answer 0083/0085, plan notice 0086), the notification middleware (0006), the delivered-ids channel | `engine`, `langchain` |
 | `jobsmith/agents/` | capability packs, unchanged | `dag`, `engine` |
@@ -36,13 +37,13 @@ class GraphSpec:                          # engine/graph.py
 - **Ending.** A graph that completes is DONE. One that raises is FAILED, with `error=str(e)`. A cancelled one is CANCELLED. For a *declared* failure, `result` raises `JobFailed(reason)`: the job is FAILED with that reason and an empty frontier, so it can't be resumed, as with `escalate`/`user_error` today. **Invariant: FAILED ⇒ `error` is a non-empty string.**
 - **Progress.** Each node that finishes in the root namespace becomes a step: `steps[node] = ts` plus one event. The engine attaches no meaning to node names.
 - **Facts.** During the run, a node calls `publish(key, value)`, a thin wrapper over `get_stream_writer()`. The engine stores each fact at `("jobs", id, "facts")/key`, last write wins, and emits an event. The runner streams with `subgraphs=True` so that facts from a capability sub-graph reach it; without that flag they are lost (checked). The DAG publishes `plan`, `formats` and `step:<cap>`. These replace `PlanReady`, `FormatsChosen`, `StepFinished`, `_TERMINAL_NODES` and the parsing of `cap_*` node names.
-- **Files.** `ArtifactStore.write` writes under the job's directory and declares the file on the same channel. The engine appends it to `job.outputs` right away, so a cancel keeps it (0041's "every terminal" without collecting at each one). `role` is the graph's own word (main/alternate/annex for the DAG) and means nothing to the engine.
+- **Files are facts** (decided 2026-09-27, following the external reviews: a job engine that knows files and deliverables is less agnostic). Declaring a file publishes the fact `artifact:<path>` (title, media type, role) through `jobsmith/artifacts/`, which also holds the store and path safety, outside the core. Facts persist as they arrive, so a cancel keeps them (0041's "every terminal" without collecting at each one). Listing a job's files, ordering them and saying one is missing belong to the reader, which for the DAG is its view. The engine has no `outputs` and no word for a file.
 - **Usage.** The per-run ledger stays as it is. The runner adds a LangChain callback handler to the run config, which books the `usage_metadata` of every LangChain model call, so a ReAct graph's calls get counted. `clients.py` calls the provider SDKs directly, so nothing is counted twice. The scope is the root node name; the `cap_` prefix is stripped by the DAG view, not by the engine.
 
 ## The record
 
 `Job v1`: `job_id · graph · status · label · input · result · error · reply_to · delivered_at ·
-created_at · updated_at · steps · facts (full view only) · outputs · usage`. `label` is the one
+created_at · updated_at · steps · facts (full view only) · usage`. `label` is the one
 line that listings and events show; the DAG passes the query.
 
 What leaves the engine, and where it goes:
@@ -51,7 +52,7 @@ What leaves the engine, and where it goes:
 - `final_answer`, `terminal_kind`, `deliverable_expected`, write errors → the DAG's result.
 - `plan`, `results` → facts.
 - `session_id`, `announced` → `reply_to`, `delivered_at`.
-- `report_path`, `ordered_results`, `step_usage` → the DAG's view of the record.
+- `outputs`, `report_path`, `ordered_results`, `step_usage` → the DAG's view of the record, `outputs` from the `artifact:` facts.
 
 ## Use cases
 
@@ -97,14 +98,14 @@ generic at step 2. Two more come in by extraction:
 - **G2, structured job with no chat and no document.** A `StateGraph` with input `{a, b}` and output `{sum}`, `reply_to` none. Expected: DONE, `result == {"sum": 3}`, delivered at settle, no outputs. It runs in a subprocess where `jobsmith.chat`, `jobsmith.dag` and `langchain` are absent from `sys.modules`.
 - **G3, imports.** An AST test enforces the "may import" column. It lands at step 4 with today's violations on an allowlist, shrinks at every step, and is empty at step 8.
 - **G5, the contract out of the bench** (step 9). A `create_agent` conversation built only from `adapters/langchain` and `engine`, with no import from the bench, launches the G2 graph. The job is promoted and delivered. After a simulated crash on each side of the mark, it appears in the thread exactly once.
-- **G4, shape leak-check.** `make leak-check` also greps `engine/` for the product vocabulary (`query`, `session`, `document`, `formats`, `capabilit`, `plan`, `report`, `announc`, `terminal_kind`, `final_answer`, `deliverable`, `chat`), docstrings included. A false positive is renamed, never allowlisted.
+- **G4, shape leak-check.** `make leak-check` also greps `engine/` for the product vocabulary (`query`, `session`, `document`, `formats`, `capabilit`, `plan`, `report`, `announc`, `terminal_kind`, `final_answer`, `deliverable`, `artifact`, `annex`, `chat`), docstrings included. A false positive is renamed, never allowlisted.
 
 ## Order: one PR per step, each `make check` + structural evals at 100%
 
 4. **Move.** `engine/` and `dag/` are created by `git mv` plus import rewrites, nothing else. G3 lands with its allowlist.
 5. **The DAG writes its own document.** `write_document` is a final DAG node, after `post_process` and `unanswered`, that calls the Reporters, so the manager stops calling them. As built, it differs from the plan in two ways. It reports what it wrote in its state update, which the runner turns into `DocumentWritten`; that becomes a declaration at 6a. Deliverable paths keep their place, which is not `ArtifactStore`'s `<job_id>/<name>`. Reporters read a `ReportSubject` protocol, which the old `Job` still satisfies. The fields that served them leave at step 6.
 6a. **Generic runner and facts.** The runner passes the input through and reads the output from the root `values`, steps from the root `updates` and facts from `custom`. The DAG publishes `plan`, `formats` and `step:<cap>`, and the manager rebuilds the **old** `Job` from those facts and from the output. Neither the data model nor the bench changes, so the graph's output contract settles first. As built: the DAG has no output schema, so its output is its whole final state (terminal kind, answer, errors, the document it wrote). Until 6b, the manager still builds the DAG's input (`job_id` included), and `NodeFinished` is not recorded.
-6b. **`Job v1` and `JobFailed`.** The DAG's result extractor takes over from the manager's mapping. A single `dag` function renders the v1 record in today's shape, so CLI, API and TUI need no change at this step. G2 lands.
+6b. **`Job v1` and `JobFailed`**, re-split in three to stay within the budget of one PR per step (0130). **6b.1**: the DAG's façade `DagJobs` (`dag/jobs.py`) carries today's job API over the engine. The bench, the evals and the tests call it, and it checks what a request's document is to be. **6b.2**: the engine persists facts and root steps. Files become `artifact:` facts, declared through `jobsmith/artifacts/` (store and path safety move there). The façade's view derives plan, results, step times, the file list and its order (main, alternates, annexes in plan order), and says when a file is missing. `outputs` leaves the engine. **6b.3**: `Job v1`, `GraphSpec` and `JobFailed`, the `jobs_v1` namespace, and the DAG's result extractor taking over from the manager's mapping. The façade renders the v1 record in today's shape, so CLI, API and TUI need no change. G2 lands.
 7. **Promotion and delivery.** Lands `run_for` and `reply_to`/deliverers/`delivered_at`; the chat and `POST /jobs?wait` switch to them.
 8. **Composition and usage.** Lands `AgentDefinition.graph`, optional chat, `JobService`/`ChatService` and the LangChain callback. G1 and G4 land and the allowlist is empty.
 9. **The contract leaves the bench.** The launch tool, the notification middleware and the delivered-ids channel move to `adapters/langchain/`, generic over a `GraphSpec` plus an input builder given by the app. `chat/` keeps the persona and the DAG's arguments. G5 lands. After that the process unfreezes: the single refonte record points here, and the scribe rewrites `CLAUDE.md`.

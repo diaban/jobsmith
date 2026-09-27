@@ -31,7 +31,7 @@ async def test_every_shipped_agent_composes_through_the_same_build_app(name):
     app = await build_app(agent=name, llm=object(), chat_model=object(), db="memory")
     try:
         assert app.agent_name == name
-        capability_nodes = {n for n in app.manager.graph.nodes if n.startswith("cap_")}
+        capability_nodes = {n for n in app.manager.engine.graph.nodes if n.startswith("cap_")}
         assert capability_nodes, "an agent must contribute capabilities to the graph"
         assert app.new_session().build() is not None     # chat works for any agent
     finally:

@@ -410,7 +410,7 @@ async def test_a_silent_run_that_failed_reads_as_failed_not_as_unwanted(
     assert "none was asked for" not in printed and "is the job done" in printed
 
     app, api_mgr = make_app(store, checkpointer, tmp_path, [])
-    api_mgr.runner = mgr.runner
+    api_mgr.engine.runner = mgr.engine.runner
     async with client_for(app) as client:
         job = await wait_done(client, (await client.post(
             "/jobs", json={"query": "compare them"})).json()["job_id"])
