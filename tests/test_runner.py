@@ -8,6 +8,7 @@ from typing import TypedDict
 
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
 from jobsmith.engine.facts import publish
@@ -39,6 +40,7 @@ def graph(*, fail: bool = False):
     sub.add_edge("inner", END)
 
     def first(state: State) -> dict:
+        get_stream_writer()({"token": "hello"})      # the graph's own, not a fact
         publish("plan", ["sum"])
         if fail:
             raise RuntimeError("the graph blew up")
@@ -54,6 +56,7 @@ def graph(*, fail: bool = False):
 
 
 async def test_the_root_s_steps_the_facts_at_any_depth_and_what_ainvoke_returns():
+    """Whatever else the graph writes on the custom stream is not a fact."""
     compiled = graph()
     updates = [u async for u in GraphRunner(compiled).stream("j1", {"a": 1, "b": 2})]
 
