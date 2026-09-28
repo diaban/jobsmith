@@ -72,6 +72,14 @@ def tool_activity(name: str) -> str:
     return TOOL_ACTIVITY.get(name, f"running {name}")
 
 
+def turn_usage(usage: dict[str, Any]) -> str:
+    """The activity line once a turn is over: what its own model calls cost
+    (#173), or nothing when the model reported none. A job run in the turn is
+    not in it — the jobs pane has its own."""
+    spent = Usage.from_dict(usage)
+    return escape(f"this turn: {format_usage(spent)}") if spent else ""
+
+
 def plan_activity(steps: list[dict[str, Any]]) -> str:
     """The activity line once the running task has a plan (#86), as markup.
 

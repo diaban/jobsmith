@@ -641,7 +641,7 @@ handle per-provider tool formats), the planner DAG uses a dependency-light
 
 | | |
 |---|---|
-| `POST /sessions` · `POST /sessions/{id}/messages` | chat; a reply is `{"type": "message"}`, or `{"type": "proposal"}` where the approval gate was kept. A task runs inside the turn, so this can take as long as the task |
+| `POST /sessions` · `POST /sessions/{id}/messages` | chat; a reply is `{"type": "message"}`, or `{"type": "proposal"}` where the approval gate was kept, each with the turn's own model `usage`. A task runs inside the turn, so this can take as long as the task |
 | `POST /sessions/{id}/approval` | answer a proposal — `{"approved": bool}` |
 | `.../messages/stream` · `.../approval/stream` | the same turn as SSE: `token`, `tool_started`, `tool_finished`, `job_started`, `job_planned`, then that same reply |
 | `GET /jobs` · `GET /jobs/{id}` | listing and full detail (plan, timings, results) |

@@ -582,6 +582,25 @@ async def test_a_proposal_is_answered_through_the_ui(
 
 
 @pytest.mark.slow  # a full streamed turn, keystroke by keystroke
+@pytest.mark.parametrize(("usage", "said"), [
+    ({"calls": 2, "input_tokens": 1200, "output_tokens": 80},
+     "this turn: 2 LLM calls — 1,200 in / 80 out tokens"),
+    ({}, ""),
+], ids=["reported", "silent"])
+async def test_the_activity_line_says_what_the_turn_cost(usage, said):
+    """Once a turn is over, its own model spend is on the activity line (#173);
+    nothing when the model reported none."""
+    turn = [{"type": "token", "text": "Four."},
+            {"type": "message", "content": "Four.", "usage": usage}]
+    app = JobsmithApp(CannedService(events=turn), SESSION)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press(*"2 + 2?")
+        await pilot.press("enter")
+        await settle(pilot)
+        assert activity(app) == said
+
+
 async def test_a_second_message_cannot_cut_the_turn_being_written():
     """A second Enter during a turn is refused and its text kept; the first turn
     finishes. → 0048"""

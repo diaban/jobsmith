@@ -101,7 +101,7 @@ async def through(request):
 # format — resolved to names before anything is shown (→ 0096).
 PROPOSED = {"type": "proposal", "query": "analyse it", "rationale": "multi-step",
             "sources": [], "document_name": "chair_notes", "document_title": "Comparatif",
-            "formats": ["markdown"], "from_jobs": []}
+            "formats": ["markdown"], "from_jobs": [], "usage": {}}
 
 
 def chair_service(store, checkpointer, tmp_path, *, approval=True, sync_timeout=None,
@@ -306,7 +306,7 @@ async def test_a_proposed_turn_is_the_same_flow_through_either_backing(
     # the run's answer, then the model's sentence — never what the tool told the model
     assert streamed.endswith("launched!") and len(streamed) > len("launched!")
     assert "ALREADY been shown" not in streamed
-    assert answering[-1] == {"type": "message", "content": streamed}
+    assert answering[-1] == {"type": "message", "content": streamed, "usage": {}}
 
 
 async def test_a_task_runs_in_the_turn_and_send_is_told_what_stream_showed(
@@ -320,18 +320,18 @@ async def test_a_task_runs_in_the_turn_and_send_is_told_what_stream_showed(
 
     (started,) = [e for e in events if e["type"] == "job_started"]
     (job,) = await client.list_jobs(session_id=watched)
-    expected = {k: v for k, v in PROPOSED.items() if k != "type"}
+    expected = {k: v for k, v in PROPOSED.items() if k not in ("type", "usage")}
     assert started == {"type": "job_started", "job_id": job["job_id"], **expected}
 
     answer = (await client.get_job(job["job_id"]))["final_answer"]
     streamed = "".join(e["text"] for e in events if e["type"] == "token")
     assert answer and answer in streamed and streamed.endswith("launched!")
-    assert events[-1] == {"type": "message", "content": streamed}
+    assert events[-1] == {"type": "message", "content": streamed, "usage": {}}
 
     # a second session, drained by `send`: the same text, the job's answer included
     waited = await client.new_session()
     assert await client.send(waited, "please analyse it") == {
-        "type": "message", "content": streamed}
+        "type": "message", "content": streamed, "usage": {}}
 
 
 LONG_QUERY = "compare the two ergonomic chairs on price, lumbar support, warranty and delivery time"
