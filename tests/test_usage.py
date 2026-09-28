@@ -152,6 +152,47 @@ def test_scope_outside_a_graph_is_unattributed():
     assert current_scope() == UNATTRIBUTED
 
 
+async def test_a_langchain_model_call_in_a_job_is_booked_under_its_node():
+    """The runner's callback counts what a LangChain model spends, attributed
+    to the root node that called it, cache reads kept apart (→ core-v1.md,
+    "Usage")."""
+    from typing import TypedDict
+
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.messages import AIMessage
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.graph import END, START, StateGraph
+    from langgraph.store.memory import InMemoryStore
+
+    from jobsmith.engine.graph import GraphSpec
+
+    model = GenericFakeChatModel(messages=iter([AIMessage(
+        "hi", response_metadata={"model_name": "claude-opus-5"},
+        usage_metadata={"input_tokens": 120, "output_tokens": 7, "total_tokens": 127,
+                        "input_token_details": {"cache_read": 100}})]))
+
+    class State(TypedDict, total=False):
+        text: str
+        scopes: list[str]
+
+    async def answer(state):
+        reply = await model.ainvoke("hello")
+        return {"text": reply.text, "scopes": sorted(current_ledger().by_scope())}
+
+    graph = StateGraph(State)
+    graph.add_node("answer", answer)
+    graph.add_edge(START, "answer")
+    graph.add_edge("answer", END)
+    jobs = JobManager(GraphSpec("one_call", graph.compile(checkpointer=MemorySaver())),
+                      InMemoryStore())
+    done = await jobs.run_job((await jobs.create_job({})).job_id)
+
+    assert done.result["scopes"] == ["answer"]
+    assert (done.usage["calls"], done.usage["input_tokens"], done.usage["cached_input_tokens"],
+            done.usage["output_tokens"]) == (1, 20, 100, 7)
+    assert done.usage["models"] == ["claude-opus-5"] and done.usage["cost_usd"]
+
+
 # ---------------------------------------------------------------- adapters
 
 

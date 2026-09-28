@@ -25,6 +25,8 @@ from ..engine.facts import publish
 from ..engine.usage import current_ledger
 from .state import AgentState, CapabilityResult, NodeError, merge_results
 
+CAP_NODE_PREFIX = "cap_"          # a capability's node in the planner DAG
+
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
@@ -141,7 +143,7 @@ class Capability(ABC):
 
         Read from the ambient ledger (see `engine/usage.py`), which the
         JobManager installs for the run: every LLM call made by any node of
-        this sub-graph is already booked under the capability's name. Absent
+        this sub-graph is already booked under the capability's node. Absent
         when nothing was spent — a key of zeroes says less than no key.
         An explicit `meta["usage"]` from the capability always wins.
         """
@@ -149,7 +151,7 @@ class Capability(ABC):
         ledger = current_ledger()
         if ledger is None or "usage" in meta:
             return meta
-        usage = ledger.get(self.spec.name)
+        usage = ledger.get(CAP_NODE_PREFIX + self.spec.name)   # booked by root node
         if usage:
             meta["usage"] = usage.to_dict()
         return meta

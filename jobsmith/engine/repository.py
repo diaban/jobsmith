@@ -155,10 +155,10 @@ class StoreJobRepository:
         applied BY the store and nothing is cut after them. A `limit` here once
         kept the OLDEST rows of the whole base (a store returns them in
         insertion order), so past a hundred jobs the newest vanished from
-        announcements, cancellation, events and listings (#141). A listing
+        deliveries, cancellation, events and listings (#141). A listing
         for humans orders and cuts in `JobManager.list_jobs`, after this.
 
-        One query rather than pages: Postgres orders a search by prefix only,
+        One search rather than pages: Postgres orders a search by prefix only,
         so paging by offset could skip or repeat rows.
         """
         where: dict[str, Any] = {}

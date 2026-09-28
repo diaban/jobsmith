@@ -4,33 +4,33 @@ An LLM call is the only thing in this framework that costs money, and the
 number was invisible: both real adapters already receive `usage` from their
 SDKs and dropped it on the floor.
 
-Three pieces, deliberately small:
+Four pieces, deliberately small:
 
     Usage           an immutable tally (tokens, calls, estimated cost)
     UsageLedger     per-scope accumulation for ONE run
     record_usage()  what an LLM adapter calls after each response
+    ModelCallUsage  the same, for every LangChain model call of a run
 
-**Why a ledger and not a return value.** `LLMClient.chat` returns `str`, and
-every capability, planner and generator is written against that. Widening it
-to `(str, Usage)` would touch every call site in the project (and every
-third-party capability) to thread a number that most of them do not care
-about. Accounting is *ambient*: it belongs to the run, not to the call. So the
+**Why a ledger and not a return value.** A client's call returns `str`,
+and every node is written against that. Widening it to `(str, Usage)` would
+touch every call site to thread a number most of them do not care about.
+Accounting is *ambient*: it belongs to the run, not to the call. So the
 ledger travels in a `ContextVar` that the JobManager installs around the run,
-adapters push into it, and the pieces that DO care (the capability's own
-`meta`, the Job, the report) read it back.
+adapters push into it, and whoever cares reads it back.
 
-**Attribution comes from the run, not from the caller.** A capability nobody
-wrote for this feature — a third-party one, or a framework node like the
-planner — must still be attributed correctly, so the scope is read from
-LangGraph's runtime config rather than passed down: the root segment of the
-checkpoint namespace IS the parent graph's node name (`planner`, or
-`cap_research|research_notes:...` for a capability sub-graph). No node
-signature changes, nothing to remember when writing a capability. If that
-lookup ever fails, spend lands under `UNATTRIBUTED` — the total stays right
-and only the breakdown degrades.
+**Attribution comes from the run, not from the caller.** A node nobody wrote
+for this feature must still be attributed correctly, so the scope is read
+from LangGraph's runtime config rather than passed down: the root segment of
+the checkpoint namespace IS the root graph's node name, at any depth below
+it. No node signature changes. If that lookup ever fails, spend lands under
+`UNATTRIBUTED` — the total stays right and only the breakdown degrades. What
+a node name means is the graph's to say, never this module's.
 
-Not covered: the chat layer talks to LangChain models directly (the
-deliberate two-stack split), so conversation tokens are not counted here.
+**Two ways in, never both for one call.** An adapter that calls a provider
+SDK itself books with `record_usage`; a LangChain model is booked by the
+callback the runner puts on the run's config (`ModelCallUsage`), from the
+`usage_metadata` of its answer. Model calls made outside a run — a
+conversation around the jobs — have no ledger and are not counted here.
 """
 from __future__ import annotations
 
@@ -43,7 +43,9 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-CAP_NODE_PREFIX = "cap_"          # parent-graph node name for a capability
+from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.outputs import LLMResult
+
 UNATTRIBUTED = "unattributed"     # spend whose scope could not be determined
 
 
@@ -54,7 +56,7 @@ class Usage:
     """Tokens and estimated cost of one or more LLM calls.
 
     `input_tokens` is *uncached* input: each adapter normalizes its provider's
-    shape (Anthropic reports cache reads separately, OpenAI reports them as a
+    shape (Anthropic gives cache reads separately, OpenAI gives them as a
     subset of the prompt tokens) so the two are always disjoint here.
 
     `cost_usd` is None when no call in the tally used a model with a known
@@ -146,7 +148,7 @@ class ModelPrice:
 #
 # Entries are matched by longest prefix, so a dated snapshot of a model
 # (claude-opus-5-20260101) is priced by its family's row. A model with no row
-# is reported in tokens with cost_usd = None: no price is better than a
+# is counted in tokens with cost_usd = None: no price is better than a
 # made-up one. OpenAI models are deliberately absent — nobody here has a
 # reliable current figure for them; add yours through $JOBSMITH_PRICES.
 DEFAULT_PRICES: dict[str, ModelPrice] = {
@@ -216,7 +218,7 @@ class UsageLedger:
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def add(self, scope: str, usage: Usage) -> None:
-        with self._lock:   # capability waves are parallel; sync nodes may be threaded
+        with self._lock:   # parallel branches share it; sync nodes may be threaded
             self._by_scope[scope] = self._by_scope.get(scope, Usage()) + usage
 
     def get(self, scope: str) -> Usage:
@@ -247,7 +249,7 @@ def usage_ledger(ledger: UsageLedger | None = None) -> Iterator[UsageLedger]:
     A fresh ledger by default, so a nested run can never bill its parent.
     Tasks spawned inside inherit the *object* (contexts are copied on task
     creation, but the ledger mutates in place), which is exactly what makes
-    parallel capability branches add up.
+    parallel branches add up.
     """
     ledger = ledger if ledger is not None else UsageLedger()
     token = _current_ledger.set(ledger)
@@ -262,12 +264,12 @@ def current_ledger() -> UsageLedger | None:
 
 
 def current_scope() -> str:
-    """Which graph step is spending, read from LangGraph's runtime config.
+    """Which root node is spending, read from LangGraph's runtime config.
 
-    `checkpoint_ns` is `<node>:<uuid>` in the parent graph and
-    `cap_<name>:<uuid>|<inner node>:<uuid>` inside a capability sub-graph, so
-    its root segment names the responsible step. Outside a graph (a direct
-    client call, a unit test) there is nothing to attribute to.
+    `checkpoint_ns` is `<node>:<uuid>` in the root graph and
+    `<node>:<uuid>|<inner node>:<uuid>` inside a sub-graph, so its root
+    segment names the responsible node, as it is named. Outside a graph (a
+    direct client call, a unit test) there is nothing to attribute to.
     """
     try:
         from langgraph.config import get_config
@@ -279,9 +281,7 @@ def current_scope() -> str:
     root = namespace.split("|", 1)[0].split(":", 1)[0]
     if not root:
         root = (config.get("metadata") or {}).get("langgraph_node") or ""
-    if not root:
-        return UNATTRIBUTED
-    return root[len(CAP_NODE_PREFIX):] if root.startswith(CAP_NODE_PREFIX) else root
+    return root or UNATTRIBUTED
 
 
 def record_usage(
@@ -311,9 +311,37 @@ def record_usage(
     return usage
 
 
+class ModelCallUsage(BaseCallbackHandler):
+    """Books every LangChain model call of a run into its ledger.
+
+    The runner puts one on the run's config, so a graph built from LangChain
+    models — a `create_agent` loop — is counted like one that calls its
+    provider directly. Inline, so it runs in the model call's own context,
+    where the ledger and the node's config are. `usage_metadata` counts cache
+    reads inside `input_tokens`; `Usage` keeps them apart.
+    """
+
+    run_inline = True
+
+    def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
+        for generations in response.generations:
+            for generation in generations:
+                message = getattr(generation, "message", None)
+                usage = getattr(message, "usage_metadata", None)
+                if not usage:
+                    continue
+                meta = getattr(message, "response_metadata", None) or {}
+                model = (meta.get("model_name") or meta.get("model")
+                         or (response.llm_output or {}).get("model_name") or "")
+                cached = int((usage.get("input_token_details") or {}).get("cache_read") or 0)
+                record_usage(model, input_tokens=int(usage.get("input_tokens") or 0) - cached,
+                             output_tokens=int(usage.get("output_tokens") or 0),
+                             cached_input_tokens=cached)
+
+
 __all__ = [
-    "CAP_NODE_PREFIX",
     "DEFAULT_PRICES",
+    "ModelCallUsage",
     "UNATTRIBUTED",
     "ModelPrice",
     "Usage",

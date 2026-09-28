@@ -25,9 +25,9 @@ On a process-local store there is no other process, and a job with no task
 here gets a CANCELLED tombstone as it always did. See `ownership.py`.
 
 Resume semantics: a stopped job kept its checkpoint, so `resume_job` re-enters
-the thread instead of paying for the whole plan again. Only the steps that had
+the thread instead of paying for the whole run again. Only the steps that had
 not finished run; the ones already in the store are kept as they are, and the
-run settles through the same persistence, events and reporting path as a first
+run settles through the same persistence, events and delivery path as a first
 attempt. What is *not* here: re-running part of the DAG of a job that already
 finished — that needs a way to say which results are stale, and is its own
 feature.
@@ -239,7 +239,7 @@ class JobManager:
         Resumable = **stopped with work left to do**, which is exactly two
         cases, both of which kept their checkpoint:
 
-        - CANCELLED — `cancel_job` interrupted a run mid-capability;
+        - CANCELLED — `cancel_job` interrupted a run mid-step;
         - FAILED after `recover_interrupted()` — the process died mid-run.
 
         The status alone is not enough: a job that FAILED *because a node
@@ -282,7 +282,7 @@ class JobManager:
         """Fold a run's updates into the job, and settle it.
 
         The single place a run is driven, whichever way it was entered: a
-        resumed attempt therefore persists, reports and emits events exactly
+        resumed attempt therefore persists, delivers and emits events exactly
         like a first one.
         """
         returned: list[Any] = []            # what the run returned, if it did
@@ -317,8 +317,8 @@ class JobManager:
                 if watch is not None:
                     await self._release(job, watch)
                     # A stop asked for from another process is not this
-                    # caller's cancellation: whoever awaits the run here (the
-                    # chat's `launch_job`, `jobsmith run --wait`) gets the
+                    # caller's cancellation: whoever awaits the run here
+                    # (`run_for`, `run_job`) gets the
                     # CANCELLED job back, as it would any other ending. A
                     # local cancel landing at the same time still propagates.
                     current = asyncio.current_task()
@@ -407,7 +407,7 @@ class JobManager:
         """Fold one update from the runner into the job.
 
         A fact is recorded as it arrives, whatever it says (`engine/facts.py`):
-        persisted under its key, stamped with when it came, and announced — a
+        persisted under its key, stamped with when it came, and broadcast — a
         fact is progress. A root node that finished is noted, and travels with
         the next write.
         """
@@ -611,7 +611,7 @@ class JobManager:
 
         Selected by the store, then ordered, and only then cut: a listing for
         humans shows the most recent, and a caller that must see everything
-        (an announcement, an id to resolve, an orphan to settle) passes
+        (a delivery, an id to resolve, an orphan to settle) passes
         `limit=None` — never a big number, which is the same bug later (#141).
         """
         jobs = await self.repo.load_all(
@@ -626,7 +626,7 @@ class JobManager:
         task here is a leftover only if nobody else can be running it: always
         true of a process-local store, and on a shared one only once its
         owner is provably gone (`ownership.owner_is_gone`) — a second
-        `jobsmith chat` opened on the same database must not fail the jobs
+        process opened on the same database must not fail the jobs
         the first is still running (#10). Leftovers are marked FAILED while
         their checkpoint is retained, so a resume stays possible later; a job
         whose owner is alive is left to it, and both are said on stderr.
