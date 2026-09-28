@@ -93,7 +93,7 @@ class AgentBuilder:
             prompt_template=self.profile.document_intent_prompt_template)
         self.planner          = Planner(deps, registry,
                                         prompt_template=self.profile.planner_prompt_template)
-        self.executor         = Executor(registry)
+        self.executor         = Executor(registry, max_retries=self.profile.max_step_retries)
         self.context_merger   = ContextMerger(registry, self.profile)
         self.generator        = Generator(deps, self.profile)
         self.direct_responder = DirectResponder(deps, registry, self.profile)

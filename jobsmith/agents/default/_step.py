@@ -57,6 +57,7 @@ SUBJECT_ONLY_RULE = (
 
 class StepState(CapabilityBaseState, total=False):
     output: str
+    call_failed: bool           # the model call raised: worth another try (#191)
 
 
 class SingleStepCapability(Capability):
@@ -96,7 +97,7 @@ class SingleStepCapability(Capability):
                 temperature=0.2,
             )
         except Exception:
-            output = ""
+            return {"output": "", "call_failed": True}
         return {"output": output}
 
     async def emit_success(self, state: StepState) -> dict:
@@ -105,6 +106,8 @@ class SingleStepCapability(Capability):
         return self._emit_success({self.OUTPUT_KEY: state.get("output") or ""})
 
     async def emit_failure(self, state: StepState) -> dict:
+        if state.get("call_failed"):
+            return self._emit_failure(f"{self.spec.name}: the model call failed", retryable=True)
         return self._emit_failure(f"{self.spec.name} produced no output")
 
     def route_after_work(self, state: StepState) -> Literal["success", "failure"]:

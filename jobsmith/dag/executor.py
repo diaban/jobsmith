@@ -11,6 +11,7 @@ DAG without baking a topological schedule into the graph.
 """
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 from langgraph.types import Send
@@ -27,8 +28,9 @@ class Executor:
         """Parent-graph node name for a capability."""
         return CAP_NODE_PREFIX + cap_name
 
-    def __init__(self, registry: CapabilityRegistry):
+    def __init__(self, registry: CapabilityRegistry, *, max_retries: int = 1):
         self.registry = registry
+        self.max_retries = max_retries
 
     # -------- Helpers --------
 
@@ -36,12 +38,26 @@ class Executor:
     def _has_unrecoverable(state: AgentState) -> bool:
         return any(not e["recoverable"] for e in state.get("errors", []))
 
-    @staticmethod
-    def _ready_capabilities(state: AgentState) -> list[str]:
+    def _to_retry(self, state: AgentState) -> set[str]:
+        """Steps whose last run failed saying another try is worth it, while
+        they have run at most `max_retries` times (#191). Each run appends the
+        step to `completed_capabilities`, so the count is already there."""
+        results = state.get("results", {})
+        runs = Counter(state.get("completed_capabilities", []))
+        return {cap for cap, result in results.items()
+                if not result.get("ok") and result.get("retryable")
+                and runs[cap] <= self.max_retries}
+
+    def _done(self, state: AgentState) -> set[str]:
+        """Finished for good: a step to retry is not, so it is dispatched
+        again and nothing that depends on it runs before it."""
+        return set(state.get("completed_capabilities", [])) - self._to_retry(state)
+
+    def _ready_capabilities(self, state: AgentState) -> list[str]:
         plan = state.get("plan")
         if not plan:
             return []
-        done = set(state.get("completed_capabilities", []))
+        done = self._done(state)
         ready: list[str] = []
         for step in plan["steps"]:
             cap = step["capability"]
@@ -51,13 +67,11 @@ class Executor:
                 ready.append(cap)
         return ready
 
-    @staticmethod
-    def _all_done(state: AgentState) -> bool:
+    def _all_done(self, state: AgentState) -> bool:
         plan = state.get("plan")
         if not plan:
             return False
-        done = set(state.get("completed_capabilities", []))
-        return len(done) >= len(plan["steps"])
+        return len(self._done(state)) >= len(plan["steps"])
 
     # -------- Node + Router --------
 
