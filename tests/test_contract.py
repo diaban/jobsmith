@@ -163,3 +163,18 @@ async def test_the_default_notice_says_how_each_job_ended():
 
     assert "Job aaaaaaaa ('1 + 2') is DONE. Its result: {\"sum\": 3}" in notice
     assert "Job bbbbbbbb ('1 / 0') is FAILED. Why: division by zero" in notice
+
+
+def test_an_ending_is_told_by_its_attempt_whatever_the_clocks_say():
+    """The thread and the engine may be two machines: `told` compares attempts,
+    never times (#170). Engine clock far ahead: a told ending stays told (no
+    duplicate). Far behind: a resumed attempt is still news (nothing lost)."""
+    from jobsmith.adapters.langchain import told
+    from jobsmith.engine.models import Job, JobStatus
+
+    ahead = Job(job_id="j", status=JobStatus.DONE, updated_at="2999-01-01T00:00:00+00:00")
+    assert told(ahead, {"j": 1})
+    resumed = Job(job_id="j", status=JobStatus.DONE, attempt=2,
+                  updated_at="1970-01-01T00:00:00+00:00")
+    assert not told(resumed, {"j": 1}) and told(resumed, {"j": 2})
+    assert not told(resumed, {}) and not told(resumed, {"j": "2026-09-28T21:00:00"})  # pre-#170 thread

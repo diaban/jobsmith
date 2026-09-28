@@ -176,6 +176,10 @@ class DagJob:
     def usage(self) -> dict[str, Any]:
         return self.record.usage
 
+    @property
+    def attempt(self) -> int:
+        return self.record.attempt
+
     # ---- what the run published ----
 
     @property

@@ -23,18 +23,19 @@ from langgraph.types import Command
 from pydantic import BaseModel, create_model
 
 from ...engine.manager import JobManager
-from ...engine.models import Job, JobStatus, now_iso
+from ...engine.models import Job, JobStatus
 from .delivery import DELIVERED_CHANNEL
 
 IN_FLIGHT = (JobStatus.QUEUED, JobStatus.RUNNING)
 
 
-def told_in_thread(job_id: str, text: str, tool_call_id: str) -> Command:
+def told_in_thread(job: Job | Any, text: str, tool_call_id: str) -> Command:
     """A launch tool's result for a job that ended in the turn: the message,
-    and the thread's record that this ending was told, as one update."""
+    and the thread's record that this ending (its attempt) was told, as one
+    update."""
     return Command(update={
         "messages": [ToolMessage(text, tool_call_id=tool_call_id)],
-        DELIVERED_CHANNEL: {job_id: now_iso()},
+        DELIVERED_CHANNEL: {job.job_id: job.attempt},
     })
 
 
@@ -76,7 +77,7 @@ def launch_tool(
         job = await jobs.run_for(job.job_id, timeout)
         if job.status in IN_FLIGHT:
             return still_running(job)
-        return told_in_thread(job.job_id, told(job), tool_call_id)
+        return told_in_thread(job, told(job), tool_call_id)
 
     return StructuredTool.from_function(coroutine=launch, name=name, description=description,
                                         args_schema=schema)

@@ -6,11 +6,12 @@ are addressed to the agent's thread (`reply_to`, a kind the engine serves by
 `Pulled`), and every model call pulls what ended since.
 
 The guarantee rests on one channel of the thread's own state,
-`DELIVERED_CHANNEL`: job id → when it was told. An id enters it in the SAME
+`DELIVERED_CHANNEL`: job id → the attempt it was told of. An id enters it in the SAME
 update as the message that told the model — its answer to a notice
 (`ExtendedModelResponse`), or a launch tool's result — so it is in the
 checkpoint exactly when that message is. An ending already there is never
-told again; one LATER than its stamp (the job was resumed since) is news.
+told again; a later attempt (the job was resumed since) is news. Attempts,
+never times: the thread's clock and the engine's may be two machines' (#170).
 The job's `delivered_at` is only the index of the channel, marked after the
 model's answer is checkpointed (`aafter_model`) and so never ahead of it.
 
@@ -29,24 +30,26 @@ from langchain_core.messages import SystemMessage
 from langgraph.types import Command
 
 from ...engine.manager import JobManager
-from ...engine.models import Job, JobStatus, now_iso
+from ...engine.models import Job, JobStatus
 
 DELIVERED_CHANNEL = "delivered_jobs"
 
 
-def _merge(record: dict[str, str], more: dict[str, str]) -> dict[str, str]:
+def _merge(record: dict[str, int], more: dict[str, int]) -> dict[str, int]:
     return {**record, **more}
 
 
 class DeliveredState(AgentState):
-    """The thread's record of the endings it was told of: job id → when."""
+    """The thread's record of the endings it was told of: job id → attempt."""
 
-    delivered_jobs: NotRequired[Annotated[dict[str, str], _merge]]
+    delivered_jobs: NotRequired[Annotated[dict[str, int], _merge]]
 
 
-def told(job: Job | Any, record: dict[str, str]) -> bool:
-    """This ending of the job is already in the thread."""
-    return record.get(job.job_id, "") > job.updated_at
+def told(job: Job | Any, record: dict[str, Any]) -> bool:
+    """This ending of the job — this attempt — is already in the thread. A
+    value that is not an attempt (a thread from before #170) proves nothing."""
+    attempt = record.get(job.job_id)
+    return isinstance(attempt, int) and attempt >= job.attempt
 
 
 def inject(messages: list[Any], notices: list[SystemMessage]) -> list[Any]:
@@ -111,9 +114,8 @@ class JobDeliveryMiddleware(AgentMiddleware):
         message = await self.notice(endings)
         response = await handler(
             request.override(messages=inject(list(request.messages), [message])))
-        now = now_iso()
         return ExtendedModelResponse(model_response=response, command=Command(
-            update={DELIVERED_CHANNEL: {job.job_id: now for job in endings}}))
+            update={DELIVERED_CHANNEL: {job.job_id: job.attempt for job in endings}}))
 
     async def aafter_model(self, state: Any, runtime: Any) -> None:
         """The model's answer is checkpointed: index what the thread now records."""

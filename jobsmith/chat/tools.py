@@ -722,7 +722,7 @@ def make_job_tools(
         # Told right here, in the thread, with its result: so the completion
         # notice never announces, one turn later, a job the user has already
         # been handed the answer to (`adapters/langchain`).
-        return told_in_thread(settled.job_id, _delivered(settled), runtime.tool_call_id or "")
+        return told_in_thread(settled, _delivered(settled), runtime.tool_call_id or "")
 
     @tool
     async def job_status(job_id_prefix: str) -> str:
