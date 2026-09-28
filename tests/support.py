@@ -20,7 +20,7 @@ from langgraph.constants import END
 from jobsmith.dag.builder import build_agent
 from jobsmith.dag.capability import Capability, CapabilityBaseState, CapabilitySpec
 from jobsmith.dag.deps import Deps
-from jobsmith.dag.jobs import DagJob, DagJobs, dag_spec
+from jobsmith.dag.jobs import DagJob, DagJobs, dag_spec, session_address
 from jobsmith.dag.registry import CapabilityRegistry
 from jobsmith.dag.report import FileReporter, JobDocument, PlanRow
 from jobsmith.dag.state import job_id_of
@@ -148,7 +148,7 @@ class ChartCapability(OneStep):
 def dag_job(*, plan=None, results=None, step_finished_at=None, outputs=(), query="",
             inputs=None, document_name="", document_title="", formats=None,
             final_answer=None, terminal_kind=None, deliverable_expected=None,
-            **record) -> DagJob:
+            session_id=None, **record) -> DagJob:
     """A DAG job built by hand, as a run would have left it: the request and
     its document decisions in the job's input, the ending and the answer in
     its result, plan, results, step times and files as the facts it published.
@@ -159,6 +159,8 @@ def dag_job(*, plan=None, results=None, step_finished_at=None, outputs=(), query
     job = Job(graph="dag", label=query, input={
         "query": query, "inputs": inputs or {}, "document_name": document_name,
         "document_title": document_title, "document_formats": formats}, **record)
+    if session_id is not None:
+        job.reply_to = session_address(session_id)
     if final_answer is not None or terminal_kind is not None:
         job.result = {"terminal_kind": terminal_kind, "final_answer": final_answer,
                       "errors": [], "document_error": None}

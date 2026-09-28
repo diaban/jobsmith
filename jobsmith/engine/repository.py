@@ -54,8 +54,8 @@ class JobRepository(Protocol):
     async def save_summary(self, job: Job) -> None: ...
     async def load(self, job_id: str) -> Job | None: ...
     async def load_all(
-        self, *, session_id: str | None = None, status: JobStatus | None = None,
-        announced: bool | None = None, updated_since: str | None = None,
+        self, *, reply_key: str | None = None, status: JobStatus | None = None,
+        updated_since: str | None = None,
     ) -> list[Job]: ...
     async def save_fact(self, job_id: str, key: str, value: Any) -> None: ...
     # -- control: only used when `shared` (see ownership.py) --
@@ -146,8 +146,8 @@ class StoreJobRepository:
         return job
 
     async def load_all(
-        self, *, session_id: str | None = None, status: JobStatus | None = None,
-        announced: bool | None = None, updated_since: str | None = None,
+        self, *, reply_key: str | None = None, status: JobStatus | None = None,
+        updated_since: str | None = None,
     ) -> list[Job]:
         """Every summary matching the filters — complete, however long the history.
 
@@ -162,12 +162,10 @@ class StoreJobRepository:
         so paging by offset could skip or repeat rows.
         """
         where: dict[str, Any] = {}
-        if session_id is not None:
-            where["session_id"] = session_id
+        if reply_key is not None:           # flat: see `engine/delivery.py`
+            where["reply_key"] = reply_key
         if status is not None:
             where["status"] = status.value
-        if announced is not None:
-            where["announced"] = announced
         if updated_since is not None:       # ISO timestamps order as text
             where["updated_at"] = {"$gte": updated_since}
         items = await self._io("asearch", (ROOT, "index"), filter=where or None,
@@ -184,12 +182,13 @@ class StoreJobRepository:
             input=s.get("input"),
             result=s.get("result"),
             error=s.get("error"),
-            session_id=s.get("session_id"),
+            reply_to=s.get("reply_to") or {"kind": "none"},
+            reply_key=s.get("reply_key") or "none",
+            delivered_at=s.get("delivered_at"),
             created_at=s.get("created_at", ""),
             updated_at=s.get("updated_at", ""),
             facts_at=s.get("facts_at") or {},
             steps=s.get("steps") or {},
-            announced=bool(s.get("announced")),
             usage=s.get("usage") or {},
         )
 

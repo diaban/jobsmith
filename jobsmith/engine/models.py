@@ -34,7 +34,11 @@ class Job:
     input: Any = None                       # what the graph was given, as given
     result: Any = None                      # what `GraphSpec.result` made of its output
     error: str | None = None                # why it FAILED (never empty then)
-    session_id: str | None = None           # chat session that launched it, if any
+    # Where its ending goes (`engine/delivery.py`): JSON, `{"kind": …}`, and
+    # the flat key its deliverer indexes it by; stamped once delivered.
+    reply_to: dict[str, Any] = field(default_factory=lambda: {"kind": "none"})
+    reply_key: str = "none"
+    delivered_at: str | None = None
     created_at: str = ""                    # ISO timestamps
     updated_at: str = ""
     # What the run published while it ran (`engine/facts.py`): the graph's own
@@ -43,7 +47,6 @@ class Job:
     facts: dict[str, Any] = field(default_factory=dict)
     facts_at: dict[str, str] = field(default_factory=dict)     # key → ISO ts
     steps: dict[str, str] = field(default_factory=dict)        # root node → ISO ts
-    announced: bool = False                 # completion surfaced in its chat session
     # What the run spent, all steps together (engine.usage.Usage.to_dict()).
     usage: dict[str, Any] = field(default_factory=dict)
 
@@ -60,11 +63,12 @@ class Job:
             "input": self.input,
             "result": self.result,
             "error": self.error,
-            "session_id": self.session_id,
+            "reply_to": self.reply_to,
+            "reply_key": self.reply_key,
+            "delivered_at": self.delivered_at,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "facts_at": self.facts_at,
             "steps": self.steps,
-            "announced": self.announced,
             "usage": self.usage,
         }

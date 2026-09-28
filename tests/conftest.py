@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from typing import Any
 
@@ -205,6 +206,17 @@ def checkpointer():
 @pytest.fixture
 def store():
     return InMemoryStore()
+
+
+@pytest.fixture(params=["memory", "sqlite", "postgres"])
+def db(request, tmp_path):
+    """A `pick_db` spec per backend (→ 0141): Postgres when `$JOBSMITH_TEST_PG`
+    names a DSN, skipped otherwise."""
+    if request.param == "postgres":
+        if not (dsn := os.environ.get("JOBSMITH_TEST_PG")):
+            pytest.skip("set $JOBSMITH_TEST_PG to a Postgres DSN")
+        return dsn
+    return "memory" if request.param == "memory" else str(tmp_path / "jobs.db")
 
 
 def registered_capabilities(app: Any, *, gated: bool = False) -> list[str]:
