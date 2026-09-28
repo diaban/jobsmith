@@ -46,7 +46,7 @@ from typing import Any
 from .delivery import Deliverer, Nobody, Pushed, nobody
 from .events import InProcessEvents, JobEvents, job_event
 from .graph import GraphSpec, JobFailed
-from .models import Job, JobStatus, now_iso
+from .models import FailureKind, Job, JobStatus, now_iso
 from .ownership import (
     Heartbeat,
     JobControl,
@@ -289,6 +289,7 @@ class JobManager:
         job.error = None          # the stopped attempt's message is stale now
         job.result = None         # ...and so is anything it returned
         job.asked = None          # ...and the question it was paused on
+        job.failure = None        # ...and why it stopped
         # ...and so is the delivery of the stop: a job picked back up is news
         # again. Without this, a cancelled job delivered to its address and
         # then resumed to DONE is never pending again, and its answer never
@@ -356,8 +357,8 @@ class JobManager:
             except Exception as e:
                 if watch is not None:
                     watch.stop()
-                job.status = JobStatus.FAILED
-                job.error = str(e)
+                _fail(job, FailureKind.RAISED, str(e) or type(e).__name__,
+                      await self._pending(job), exception=type(e).__name__)
                 await self._persist_summary(job)
                 if watch is not None:
                     await self._release(job, watch)
@@ -420,21 +421,21 @@ class JobManager:
             job.status = JobStatus.NEEDS_INPUT
             job.asked = questions if _is_json(questions) else [repr(q) for q in questions]
             return
+        # A run that got here reached its end: nothing is left for a resume.
         if not returned:
-            job.status, job.error = JobStatus.FAILED, "the run ended without returning"
+            _fail(job, FailureKind.NO_RESULT, "the run ended without returning")
             return
         try:
             result = self.specs[job.graph].result(returned[0])
         except JobFailed as failed:
-            job.status = JobStatus.FAILED
-            job.error = failed.reason or "the run declared it failed"
+            _fail(job, FailureKind.DECLARED, failed.reason or "the run declared it failed")
             job.result = failed.result if _is_json(failed.result) else None
             return
         except Exception as e:
-            job.status, job.error = JobStatus.FAILED, f"its result could not be read: {e!r}"
+            _fail(job, FailureKind.UNREADABLE, f"its result could not be read: {e!r}")
             return
         if not _is_json(result):
-            job.status, job.error = JobStatus.FAILED, "its result is not JSON"
+            _fail(job, FailureKind.UNREADABLE, "its result is not JSON")
             return
         job.status, job.result = JobStatus.DONE, result
 
@@ -619,6 +620,13 @@ class JobManager:
             taken.append(job)
         return taken
 
+    async def _pending(self, job: Job) -> tuple[str, ...]:
+        """What a resume would run — `()` when the graph cannot say."""
+        try:
+            return await self._runner(job).pending(job.job_id)
+        except Exception:               # no checkpointer, or no checkpoint at all
+            return ()
+
     async def _settle(self, job: Job, status: JobStatus, error: str) -> Job:
         """Write the ending of a job this process took over (`_take_over`).
 
@@ -629,8 +637,10 @@ class JobManager:
         if current is not None and current.status not in (JobStatus.QUEUED,
                                                           JobStatus.RUNNING):
             return current
-        job.status = status
-        job.error = error
+        if status is JobStatus.FAILED:
+            _fail(job, FailureKind.INTERRUPTED, error, await self._pending(job))
+        else:
+            job.status, job.error = status, error
         await self._persist_summary(job)
         return job
 
@@ -778,6 +788,15 @@ class JobManager:
         if job is not None and job.delivered_at is None:
             job.delivered_at = now_iso()
             await self._persist_summary(job)
+
+
+def _fail(job: Job, kind: FailureKind, error: str, pending: Sequence[str] = (),
+          **detail: str) -> None:
+    """FAILED, said twice: `error` for a reader, `failure` as data (#187).
+    Retryable is what `_begin_resume` would answer: a live frontier."""
+    job.status, job.error = JobStatus.FAILED, error
+    job.failure = {"kind": kind.value, "pending": list(pending),
+                   "retryable": bool(pending)} | detail
 
 
 def _is_json(value: Any) -> bool:

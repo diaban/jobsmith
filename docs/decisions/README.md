@@ -108,6 +108,7 @@ current and writes the records a merged PR forgot, marked as reconstructed.
 | 0167 | [A run paused at an interrupt waits for an answer, with its own status](0167-needs-input.md) | runner yields `Interrupted`; `needs_input` + `Job.asked`; `answer_job` = `Command(resume=…)`, a new attempt; not an ending, not delivered; `POST /engine/jobs/{id}/answer` | accepted |
 | 0169 | [CI runs the Postgres paths; Postgres setup takes a tried advisory lock](0169-postgres-in-ci.md) | a `postgres:16-alpine` service in the `check` job sets `$JOBSMITH_TEST_PG`; both setups under `pg_try_advisory_lock` in a loop — a waited lock deadlocks with `CREATE INDEX CONCURRENTLY` | accepted |
 | 0172 | [The chat's launch_job stays its own shell over the adapter's contract](0172-chat-launch-stays-a-shell.md) | shared: `run_for`, `told_in_thread`, `JobDeliveryMiddleware`; the chat's approval, notice, plan watch and verbatim answer stay in `chat/` rather than six hooks on `launch_tool` | accepted |
+| 0187 | [A FAILED job says why as data, and "retryable" is what a resume answers](0187-structured-failure.md) | `Job.failure` = kind (`raised`/`interrupted`/`declared`/`no_result`/`unreadable`), `pending`, `retryable` = `bool(pending)`, the resume gate's test; every FAILED through `_fail` | accepted |
 
 ### Issues cited without a record of their own
 
