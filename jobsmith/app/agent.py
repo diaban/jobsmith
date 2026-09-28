@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..agents import get_agent
-from ..agents.base import AgentContext, open_agent_resources
+from ..agents.base import AgentContext, AgentDefinition, open_agent_resources
 from ..artifacts.store import LocalArtifactStore
 from ..chat import DEFAULT_CHAT_SYSTEM_PROMPT, ChatSession
 from ..dag.builder import AgentBuilder
@@ -50,14 +50,30 @@ from .providers import make_chat_model, make_llm, pick_provider
 
 @dataclass
 class AgentApp:
-    """A ready-to-serve agent: its job engine + a factory for chat sessions."""
+    """A ready-to-serve agent: its job engine, and — for a capability pack —
+    the planner DAG's jobs over it and a factory for chat sessions."""
 
-    manager: DagJobs
-    session_factory: Callable[..., ChatSession]   # optional session_id argument
+    engine: JobManager                            # runs the agent's jobs
+    dag: DagJobs | None = None                    # a capability pack's jobs
+    chat: Callable[..., ChatSession] | None = None   # optional session_id argument
     agent_name: str = "default"
     resources: Any = None                         # whatever the agent opened
     registry: Any = None                          # what it can actually do
     _stack: AsyncExitStack = field(default_factory=AsyncExitStack)
+
+    @property
+    def manager(self) -> DagJobs:
+        """The DAG's jobs — what the bench serves. A graph agent has none."""
+        if self.dag is None:
+            raise RuntimeError(f"agent {self.agent_name!r} runs its own graph, not the "
+                               f"planner DAG: its jobs are `engine`'s")
+        return self.dag
+
+    @property
+    def session_factory(self) -> Callable[..., ChatSession]:
+        if self.chat is None:
+            raise RuntimeError(f"agent {self.agent_name!r} serves no chat")
+        return self.chat
 
     def new_session(self, session_id: str | None = None) -> ChatSession:
         return self.session_factory(session_id) if session_id else self.session_factory()
@@ -101,7 +117,7 @@ def pick_report_formats(flag: str | None = None) -> list[str]:
 
 async def build_app(
     *,
-    agent: str | None = None,
+    agent: str | AgentDefinition | None = None,
     llm: Any = None,
     chat_model: Any = None,
     resources: Any = None,
@@ -112,7 +128,7 @@ async def build_app(
 ) -> AgentApp:
     # An agent is a capability pack + a profile (+ a chat persona): everything
     # else below is shared, whichever one is asked for.
-    definition = get_agent(agent)
+    definition = agent if isinstance(agent, AgentDefinition) else get_agent(agent)
     if llm is None or chat_model is None:
         choice = pick_provider()
         llm = llm if llm is not None else make_llm(choice)
@@ -150,19 +166,27 @@ async def build_app(
         # paths point into, so the report a job just wrote is a file the next
         # request can name. An agent may add what it already exposes by other
         # means (`--docs`); it may not add anything else. See `artifacts/paths.py`.
-        registry = CapabilityRegistry(
-            definition.capabilities(
-                AgentContext(llm, resources, artifacts,
-                             readable_roots=(str(reports_root),),
-                             # ...and reads what an EARLIER RUN produced by its
-                             # id (#74). The other referent, and the one that
-                             # needs no file: a follow-up asking for "a
-                             # one-pager out of that job" gets the run's own
-                             # material rather than the prose of a document
-                             # that may not even have been written (#84).
-                             prior_jobs=RepositoryPriorJobs(repository))
-            )
-        )
+        context = AgentContext(llm, resources, artifacts,
+                               readable_roots=(str(reports_root),),
+                               # ...and reads what an EARLIER RUN produced by
+                               # its id (#74). The other referent, and the one
+                               # that needs no file: a follow-up asking for "a
+                               # one-pager out of that job" gets the run's own
+                               # material rather than the prose of a document
+                               # that may not even have been written (#84).
+                               prior_jobs=RepositoryPriorJobs(repository),
+                               checkpointer=checkpointer, chat_model=chat_model)
+        events = _events(db_spec, repository, stack)
+        if definition.graph is not None:
+            # A graph of its own: the engine runs it as it is, and that is
+            # the whole app — no planner, no document, no chat.
+            engine = JobManager(definition.graph(context), store,
+                                repository=repository, events=events)
+            await engine.recover_interrupted()
+            return AgentApp(engine, agent_name=definition.name, resources=resources,
+                            _stack=stack)
+        assert definition.capabilities is not None     # AgentDefinition says: one of two
+        registry = CapabilityRegistry(definition.capabilities(context))
         # What "a document" is here when a request wants one and names no
         # format (#96). Composed now, so a format nothing can render — `pdf`
         # without pango — fails at startup rather than at the end of the
@@ -199,18 +223,6 @@ async def build_app(
             reporter_for=reporter_for, reporter=reporter, reports_dir=reports_root,
         ).build()
 
-        # On a shared database `subscribe()` also hears the jobs another
-        # process runs on it: a SQLite file is watched (#100), Postgres
-        # notifies (#138); memory keeps the in-process fan-out, polls nothing.
-        events: WatchedEvents | None = None
-        if (watched := sqlite_file(db_spec)) is not None:
-            events = SqliteWatchEvents(
-                watched, lambda since: repository.load_all(updated_since=since))
-        elif (dsn := postgres_dsn(db_spec)) is not None:
-            events = PostgresNotifyEvents(
-                dsn, repository.load, lambda since: repository.load_all(updated_since=since))
-        if events is not None:
-            stack.push_async_callback(events.aclose)
         manager = DagJobs(
             JobManager(dag_spec(graph), store, repository=repository, events=events),
             default_formats=default_formats,
@@ -233,4 +245,22 @@ async def build_app(
             system_prompt=definition.chat_prompt or DEFAULT_CHAT_SYSTEM_PROMPT,
         )
 
-    return AgentApp(manager, session_factory, definition.name, resources, registry, stack)
+    return AgentApp(manager.engine, manager, session_factory, definition.name, resources,
+                    registry, stack)
+
+
+def _events(db_spec: str, repository: StoreJobRepository,
+            stack: AsyncExitStack) -> WatchedEvents | None:
+    """On a shared database `subscribe()` also hears the jobs another process
+    runs on it: a SQLite file is watched (#100), Postgres notifies (#138);
+    memory keeps the in-process fan-out (None), polls nothing."""
+    events: WatchedEvents | None = None
+    if (watched := sqlite_file(db_spec)) is not None:
+        events = SqliteWatchEvents(
+            watched, lambda since: repository.load_all(updated_since=since))
+    elif (dsn := postgres_dsn(db_spec)) is not None:
+        events = PostgresNotifyEvents(
+            dsn, repository.load, lambda since: repository.load_all(updated_since=since))
+    if events is not None:
+        stack.push_async_callback(events.aclose)
+    return events
