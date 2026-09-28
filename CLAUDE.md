@@ -168,7 +168,7 @@ errors: execution_error → escalate (some ok result) | user_error (none) → EN
   - An **empty registry** routes `"direct"` structurally, before the LLM call, fallback included. → 0038
   - **The direct route is told the files the run delivers**; asked for as a file, its reply is that document (`DIRECT_DOCUMENT_RULE`) — the request is never moved to the planner for it. → 0080
 - **Document intent** (`dag/document.py`), a decision node **before triage**: fills silence, never overrides (a seeded `document_formats` returns before any model call), chooses from `available_formats(registry)` and proves a choice (`confirm`) so it cannot refuse, fail-open (writes nothing = no file), publishes the `formats` fact (folded by `JobManager._apply`). → 0090, 0108
-  - **No document unless asked**: `_deliverable_wanted` is `bool(job.formats)`; silence is the fact `formats = None`. **`None` (may be filled) and `[]` (never overridden) are two facts** — never `formats or []`. → 0096
+  - **No document unless asked**: a file only when `formats` is non-empty (`DagJob.deliverable_expected`); silence is the fact `formats = None`. **`None` (may be filled) and `[]` (never overridden) are two facts** — never `formats or []`. → 0096
   - **A file asked for in words is asked for**: "save it to a file" is `requested` whatever else the request asks; a file it is only about is not (`FILE_REQUEST_RULE`). → 0125
 - **Planner** (`dag/planner.py`) renders its prompt from `registry.specs()`, validates the LLM's JSON DAG: names against the registry, drops steps whose `is_applicable(state)` is false (generalizes "vision only if image" via `spec.requires_inputs`), **prunes dropped names from surviving `depends_on`**, Kahn cycle check.
   - A plan emptied by applicability routes to `direct_answer` (`_route_after_planner`); `{"steps": []}` from the model is still an error. → 0038
@@ -189,7 +189,7 @@ Capability `build()` MUST use `self.state_graph(PrivateState)` (which sets `outp
 | `JobRepository` | where records live + **the store schema** | `engine/repository.py` |
 | `GraphRunner` | drives the run, translates it to domain updates | `engine/runner.py` |
 | `JobEvents` | broadcasts progress | `engine/events.py` |
-| — | the deliverable: the run writes it (`write_document`, Reporters) and returns `document_outputs` | `dag/deliver.py` |
+| — | the deliverable: the run writes it (`write_document`, Reporters) and declares it as `artifact:` facts | `dag/deliver.py` |
 
 Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `repository=`/`runner=`/`events=` to swap one. `tests/test_job_seams.py` drives the whole lifecycle with **no graph and no store** — if that stops being possible, a responsibility has leaked back in.
 
@@ -198,12 +198,12 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 - **Only `repository.py` knows the schema**: `("jobs_v1","index")/job_id` → summary (graph, label, input, result…); `("jobs_v1",job_id,"facts")/key` → a fact the run published (values in the full view only; `facts_at` in the summary). Fine-grained state stays in the checkpointer under `thread_id == job_id`. Moving job records to SQL is another implementation of this port.
 - **`load_all` is complete**: filters applied by the store, one query, nothing cut; `list_jobs` orders newest first, **then** cuts; what must see everything (announcements, an id, orphans, events) passes `limit=None` — never a bigger number. `tests/test_job_history.py` seeds 250 jobs on every backend. → 0141
 - **`dag/prior.py`** (`RepositoryPriorJobs`) is the only place that knows how a finished run's material is reached. → 0074
-- **Ownership is on the record** (`engine/ownership.py`, `("jobs", id, "control")`): a lease written **before** RUNNING, heartbeat 2 s, TTL 30 s; **a cancel is a request the owner acts on**, never a status written over its run. → 0010
+- **Ownership is on the record** (`engine/ownership.py`, `("jobs_v1", id, "control")`): a lease written **before** RUNNING, heartbeat 2 s, TTL 30 s; **a cancel is a request the owner acts on**, never a status written over its run. → 0010
 - **Events cross processes on a shared database** (`WatchedEvents`, watching **only while someone is subscribed**, announcing a job whose `updated_at` moved): SQLite polls `PRAGMA data_version` on its own read-only connection and, only when it moved, re-reads what changed since its last look; Postgres `NOTIFY`s on publish and `LISTEN`s on a connection off the pool; memory stays `InProcessEvents`. Postgres tests run when `$JOBSMITH_TEST_PG` names a DSN. → 0100, 0138
 - **Resume** re-enters with `None`, gated on CANCELLED/FAILED **and** non-empty `runner.pending()`; seeds usage; `_begin_resume` clears `job.error`, `job.result` and `job.announced`. No partial re-run of a finished DAG. → 0005
 - **Vocabulary**: an **output** is what the job produces for the human (`DagJob.outputs`, role `main`|`alternate`|`annex`); a **result** is a capability's payload (`results`). `DagJob.report_path` = the main output's path; the engine's record has neither (`dag/jobs.py` derives them from facts). → 0000
 - **Reporters** (`dag/report.py`): `build_document` → `JobDocument` → `FileReporter` subclasses (`render`, or `serialize` for bytes); `is_binary_format`. → 0009
-- **Exactly one output is `role="main"`** (the first format; the rest `alternate`, never `annex`); `compose_reporters` refuses two Reporters on one extension. `pick_report_formats()` only says *which* file when one is wanted and none was named. A failed write leaves the job DONE with `job.error`. → 0028, 0096
+- **Exactly one output is `role="main"`** (the first format; the rest `alternate`, never `annex`); `compose_reporters` refuses two Reporters on one extension. `pick_report_formats()` only says *which* file when one is wanted and none was named. A failed write leaves the job DONE; the view's `error` names the format. → 0028, 0096
 - **An annex is a file a step declared** via `ArtifactStore` + `artifact_meta(...)`: `_emit_*` publishes it as an `artifact:` fact (`artifacts.store.declare`), kept at **every** terminal because facts persist as they arrive; the DAG view lists it in plan order, once per path; a file absent when declared is in the view's `error`. → 0035, 0041
 - **Name, title and formats are facts on the DAG job's input**, refused in `DagJobs.create_job`; a title is cut on a word (`document_title`). → 0055, 0054
 - **The report is title + answer + one `job_reference` line**; the record holds the rest (`with_provenance` to recite it). → 0085
@@ -250,7 +250,7 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 2. Register it in the composition root before `AgentBuilder(...).build()`. Nothing else: planner prompt, dispatch, merging all pick it up from the registry.
 3. To **read a named file**: `requires_inputs=(SOURCE_FILES_INPUT_KEY,)`, a port in the constructor, never `Path.read_text`; let the port refuse. → 0060
 4. To read an **earlier job**: `requires_inputs=(FROM_JOBS_INPUT_KEY,)`, `ctx.prior_jobs`, never reach into `engine/`; bound what travels and write every cut into the text. → 0074
-5. To produce a **file**: `ctx.artifacts.write(state.get("job_id", ""), name, data)` and `meta=artifact_meta(ArtifactRef(path, title=...))` on `_emit_success` (or `_emit_failure`); never build a path. → 0035
+5. To produce a **file**: `ctx.artifacts.write(job_id_of(state), name, data)` and `meta=artifact_meta(ArtifactRef(path, title=...))` on `_emit_success` (or `_emit_failure`); never build a path. → 0035
 
 ## Testing conventions
 
