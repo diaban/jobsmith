@@ -416,6 +416,12 @@ class EngineService(ABC):
     async def resume_job(self, job_id: str) -> dict: ...
 
     @abstractmethod
+    async def answer_job(self, job_id: str, answer: Any) -> dict:
+        """Answer a job paused at an interrupt (`needs_input`; what it asks is
+        its `asked`) and run it on in the background. Refused like a resume."""
+        ...
+
+    @abstractmethod
     def subscribe(self, *, max_queue: int = 256) -> asyncio.Queue: ...
 
     @abstractmethod
@@ -632,6 +638,10 @@ class LocalEngineService(EngineService):
     async def resume_job(self, job_id: str) -> dict:
         return await _resumed(self.engine, job_id)
 
+    async def answer_job(self, job_id: str, answer: Any) -> dict:
+        return await _resumed(self.engine, job_id,
+                              lambda paused: self.engine.start_answer(paused, answer))
+
     def subscribe(self, *, max_queue: int = 256) -> asyncio.Queue:
         return self.engine.subscribe(max_queue=max_queue)
 
@@ -639,11 +649,11 @@ class LocalEngineService(EngineService):
         self.engine.unsubscribe(queue)
 
 
-async def _resumed(jobs: Any, job_id: str) -> dict:
-    """`start_resume` on either door, a refusal answered as a body (see
-    `JobService.resume_job`)."""
+async def _resumed(jobs: Any, job_id: str, start: Any = None) -> dict:
+    """`start_resume` (or `start`) on either door, a refusal answered as a
+    body (see `JobService.resume_job`)."""
     try:
-        job = await jobs.start_resume(job_id)
+        job = await (start or jobs.start_resume)(job_id)
     except KeyError:
         return {"job_id": job_id, "status": "unknown", "error": f"unknown job: {job_id}"}
     except ValueError as e:

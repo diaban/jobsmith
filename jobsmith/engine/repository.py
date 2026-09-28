@@ -182,6 +182,7 @@ class StoreJobRepository:
             input=s.get("input"),
             result=s.get("result"),
             error=s.get("error"),
+            asked=s.get("asked"),
             reply_to=s.get("reply_to") or {"kind": "none"},
             reply_key=s.get("reply_key") or "none",
             delivered_at=s.get("delivered_at"),

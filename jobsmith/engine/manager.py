@@ -56,7 +56,7 @@ from .ownership import (
     owner_is_gone,
 )
 from .repository import JobRepository, StoreJobRepository
-from .runner import Fact, GraphRunner, JobUpdate, NodeFinished, Output
+from .runner import Fact, GraphRunner, Interrupted, JobUpdate, NodeFinished, Output
 from .usage import Usage, UsageLedger, current_ledger, usage_ledger
 
 # Statuses a job can be resumed from — see `JobManager._begin_resume`.
@@ -241,7 +241,21 @@ class JobManager:
         await self._persist_summary(job)
         return True
 
-    async def _begin_resume(self, job_id: str) -> Job:
+    async def answer_job(self, job_id: str, answer: Any) -> Job:
+        """Answer a job paused at an `interrupt()` (NEEDS_INPUT) and run it on:
+        the interrupt returns `answer`. A new attempt, like a resume (#167)."""
+        job = await self._begin_resume(job_id, expect=(JobStatus.NEEDS_INPUT,))
+        return await self._drive(job, self._runner(job).answer(job.job_id, answer), resumed=True)
+
+    async def start_answer(self, job_id: str, answer: Any) -> Job:
+        """`answer_job` in a background task; a refusal still reaches the caller."""
+        job = await self._begin_resume(job_id, expect=(JobStatus.NEEDS_INPUT,))
+        self._background(job.job_id, self._drive(
+            job, self._runner(job).answer(job.job_id, answer), resumed=True))
+        return job
+
+    async def _begin_resume(self, job_id: str, *,
+                            expect: tuple[JobStatus, ...] = RESUMABLE) -> Job:
         """Check that this job can be resumed, and open the attempt.
 
         Resumable = **stopped with work left to do**, which is exactly two
@@ -262,10 +276,10 @@ class JobManager:
         a different feature (re-running part of the DAG), not this one.
         """
         job = await self._require(job_id)
-        if job.status not in RESUMABLE:
+        if job.status not in expect:
             raise ValueError(
                 f"job {job_id} is {job.status.value}, expected "
-                f"{' or '.join(s.value for s in RESUMABLE)}"
+                f"{' or '.join(s.value for s in expect)}"
             )
         if not await self._runner(job).pending(job_id):
             raise ValueError(
@@ -274,6 +288,7 @@ class JobManager:
             )
         job.error = None          # the stopped attempt's message is stale now
         job.result = None         # ...and so is anything it returned
+        job.asked = None          # ...and the question it was paused on
         # ...and so is the delivery of the stop: a job picked back up is news
         # again. Without this, a cancelled job delivered to its address and
         # then resumed to DONE is never pending again, and its answer never
@@ -296,6 +311,7 @@ class JobManager:
         like a first one.
         """
         returned: list[Any] = []            # what the run returned, if it did
+        asked: list[Any] = []               # ...or what it paused to ask
         # One ledger per run — a fresh one, so a job launched from inside
         # another run can never bill its parent. Every LLM call underneath
         # books into it, attributed to the graph step that made it.
@@ -315,6 +331,8 @@ class JobManager:
                 async for update in updates:
                     if isinstance(update, Output):
                         returned[:] = [update.value]
+                    elif isinstance(update, Interrupted):
+                        asked[:] = [update.asked]
                     else:
                         await self._apply(job, update)
             except asyncio.CancelledError:
@@ -351,7 +369,7 @@ class JobManager:
                 if watch is not None:
                     watch.stop()
 
-            self._conclude(job, returned)
+            self._conclude(job, returned, asked)
             await self._persist_summary(job)
             if watch is not None:
                 await self._release(job, watch)
@@ -386,15 +404,22 @@ class JobManager:
               f"this one ran it; stopped without writing]", file=sys.stderr)
         return await self.get_job(job.job_id) or job
 
-    def _conclude(self, job: Job, returned: list[Any]) -> None:
+    def _conclude(self, job: Job, returned: list[Any], asked: list[Any]) -> None:
         """What a run that went to the end made of itself: DONE with a result,
-        or FAILED with a reason — never FAILED in silence.
+        or FAILED with a reason — never FAILED in silence — or, paused at an
+        `interrupt()`, NEEDS_INPUT with what it asks (#167).
 
         The result is its graph's `GraphSpec.result` of what the run returned;
         that may raise `JobFailed` for a run that declared it failed, and must
-        be JSON, since the record is. A stream that ended without returning
-        (a graph paused at an interrupt) has nothing to conclude from.
+        be JSON, since the record is. So must the question: one that is not is
+        kept as its `repr`, so the job stays readable and answerable. A pause
+        is not an ending: nothing is delivered until the run ends.
         """
+        if asked:
+            questions = asked[0]
+            job.status = JobStatus.NEEDS_INPUT
+            job.asked = questions if _is_json(questions) else [repr(q) for q in questions]
+            return
         if not returned:
             job.status, job.error = JobStatus.FAILED, "the run ended without returning"
             return
@@ -503,9 +528,11 @@ class JobManager:
                 pass
             return await self.get_job(job_id)
         job = await self.get_job(job_id)
-        if job is None or job.status not in (JobStatus.QUEUED, JobStatus.RUNNING):
+        if job is None or job.status not in (JobStatus.QUEUED, JobStatus.RUNNING,
+                                             JobStatus.NEEDS_INPUT):
             return job
-        if self.repo.shared:
+        # A job waiting for an answer runs nowhere: nobody to ask, so it stops here.
+        if self.repo.shared and job.status is not JobStatus.NEEDS_INPUT:
             await self.repo.request_cancel(job_id, now_iso())
             if job.status is JobStatus.RUNNING:
                 return await self._await_remote_stop(job_id)
