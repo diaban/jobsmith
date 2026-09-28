@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .facts import FACT_KEY
+from .usage import ModelCallUsage
 
 
 @dataclass(frozen=True)
@@ -64,7 +65,8 @@ class GraphRunner:
     def _config(job_id: str) -> dict[str, Any]:
         # job_id doubles as the LangGraph thread_id: the checkpoint of a
         # cancelled or interrupted run stays addressable for a future resume.
-        return {"configurable": {"thread_id": job_id}}
+        # The callback books what LangChain models spend (`usage.py`).
+        return {"configurable": {"thread_id": job_id}, "callbacks": [ModelCallUsage()]}
 
     async def stream(self, job_id: str, input: Any) -> AsyncIterator[JobUpdate]:
         """Start a run from `input`, which reaches the graph as it is."""

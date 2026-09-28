@@ -15,6 +15,7 @@ from typing import Any
 
 from langgraph.types import Send
 
+from .capability import CAP_NODE_PREFIX
 from .registry import CapabilityRegistry
 from .state import AgentState
 
@@ -24,7 +25,7 @@ class Executor:
     @staticmethod
     def node_name(cap_name: str) -> str:
         """Parent-graph node name for a capability."""
-        return f"cap_{cap_name}"
+        return CAP_NODE_PREFIX + cap_name
 
     def __init__(self, registry: CapabilityRegistry):
         self.registry = registry

@@ -67,8 +67,8 @@ class WatchedEvents(InProcessEvents):
     """In-process fan-out, plus the jobs OTHER processes persist to the same database.
 
     The shared half of #100/#138. A subclass supplies `_watch()`, a task that
-    runs only while at least one queue is subscribed and calls `_announce`
-    for a job another process moved. A job is announced when its `updated_at`
+    runs only while at least one queue is subscribed and calls `_publish_moved`
+    for a job another process moved. A job is published when its `updated_at`
     differs from the last one seen, so this process's own persists (already
     published) and what existed before anyone subscribed are not news.
 
@@ -104,7 +104,7 @@ class WatchedEvents(InProcessEvents):
             self._task.cancel()
             self._task = None
 
-    def _announce(self, job: Job, *, quietly: bool = False) -> None:
+    def _publish_moved(self, job: Job, *, quietly: bool = False) -> None:
         """Record `job` as seen and, unless `quietly`, fan it out — never re-broadcast."""
         if self._seen.get(job.job_id) == job.updated_at:
             return
@@ -156,11 +156,11 @@ class SqliteWatchEvents(WatchedEvents):
 
     async def _refresh(self, *, quiet_before: str = "") -> None:
         # Only what moved since the last look (`$gte`, so a job persisted in
-        # the same instant is not lost; `_announce` drops what was seen): the
+        # the same instant is not lost; `_publish_moved` drops what was seen): the
         # whole index is read once, when the watch starts (#141), and that
         # first look is quiet only about what moved before the subscription.
         for job in await self._load_since(self._watermark):
-            self._announce(job, quietly=job.updated_at < quiet_before)
+            self._publish_moved(job, quietly=job.updated_at < quiet_before)
             if self._watermark is None or job.updated_at > self._watermark:
                 self._watermark = job.updated_at
 
@@ -237,11 +237,11 @@ class PostgresNotifyEvents(WatchedEvents):
             # A NOTIFY sent before the LISTEN reached nobody: what moved since
             # the subscription is read once, now that nothing more can be missed.
             for job in await self._load_since(self._since):
-                self._announce(job)
+                self._publish_moved(job)
             async for note in conn.notifies():
                 job = await self._load(note.payload)
                 if job is not None:
-                    self._announce(job)
+                    self._publish_moved(job)
         finally:
             await conn.close()
 

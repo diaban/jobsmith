@@ -34,6 +34,10 @@ WT_DIR    := $(subst /,-,$(B))
 
 .DEFAULT_GOAL := help
 
+# What the job engine must never say (docs/design/core-v1.md, G4): the product
+# it serves. A false positive is renamed, never allowlisted.
+ENGINE_WORDS := query|session|document|formats|capabilit|plan|report|announc|terminal_kind|final_answer|deliverable|artifact|annex|chat
+
 .PHONY: help install install-all hooks test test-fast snapshots coverage lint fix types check probe mutate combo leak-check eval eval-llm \
         worktree worktree-rm \
         serve chat ui jobs \
@@ -75,11 +79,12 @@ fix: ## Lint and auto-fix what ruff can
 types: ## Type-check jobsmith/ with pyright (same [tool.pyright] config the editor reads)
 	$(PYRIGHT)
 
-leak-check: ## Domain-leakage gate: shared code, the default agent and the eval set must contain no banking-specific strings
+leak-check: ## Leakage gates: no banking string in shared code, the default agent or the eval set; no product word in the engine (G4)
 	@! grep -rin --include="*.py" "banking\|banquier\|votre\|analyste" \
 		jobsmith/engine jobsmith/dag jobsmith/chat jobsmith/api jobsmith/app jobsmith/cli jobsmith/tui \
 		jobsmith/agents/default jobsmith/agents/base.py evals \
-		&& echo "leak-check: OK (shared code is domain-clean)"
+		&& ! grep -rinE --include="*.py" "$(ENGINE_WORDS)" jobsmith/engine \
+		&& echo "leak-check: OK (shared code is domain-clean, the engine product-clean)"
 
 check: ## Everything CI would run, in parallel: lint + types + leakage gate + tests
 	@$(MAKE) --no-print-directory -j4 --output-sync=target lint types leak-check test

@@ -61,7 +61,7 @@ jobsmith --agent banking chat | serve                       # any agent, same sh
   **Gotchas** (verified): a venv is path-specific — never symlink or copy one across worktrees; `.env`/`agent.db`/`artifacts/` are gitignored, so a fresh worktree has no API key until `make worktree` copies it. → 0000
 - `make coverage`: the interactive layers (`cli/`, `chat/tools.py`) are the thin ones — a change there brings its tests with it. → 0000
 
-Domain-leakage gate (`make leak-check`, must return nothing): `grep -ri --include="*.py" "banking\|banquier\|votre\|analyste" jobsmith/engine jobsmith/dag jobsmith/chat jobsmith/api jobsmith/app jobsmith/cli jobsmith/tui jobsmith/agents/default jobsmith/agents/base.py` — note it scans `agents/default` and `agents/base.py`, **not** `agents/banking`, which is allowed to be as domain-specific as it likes.
+Leakage gates (`make leak-check`, must return nothing): no `banking|banquier|votre|analyste` in shared code, `agents/default`, `agents/base.py` or `evals/` — **not** `agents/banking`, which may be as domain-specific as it likes; no product word (`ENGINE_WORDS`) in `engine/`, docstrings included (G4, core-v1.md).
 
 ### The inbound port (`service.py`)
 
@@ -146,7 +146,7 @@ Every graph step is a class instance owning its deps and config. Node logic is *
 - **`dag/capability.py`** — `Capability` ABC + `CapabilitySpec` (name, description, JSON-schema dicts, `requires_inputs`). Capabilities take *exactly the clients they need* in their constructors; the framework never introspects them. Terminal sub-graph nodes call `_emit_success`/`_emit_failure` so every capability reports uniformly.
 - **`dag/registry.py`** — `CapabilityRegistry`: single source of truth for what the agent can do. The planner prompt, executor Send targets, and builder node map all derive from it. **Frozen at `build()`** — a compiled graph's capability set is fixed; new capability ⇒ new `AgentBuilder` (compilation is milliseconds).
 - **`dag/state.py`** — capability results live in one `results: dict[str, CapabilityResult]` with a dict-union reducer. Fan-in safety: each capability writes only its own key; registry-unique names + no-duplicate plan steps ⇒ disjoint keys. **Determinism caveat:** consumers must iterate in *plan order*, never dict order (ContextMerger does).
-- **`engine/usage.py`** — an **ambient ledger** (`ContextVar` per run) adapters push into with `record_usage`; scope from the root of `checkpoint_ns`, else `unattributed`; `$JOBSMITH_PRICES`; unpriced ⇒ `cost_usd: None`; chat-layer calls are not counted. → 0002
+- **`engine/usage.py`** — an **ambient ledger** (`ContextVar` per run) adapters push into with `record_usage`, and LangChain model calls through the runner's `ModelCallUsage` callback; scope = the root node of `checkpoint_ns` as named (a capability's is `cap_<name>`), else `unattributed`; `$JOBSMITH_PRICES`; unpriced ⇒ `cost_usd: None`; calls outside a run (chat) are not counted. → 0002
 - **`artifacts/paths.py`** — `safe_name` (one component) and `resolve_within` (refused unless it **lands** in a declared root; resolves before comparing). → 0060
 - **`dag/prior_jobs.py`** — the `PriorJobSource` port, in `dag/` because the composition root supplies it. → 0074
 - **`dag/profile.py`** — `AgentProfile` is the entire domain surface: prompt templates, user-facing messages, input/output validation rules (plain callables), `max_refine`. Core defaults are neutral English; the banking example overrides them (French messages live *only* in `agents/banking/profile.py`).
