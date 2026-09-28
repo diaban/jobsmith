@@ -48,7 +48,9 @@ def inbox() -> dict:
 
 
 async def test_a_job_nobody_waits_on_is_delivered_as_it_settles(jobs):
-    done = await jobs.run_job((await jobs.create_job({"n": 1})).job_id)
+    queued = await jobs.create_job({"n": 1})
+    assert queued.delivered_at is None                            # not before
+    done = await jobs.run_job(queued.job_id)
     stopped = await jobs.cancel_job((await jobs.create_job({"n": 1})).job_id)
 
     assert done.reply_to == {"kind": "none"} and done.delivered_at
@@ -74,8 +76,9 @@ async def test_a_pulled_job_is_pending_for_its_address_until_marked(jobs):
     assert stamped and (await jobs.get_job(job.job_id)).delivered_at == stamped   # once
 
 
-@pytest.mark.parametrize("reply_to", [{"kind": "pigeon", "id": "x"}, {"kind": "inbox"}],
-                         ids=["no-deliverer", "no-id"])
+@pytest.mark.parametrize("reply_to", [{"kind": "pigeon", "id": "x"}, {"kind": "inbox"},
+                                      {"kind": "inbox", "id": ""}],
+                         ids=["no-deliverer", "no-id", "empty-id"])
 async def test_an_address_nobody_here_can_deliver_to_is_refused(reply_to):
     jobs = JobManager(GraphSpec("plus_one", _graph(MemorySaver())), InMemoryStore(),
                       deliverers=[Pulled("inbox")])
