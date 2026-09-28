@@ -385,3 +385,23 @@ async def test_the_terminal_falls_back_only_when_nothing_was_streamed():
     # the job's answer is never traded for the model's message
     assert [e async for e in runner._translate(a_job_answered())][-1] == \
         Message("what the run produced")
+
+
+async def test_a_turn_says_what_its_own_model_calls_cost(store, checkpointer, tmp_path):
+    """The reply carries this turn's conversation spend (#173); the job run in
+    the turn keeps its own on its record, and is not counted twice."""
+    from support import chat_turn, launch_call
+
+    from jobsmith.app.providers import KeywordLLM
+
+    manager = make_manager(store, checkpointer, tmp_path, llm=KeywordLLM())
+    spent = {"input_tokens": 100, "output_tokens": 10, "total_tokens": 110}
+    events, _, _ = await chat_turn(manager, [
+        launch_call("analyse it", "several steps").model_copy(update={"usage_metadata": spent}),
+        AIMessage("Done.", usage_metadata=spent),
+    ], "please analyse it")
+
+    usage = events[-1].usage
+    assert (usage["calls"], usage["input_tokens"], usage["output_tokens"]) == (2, 200, 20)
+    (job,) = await manager.list_jobs()
+    assert KeywordLLM.MODEL in job.usage["models"] and KeywordLLM.MODEL not in usage["models"]

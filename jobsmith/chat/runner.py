@@ -53,6 +53,8 @@ from typing import Any
 
 from langchain_core.messages import AIMessage
 
+from ..engine.usage import Usage, usage_of
+
 # `create_agent`'s node names. The updates stream is keyed by them, so this is
 # where that coupling is admitted rather than spread over the service.
 _MODEL_NODE = "model"
@@ -172,6 +174,10 @@ class Message:
     to drift: whatever the reader saw IS the reply.
     """
     content: str
+    # What this turn's own model calls cost (`Usage.to_dict()`); empty when
+    # the model reported nothing. A job run in the turn is not in it: its
+    # calls are its own record's (#173).
+    usage: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -196,6 +202,7 @@ class Proposal:
     document_title: str = ""
     formats: list[str] | None = None    # see `JobStarted.formats` (#84)
     from_jobs: list[dict[str, str]] = field(default_factory=list)  # see `JobStarted`
+    usage: dict[str, Any] = field(default_factory=dict)            # see `Message.usage`
 
 
 ChatEvent = (Token | ToolStarted | ToolFinished | JobStarted | JobPlanned
@@ -332,6 +339,7 @@ class ChatRunner:
         # Only ever a stand-in: see `Message`. Kept because a model that does
         # not stream at all would otherwise make the terminal empty.
         last_model_text, proposal = "", None
+        spent = Usage()                 # this turn's own model calls (#173)
         async for mode, chunk in stream:
             if mode == "messages":
                 message, _metadata = chunk
@@ -353,6 +361,7 @@ class ChatRunner:
                         continue
                     elif node == _MODEL_NODE:
                         for message in value.get("messages") or []:
+                            spent += usage_of(message)
                             last_model_text = _text_of(message)
                             for call in getattr(message, "tool_calls", None) or []:
                                 yield ToolStarted(call["name"])
@@ -367,6 +376,7 @@ class ChatRunner:
                 str(proposal.get("document_title") or ""),
                 _formats(proposal.get("formats")),
                 _job_references(proposal.get("from_jobs")),
+                spent.to_dict() if spent else {},
             )
         else:
             # The transcript, and the model's last message only when nothing
@@ -376,4 +386,5 @@ class ChatRunner:
             # terminal. It can never mask a missing job answer: that arrives
             # as a Token, so a job that answered leaves a non-empty
             # transcript and this branch is not reached.
-            yield Message("".join(transcript) if transcript else last_model_text)
+            yield Message("".join(transcript) if transcript else last_model_text,
+                          spent.to_dict() if spent else {})
