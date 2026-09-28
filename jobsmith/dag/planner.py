@@ -16,6 +16,7 @@ map, not here.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import Any
 
 from ..engine.facts import publish
@@ -23,6 +24,17 @@ from .deps import Deps
 from .profile import DEFAULT_PLANNER_TEMPLATE
 from .registry import CapabilityRegistry
 from .state import CONVERSATION_INPUT_KEY, AgentState, NodeError, Plan, PlanStep
+
+
+def without_steps(plan: Plan, names: Sequence[str]) -> Plan:
+    """`plan` with the steps `names` removed and every `depends_on` on them
+    pruned — what dropping a step from a running plan leaves (#177). Still
+    acyclic: removing nodes adds no edge."""
+    gone = set(names)
+    return {**plan, "steps": [
+        {"capability": step["capability"],
+         "depends_on": [d for d in step["depends_on"] if d not in gone]}
+        for step in plan["steps"] if step["capability"] not in gone]}
 
 
 class Planner:
