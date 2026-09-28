@@ -20,6 +20,13 @@ from .capability import CAP_NODE_PREFIX
 from .registry import CapabilityRegistry
 from .state import AgentState
 
+# The append-only channels a capability emits back (`CapabilityOutputState`).
+# A sub-graph is entered with what it is Sent and returns those channels as they
+# stand at its end, so it must be Sent none of them: it would hand the parent
+# back what the parent already has, appended again (#194) — and a step's runs,
+# which bound its retries, are counted in one of them (#191).
+_APPENDED = ("completed_capabilities", "errors")
+
 
 class Executor:
 
@@ -90,4 +97,5 @@ class Executor:
         ready = self._ready_capabilities(state)
         if not ready:
             return "execution_error"  # deadlock — shouldn't happen
-        return [Send(self.node_name(cap), state) for cap in ready]
+        sent = {key: value for key, value in state.items() if key not in _APPENDED}
+        return [Send(self.node_name(cap), sent) for cap in ready]
