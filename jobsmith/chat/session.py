@@ -314,7 +314,7 @@ class JobNotificationMiddleware(AgentMiddleware):
         return "\n".join(lines)
 
     async def _finished_notice(self) -> tuple[SystemMessage | None, list[DagJob]]:
-        finished = await self.manager.list_finished_unannounced(self.session_id)
+        finished = await self.manager.pending_deliveries(self.session_id)
         if not finished:
             return None, []
         # Delivered first, then described: the answer is written into the turn
@@ -408,7 +408,7 @@ class JobNotificationMiddleware(AgentMiddleware):
         # announced, and re-baseline progress (rebuilt from the in-flight set,
         # so a job that settles drops out of the map instead of lingering).
         for job in finished:
-            await self.manager.mark_announced(job.job_id)
+            await self.manager.mark_delivered(job.job_id)
         self._reported = {job.job_id: progress_signature(job) for job in in_flight_shown}
         return response
 

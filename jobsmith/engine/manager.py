@@ -1,7 +1,7 @@
 """JobManager: the job use cases.
 
 Everything the product can *do* with a job lives here — create, run, track,
-cancel, recover, announce. Everything else is delegated to a collaborator, so
+cancel, recover, deliver. Everything else is delegated to a collaborator, so
 each of them can change (or be swapped) for its own reasons:
 
     JobRepository   where records live and what the schema is  (repository.py)
@@ -41,6 +41,7 @@ import uuid
 from collections.abc import Sequence
 from typing import Any
 
+from .delivery import Deliverer, Nobody, nobody
 from .events import InProcessEvents, JobEvents, job_event
 from .graph import GraphSpec, JobFailed
 from .models import Job, JobStatus, now_iso
@@ -59,11 +60,10 @@ from .usage import Usage, UsageLedger, current_ledger, usage_ledger
 # Statuses a job can be resumed from — see `JobManager._begin_resume`.
 RESUMABLE = (JobStatus.CANCELLED, JobStatus.FAILED)
 
-# Statuses worth surfacing in the conversation that launched the job: every
-# terminal one. CANCELLED belongs here because `cancel_job` is one of the
-# tools the chat model holds — the same actor can stop a job and would
-# otherwise say nothing about what it produced.
-ANNOUNCEABLE = (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED)
+# The endings: a job in one of them is delivered to its return address.
+# CANCELLED is one — whoever waits on a job is owed its stop as much as its
+# answer, and what a stopped run produced is still there.
+SETTLED = (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED)
 
 # The name a graph handed over bare (not as a GraphSpec) is known by.
 DEFAULT_GRAPH = "default"
@@ -83,11 +83,13 @@ class JobManager:
         runner: GraphRunner | None = None,
         events: JobEvents | None = None,
         lease: LeasePolicy | None = None,
+        deliverers: Sequence[Deliverer] = (),
     ):
         """`graph` is the default graph — a `GraphSpec`, or a compiled graph
         whose output is its result; `graphs` are more, each run by its name.
         A `runner` replaces the default graph's (tests drive the lifecycle
-        with no graph at all)."""
+        with no graph at all). `deliverers` are the return-address kinds
+        served besides `none` (`delivery.py`)."""
         if repository is None and store is None:
             raise ValueError("JobManager needs a store or an explicit repository")
         if runner is None and graph is None and not graphs:
@@ -112,8 +114,23 @@ class JobManager:
         # a process-local store pays nothing for any of it.
         self.identity = ProcessIdentity.current()
         self.lease = lease or LeasePolicy()
+        self.deliverers: dict[str, Deliverer] = {}
+        for deliverer in (Nobody(), *deliverers):
+            self.accept(deliverer)
+
+    def accept(self, deliverer: Deliverer) -> None:
+        """Serve one more kind of return address (`delivery.py`)."""
+        self.deliverers[deliverer.kind] = deliverer
 
     async def _persist_summary(self, job: Job) -> None:
+        # Delivered as it settles, if its kind delivers then (`delivery.py`).
+        # Every ending is written here, whichever path wrote it — the one
+        # place to stand. A kind this process does not serve is left to one
+        # that does, undelivered.
+        if job.status in SETTLED and job.delivered_at is None:
+            deliverer = self.deliverers.get(job.reply_to.get("kind", ""))
+            if deliverer is not None and await deliverer.deliver(job):
+                job.delivered_at = now_iso()
         job.updated_at = now_iso()
         # Inside `run_job` a usage ledger is installed for this run, so every
         # persist (each finished step, and the terminal one) carries the spend
@@ -132,21 +149,24 @@ class JobManager:
         *,
         graph: str | None = None,
         label: str = "",
-        session_id: str | None = None,
+        reply_to: dict[str, Any] | None = None,
     ) -> Job:
-        """Record a job, QUEUED: `input` reaches the graph as it is (JSON), and
-        `label` is the one line a listing shows. An unknown graph is refused
-        here, in front of whoever asked."""
+        """Record a job, QUEUED: `input` reaches the graph as it is (JSON),
+        `label` is the one line a listing shows, and `reply_to` is where its
+        ending goes (`delivery.py`; nobody by default). An unknown graph or
+        address kind is refused here, in front of whoever asked."""
         name = graph or self.default_graph
         if name not in self._runners:
             raise ValueError(f"no graph named {name!r} here: {sorted(self._runners)}")
+        reply_to = reply_to or nobody()
         job = Job(
             job_id=uuid.uuid4().hex,
             status=JobStatus.QUEUED,
             graph=name,
             label=label,
             input=input,
-            session_id=session_id,
+            reply_to=reply_to,
+            reply_key=self._key(reply_to),
             created_at=now_iso(),
         )
         await self._persist_summary(job)
@@ -160,6 +180,14 @@ class JobManager:
         if not await self._begin(job):
             return job
         return await self._drive(job, self._runner(job).stream(job.job_id, job.input))
+
+    def _key(self, reply_to: dict[str, Any]) -> str:
+        """The flat key an address is indexed by; refuses a kind not served here."""
+        deliverer = self.deliverers.get(reply_to.get("kind", ""))
+        if deliverer is None:
+            raise ValueError(f"no deliverer for reply_to {reply_to!r} here: "
+                             f"{sorted(self.deliverers)}")
+        return deliverer.key(reply_to)
 
     def _runner(self, job: Job) -> GraphRunner:
         if job.graph == self.default_graph:
@@ -238,12 +266,11 @@ class JobManager:
             )
         job.error = None          # the stopped attempt's message is stale now
         job.result = None         # ...and so is anything it returned
-        # ...and so is the fact that the stop was announced: a job picked back
-        # up is news again. Without this, a cancelled job announced in its
-        # session and then resumed to DONE is filtered out of
-        # `list_finished_unannounced`, and its answer never reaches the
-        # conversation that asked for it.
-        job.announced = False
+        # ...and so is the delivery of the stop: a job picked back up is news
+        # again. Without this, a cancelled job delivered to its address and
+        # then resumed to DONE is never pending again, and its answer never
+        # reaches whoever asked for it.
+        job.delivered_at = None
         # A cancel request is a message to the attempt it stopped; left in the
         # store, it would stop the resumed one on its first heartbeat.
         if self.repo.shared:
@@ -577,7 +604,7 @@ class JobManager:
         self,
         *,
         status: JobStatus | None = None,
-        session_id: str | None = None,
+        reply_to: dict[str, Any] | None = None,
         limit: int | None = 50,
     ) -> list[Job]:
         """The matching jobs, newest first; `limit=None` for every one of them.
@@ -587,7 +614,8 @@ class JobManager:
         (an announcement, an id to resolve, an orphan to settle) passes
         `limit=None` — never a big number, which is the same bug later (#141).
         """
-        jobs = await self.repo.load_all(status=status, session_id=session_id)
+        jobs = await self.repo.load_all(
+            status=status, reply_key=None if reply_to is None else self._key(reply_to))
         jobs.sort(key=lambda j: j.created_at, reverse=True)
         return jobs if limit is None else jobs[:limit]
 
@@ -645,27 +673,24 @@ class JobManager:
     def unsubscribe(self, queue: asyncio.Queue) -> None:
         self.events.unsubscribe(queue)
 
-    # ---------------- Chat-session support ----------------
+    # ---------------- Delivery ----------------
 
-    async def list_finished_unannounced(self, session_id: str) -> list[Job]:
-        """Stopped jobs of a session whose end was not yet surfaced in its
-        conversation (the chat layer announces, then marks them).
+    async def pending_deliveries(self, reply_to: dict[str, Any]) -> list[Job]:
+        """Settled jobs for this address not yet delivered, newest first — what
+        a receiver that pulls (`delivery.Pulled`) has still to take.
 
-        Every terminal status, not only the ones that produced an answer: a
-        job the model itself cancelled has still left results and files
-        behind, and a run that ends in silence is the defect `_notice_for`'s
-        DONE branch was fixed for. A resumed job is unmarked again by
-        `_begin_resume`, so picking one back up does not cost the
-        conversation its ending.
+        The store selects by the address's flat key only (`delivery.py`); the
+        ending and the stamp are read here, from that one receiver's jobs.
         """
-        jobs = await self.repo.load_all(session_id=session_id, announced=False)
-        jobs.sort(key=lambda j: j.created_at, reverse=True)
-        return [j for j in jobs if j.status in ANNOUNCEABLE]
+        jobs = [job for job in await self.list_jobs(reply_to=reply_to, limit=None)
+                if job.status in SETTLED and job.delivered_at is None]
+        return jobs
 
-    async def mark_announced(self, job_id: str) -> None:
+    async def mark_delivered(self, job_id: str) -> None:
+        """The receiver has it: stamp `delivered_at`, once."""
         job = await self.get_job(job_id)
-        if job is not None and not job.announced:
-            job.announced = True
+        if job is not None and job.delivered_at is None:
+            job.delivered_at = now_iso()
             await self._persist_summary(job)
 
 

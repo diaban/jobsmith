@@ -200,7 +200,7 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 - **`dag/prior.py`** (`RepositoryPriorJobs`) is the only place that knows how a finished run's material is reached. → 0074
 - **Ownership is on the record** (`engine/ownership.py`, `("jobs_v1", id, "control")`): a lease written **before** RUNNING, heartbeat 2 s, TTL 30 s; **a cancel is a request the owner acts on**, never a status written over its run. → 0010
 - **Events cross processes on a shared database** (`WatchedEvents`, watching **only while someone is subscribed**, announcing a job whose `updated_at` moved): SQLite polls `PRAGMA data_version` on its own read-only connection and, only when it moved, re-reads what changed since its last look; Postgres `NOTIFY`s on publish and `LISTEN`s on a connection off the pool; memory stays `InProcessEvents`. Postgres tests run when `$JOBSMITH_TEST_PG` names a DSN. → 0100, 0138
-- **Resume** re-enters with `None`, gated on CANCELLED/FAILED **and** non-empty `runner.pending()`; seeds usage; `_begin_resume` clears `job.error`, `job.result` and `job.announced`. No partial re-run of a finished DAG. → 0005
+- **Resume** re-enters with `None`, gated on CANCELLED/FAILED **and** non-empty `runner.pending()`; seeds usage; `_begin_resume` clears `job.error`, `job.result` and `job.delivered_at`. No partial re-run of a finished DAG. → 0005
 - **Vocabulary**: an **output** is what the job produces for the human (`DagJob.outputs`, role `main`|`alternate`|`annex`); a **result** is a capability's payload (`results`). `DagJob.report_path` = the main output's path; the engine's record has neither (`dag/jobs.py` derives them from facts). → 0000
 - **Reporters** (`dag/report.py`): `build_document` → `JobDocument` → `FileReporter` subclasses (`render`, or `serialize` for bytes); `is_binary_format`. → 0009
 - **Exactly one output is `role="main"`** (the first format; the rest `alternate`, never `annex`); `compose_reporters` refuses two Reporters on one extension. `pick_report_formats()` only says *which* file when one is wanted and none was named. A failed write leaves the job DONE; the view's `error` names the format. → 0028, 0096
@@ -210,7 +210,7 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 - **HTML takes no dependency**: escape everything first, add only our own tags, no links, nested lists clamped to the open-list stack. **The PDF is that page printed**; `.[pdf]` needs pango/cairo, **offered when installed** (`find_spec`) and **loaded on first need** (at startup only when the deployment default is PDF). → 0009, 0076, 0034, 0108
 - **Capabilities present their own results**: `Capability.render_report(result)` (twin of `render_context`, which targets the model) with `default_result_markdown` as the base implementation — prose stays prose, list[str] becomes bullets, only structured values fall back to JSON. Never grow that default to learn payload shapes: override `render_report` in the capability instead.
 - `Job.usage` refreshes on every persist; per-step usage is in `meta["usage"]`, failures included. → 0002
-- `Job` also carries `session_id` (chat session that launched it) and an `announced` flag (`list_finished_unannounced`/`mark_announced` drive chat notifications).
+- **Delivery** (`engine/delivery.py`): `reply_to` is JSON (`{"kind": …}`), indexed by a flat `reply_key` (nested filters break SQLite/memory); settling asks the kind's deliverer, True stamps `delivered_at`. `none` (default) is delivered as it settles; a pulled kind waits for `pending_deliveries`/`mark_delivered`. The DAG registers `session` (`dag/jobs.py`); `DagJob.session_id`/`announced` are derived.
 
 ### Chat layer (`chat/`)
 
@@ -218,13 +218,13 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 
 - **`chat/runner.py` alone knows what `astream` emits**: `Token`, `ToolStarted`/`ToolFinished` (real tool name; wording is the front-end's), `JobStarted`, `JobPlanned`, then exactly one terminal, `Message` or `Proposal`. → 0050, 0083, 0086
 - **Tools** (`chat/tools.py`) wrap JobManager use-cases, scoped to the session's own jobs. `launch_job` **runs the task**: `create_job(session_id=...)` + `run_for(job_id, pick_sync_timeout())`.
-- **Synchronous by default, promoted by the clock**: `JobManager.run_for` = `start_job` then `asyncio.wait` (never `wait_for`) for `$JOBSMITH_SYNC_TIMEOUT` (20 s; `0` = never); no classification; a job finished in the turn is `mark_announced`. → 0083
+- **Synchronous by default, promoted by the clock**: `JobManager.run_for` = `start_job` then `asyncio.wait` (never `wait_for`) for `$JOBSMITH_SYNC_TIMEOUT` (20 s; `0` = never); no classification; a job finished in the turn is `mark_delivered`. → 0083
 - **The plan is announced while the turn waits**, from `manager.subscribe()` (subscribed before `start_job`, drained with `None` when the run ends, released in `finally`); never after promotion; a one-step plan is not announced. → 0086
 - **The answer is written verbatim into the turn**, never returned through the model; a promoted answer uses the same channel up to `$JOBSMITH_INLINE_ANSWER_MAX` (2 000), or at any length when no file was written. → 0083, 0085
 - **The approval card is a notice** (`job_started`: query, sources, `from_jobs` as short id + start of query, name/title/formats, job id); the gate survives behind `$JOBSMITH_APPROVE_JOBS`. → 0083, 0104
 - **The engine never sees the thread**: a self-contained `query`, plus `recent_conversation()` as `inputs[CONVERSATION_INPUT_KEY]`. `source_files` and `from_jobs` (resolved against **this session's** jobs) are `launch_job` arguments. → 0004, 0060, 0074
 - **Notifications** (`JobNotificationMiddleware.awrap_model_call`) are transient `SystemMessage`s in the model *request*, never in state. → 0006
-  - Completion (every terminal, `ANNOUNCEABLE`) and progress (only when `progress_signature()` moved) notices go **directly after the system prompt** (`_inject`), where Anthropic hoists them. → 0006
+  - Completion (every terminal, `SETTLED`, via `pending_deliveries`) and progress (only when `progress_signature()` moved) notices go **directly after the system prompt** (`_inject`), where Anthropic hoists them. → 0006
 - **`conftest.ScriptedChatModel` implements `_astream`** with several chunks; the message list is also run through the real provider formatters, which only run with the chat extras (CI). → 0006
 
 ### HTTP API (`api/`)

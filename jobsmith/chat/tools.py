@@ -714,7 +714,7 @@ def make_job_tools(
 
         # Reported right here, so the completion notice does not announce, one
         # turn later, a job the user has already been handed the answer to.
-        await manager.mark_announced(settled.job_id)
+        await manager.mark_delivered(settled.job_id)
         if settled.final_answer:
             # Verbatim, into the turn itself. The trailing blank line keeps
             # the model's own sentence from running into the last one of the

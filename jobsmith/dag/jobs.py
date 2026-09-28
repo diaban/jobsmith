@@ -14,6 +14,7 @@ from dataclasses import asdict
 from typing import Any
 
 from ..artifacts.store import ARTIFACT_FACT, JobOutput
+from ..engine.delivery import Pulled
 from ..engine.graph import GraphSpec, JobFailed
 from ..engine.manager import JobManager
 from ..engine.models import Job, JobStatus
@@ -27,6 +28,15 @@ _ROLE_ORDER = {"main": 0, "alternate": 1}
 
 #: The name the planner DAG runs under in the engine.
 DAG_GRAPH = "dag"
+
+#: The return address of a job a conversation launched: the conversation
+#: pulls it (`pending_deliveries`), then marks it delivered once its model has
+#: seen it — the engine only knows a kind that pulls (`engine/delivery.py`).
+SESSION = "session"
+
+
+def session_address(session_id: str) -> dict[str, Any]:
+    return {"kind": SESSION, "id": session_id}
 
 # The terminals of a run that did its work and has something to hand back: it
 # answered, or it declared — as data, from the generator — that the material
@@ -120,7 +130,9 @@ class DagJob:
 
     @property
     def session_id(self) -> str | None:
-        return self.record.session_id
+        """The conversation that launched it, when its address is one."""
+        reply_to = self.record.reply_to
+        return reply_to.get("id") if reply_to.get("kind") == SESSION else None
 
     @property
     def created_at(self) -> str:
@@ -156,7 +168,9 @@ class DagJob:
 
     @property
     def announced(self) -> bool:
-        return self.record.announced
+        """Delivered to its address (`delivered_at`): for a conversation, its
+        model has seen the ending; for nobody's job, it settled."""
+        return self.record.delivered_at is not None
 
     @property
     def usage(self) -> dict[str, Any]:
@@ -271,6 +285,7 @@ class DagJob:
 class DagJobs:
     def __init__(self, engine: JobManager, *, default_formats: Sequence[str] = ("markdown",)):
         self.engine = engine
+        engine.accept(Pulled(SESSION))
         # What "a document" means when a request wants one and names no
         # format (#96): the names `DEFAULT_FORMATS_ALIAS` resolves to in
         # `create_job`. The composition root passes `$JOBSMITH_REPORT_FORMAT`
@@ -325,7 +340,8 @@ class DagJobs:
                 "document_title": document_title.strip(),
                 "document_formats": wanted,
             },
-            graph=DAG_GRAPH, label=query, session_id=session_id))
+            graph=DAG_GRAPH, label=query,
+            reply_to=session_address(session_id) if session_id else None))
 
     # ---- the rest is the engine's, as the bench has always called it ----
 
@@ -351,7 +367,8 @@ class DagJobs:
                         session_id: str | None = None, limit: int | None = 50) -> list[DagJob]:
         """Summaries: no plan, no results, no files — `get_job` has them."""
         return [DagJob(job) for job in await self.engine.list_jobs(
-            status=status, session_id=session_id, limit=limit)]
+            status=status, limit=limit,
+            reply_to=session_address(session_id) if session_id else None)]
 
     async def cancel_job(self, job_id: str) -> DagJob | None:
         return _view(await self.engine.cancel_job(job_id))
@@ -365,13 +382,14 @@ class DagJobs:
     def unsubscribe(self, queue: asyncio.Queue) -> None:
         self.engine.unsubscribe(queue)
 
-    async def list_finished_unannounced(self, session_id: str) -> list[DagJob]:
-        """In full: an announcement says what the job produced."""
+    async def pending_deliveries(self, session_id: str) -> list[DagJob]:
+        """A conversation's settled jobs it has not been told of — in full: the
+        notice says what each produced."""
         return [DagJob(await self.engine.get_job(job.job_id) or job)
-                for job in await self.engine.list_finished_unannounced(session_id)]
+                for job in await self.engine.pending_deliveries(session_address(session_id))]
 
-    async def mark_announced(self, job_id: str) -> None:
-        await self.engine.mark_announced(job_id)
+    async def mark_delivered(self, job_id: str) -> None:
+        await self.engine.mark_delivered(job_id)
 
 
 def _view(job: Job | None) -> DagJob | None:

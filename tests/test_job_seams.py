@@ -11,6 +11,7 @@ import asyncio
 import pytest
 from support import until
 
+from jobsmith.engine.delivery import Pulled
 from jobsmith.engine.events import InProcessEvents, job_event
 from jobsmith.engine.graph import GraphSpec, JobFailed
 from jobsmith.engine.manager import JobManager
@@ -84,13 +85,11 @@ class DictRepository:
                 job.facts[key] = value
         return job
 
-    async def load_all(self, *, session_id=None, status=None, announced=None,
-                       updated_since=None):
+    async def load_all(self, *, reply_key=None, status=None, updated_since=None):
         jobs = [StoreJobRepository._from_summary(jid, s) for jid, s in self.summaries.items()]
         return [j for j in jobs
-                if (session_id is None or j.session_id == session_id)
+                if (reply_key is None or j.reply_key == reply_key)
                 and (status is None or j.status is status)
-                and (announced is None or j.announced == announced)
                 and (updated_since is None or j.updated_at >= updated_since)]
 
 
@@ -117,8 +116,7 @@ async def test_use_cases_run_without_a_graph_or_a_store(tmp_path):
         Fact("step:alpha", {"ok": True, "data": {"echo": "hi"}}),
         ended("The final answer."),
     )
-    job = await mgr.create_job({"query": "do it", "inputs": {"k": "v"}}, label="do it",
-                               session_id="s1")
+    job = await mgr.create_job({"query": "do it", "inputs": {"k": "v"}}, label="do it")
     done = await mgr.run_job(job.job_id)
 
     assert done.status is JobStatus.DONE
@@ -232,9 +230,9 @@ async def test_manager_refuses_to_be_built_without_a_backing(tmp_path):
 
 async def test_events_are_published_through_the_port(tmp_path):
     events = InProcessEvents()
-    mgr = make_manager(tmp_path, ended("done."), events=events)
+    mgr = make_manager(tmp_path, ended("done."), events=events, deliverers=[Pulled("inbox")])
     queue = mgr.subscribe()
-    job = await mgr.create_job({"q": "watched"}, session_id="s1")
+    job = await mgr.create_job({"q": "watched"}, reply_to={"kind": "inbox", "id": "s1"})
     await mgr.run_job(job.job_id)
 
     seen = []
@@ -242,10 +240,10 @@ async def test_events_are_published_through_the_port(tmp_path):
         seen.append(queue.get_nowait())
     assert [e["status"] for e in seen][:2] == ["queued", "running"]
     assert seen[-1]["status"] == "done"
-    assert all(e["session_id"] == "s1" for e in seen)
+    assert all(e["reply_to"] == {"kind": "inbox", "id": "s1"} for e in seen)
 
     mgr.unsubscribe(queue)
-    await mgr.mark_announced(job.job_id)
+    await mgr.mark_delivered(job.job_id)                 # persists a summary → would emit
     assert queue.empty()
 
 

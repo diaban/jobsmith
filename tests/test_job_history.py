@@ -7,10 +7,8 @@ Seeded well past every old threshold, on each backend.
 """
 from __future__ import annotations
 
-import os
 import uuid
 
-import pytest
 from support import until
 
 from jobsmith.app.agent import build_app
@@ -19,16 +17,6 @@ from jobsmith.chat.tools import _find
 from jobsmith.engine.models import JobStatus
 
 HISTORY = 250           # past every former cut: 50, 100 and 200
-PG = os.environ.get("JOBSMITH_TEST_PG")
-
-
-@pytest.fixture(params=["memory", "sqlite", "postgres"])
-def db(request, tmp_path):
-    if request.param == "postgres":
-        if not PG:
-            pytest.skip("set $JOBSMITH_TEST_PG to a Postgres DSN")
-        return PG
-    return "memory" if request.param == "memory" else str(tmp_path / "jobs.db")
 
 
 async def _app(tmp_path, db):
@@ -55,7 +43,7 @@ async def test_the_newest_job_survives_a_long_history(tmp_path, db):
         # database another test may create a newer job at any moment.
         newest = await manager.list_jobs(session_id=others, limit=1)
         assert [j.job_id for j in newest] == [newest_other.job_id]
-        assert [j.job_id for j in await manager.list_finished_unannounced(me)] == [mine.job_id]
+        assert [j.job_id for j in await manager.pending_deliveries(me)] == [mine.job_id]
         assert (await _find(manager, me, mine.job_id[:8])).job_id == mine.job_id
         queued = await manager.list_jobs(status=JobStatus.QUEUED, session_id=others, limit=None)
         assert len(queued) == HISTORY                                         # complete

@@ -3,9 +3,9 @@
 
 G2 here: a plain structured graph — no chat, no document, no planner — runs
 as a job on the engine alone, and the job's result is exactly what the graph
-returned. It runs in a fresh interpreter, so what it did NOT load is part of
-the proof. (Delivery at settle joins this gate at step 7; G1, a ReAct graph,
-at step 8.)
+returned, and — addressed to nobody — it is delivered as it settles. It runs
+in a fresh interpreter, so what it did NOT load is part of the proof. (G1, a
+ReAct graph, joins at step 8.)
 """
 from __future__ import annotations
 
@@ -59,7 +59,8 @@ G2 = textwrap.dedent('''
                                          "jobsmith.agents", "langchain."))
                         or m == "langchain")
         print(json.dumps({"status": done.status.value, "result": done.result,
-                          "steps": sorted(done.steps), "loaded": loaded}))
+                          "steps": sorted(done.steps), "delivered": bool(done.delivered_at),
+                          "loaded": loaded}))
 
     asyncio.run(main())
 ''')
@@ -69,7 +70,8 @@ def test_a_structured_job_runs_on_the_engine_alone():
     run = subprocess.run([sys.executable, "-c", G2], capture_output=True, text=True, timeout=120)
     assert run.returncode == 0, run.stderr
     report = json.loads(run.stdout.strip().splitlines()[-1])
-    assert report == {"status": "done", "result": {"sum": 3}, "steps": ["add"], "loaded": []}
+    assert report == {"status": "done", "result": {"sum": 3}, "steps": ["add"],
+                      "delivered": True, "loaded": []}
 
 
 async def test_one_engine_runs_several_graphs_each_by_its_name():

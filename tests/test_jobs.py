@@ -11,6 +11,7 @@ from support import SlowEcho, cancelled_midway, dag_job, make_manager
 
 from jobsmith.dag.builder import build_agent
 from jobsmith.dag.deps import Deps
+from jobsmith.dag.jobs import session_address
 from jobsmith.dag.profile import DEFAULT_EMPTY_QUERY_MESSAGE
 from jobsmith.dag.registry import CapabilityRegistry
 from jobsmith.engine.models import JobStatus
@@ -246,7 +247,7 @@ async def test_no_report_on_failed_job(store, checkpointer, tmp_path):
     assert done.report_path is None
 
 
-async def test_session_filter_and_announcement_flow(store, checkpointer, tmp_path):
+async def test_session_filter_and_delivery_flow(store, checkpointer, tmp_path):
     mgr = make_manager(store, checkpointer, tmp_path)
     in_session = await mgr.create_job("mine", session_id="s1")
     _other = await mgr.create_job("other", session_id="s2")
@@ -256,16 +257,17 @@ async def test_session_filter_and_announcement_flow(store, checkpointer, tmp_pat
     assert [j.job_id for j in listed] == [in_session.job_id]
 
     # nothing finished yet → nothing to announce
-    assert await mgr.list_finished_unannounced("s1") == []
+    assert await mgr.pending_deliveries("s1") == []
 
     await mgr.run_job(in_session.job_id)
-    await mgr.run_job(no_session.job_id)  # finished but session-less: never announced
-    pending = await mgr.list_finished_unannounced("s1")
+    bare = await mgr.run_job(no_session.job_id)
+    assert bare.announced                 # addressed to nobody: delivered as it settles
+    pending = await mgr.pending_deliveries("s1")
     assert [j.job_id for j in pending] == [in_session.job_id]
     assert pending[0].final_answer is not None  # enough to build the synthesis
 
-    await mgr.mark_announced(in_session.job_id)
-    assert await mgr.list_finished_unannounced("s1") == []
+    await mgr.mark_delivered(in_session.job_id)
+    assert await mgr.pending_deliveries("s1") == []
 
 
 async def test_every_terminal_is_announceable_and_a_resume_unmarks_it(
@@ -276,16 +278,16 @@ async def test_every_terminal_is_announceable_and_a_resume_unmarks_it(
     silence the job if it is later resumed."""
     mgr, job, _alpha, slow = await cancelled_midway(store, checkpointer, tmp_path,
                                                     session_id="s1")
-    pending = await mgr.list_finished_unannounced("s1")
+    pending = await mgr.pending_deliveries("s1")
     assert [j.status for j in pending] == [JobStatus.CANCELLED]
-    await mgr.mark_announced(job.job_id)
-    assert await mgr.list_finished_unannounced("s1") == []
+    await mgr.mark_delivered(job.job_id)
+    assert await mgr.pending_deliveries("s1") == []
 
     slow.delay = 0.0
     done = await mgr.resume_job(job.job_id)
     assert done.status is JobStatus.DONE
     assert done.announced is False                # news again, like `error` is cleared
-    assert [j.job_id for j in await mgr.list_finished_unannounced("s1")] == [job.job_id]
+    assert [j.job_id for j in await mgr.pending_deliveries("s1")] == [job.job_id]
 
 
 async def test_subscribe_streams_job_events(store, checkpointer, tmp_path):
@@ -300,11 +302,11 @@ async def test_subscribe_streams_job_events(store, checkpointer, tmp_path):
     assert events[0]["status"] == "queued"
     assert events[-1]["status"] == "done"
     assert (await mgr.get_job(job.job_id)).report_path is not None   # an event says, a read shows
-    assert all(e["job_id"] == job.job_id and e["session_id"] == "s1" for e in events)
+    assert all(e["job_id"] == job.job_id and e["reply_to"] == session_address("s1") for e in events)
     assert len(events) > 3                                   # mid-run progress, as it came
 
     mgr.unsubscribe(queue)
-    await mgr.mark_announced(job.job_id)  # persists a summary → would emit
+    await mgr.mark_delivered(job.job_id)  # persists a summary → would emit
     assert queue.empty()
 
 
