@@ -17,7 +17,8 @@ against this API.
   event and the answer as it is delivered; the non-streaming route waits for
   all of it.
 - Jobs tab:   GET /jobs (+?session_id/?status), GET /jobs/{id} (plan/DAG,
-  step timestamps, artifacts), POST /jobs (direct launch, bypassing chat),
+  step timestamps, artifacts), POST /jobs (direct launch, bypassing chat;
+  `?wait=S` answers with the job once it settles or S seconds pass),
   POST /jobs/{id}/cancel, POST /jobs/{id}/resume (restart a stopped job from
   its checkpoint; 409 when it has nothing left to run).
 - Outputs:    GET /jobs/{id}/outputs — the files the job produced for the
@@ -36,7 +37,7 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
@@ -164,12 +165,14 @@ def create_api(service: LocalAgentService) -> FastAPI:
         return await _job_or_404(job_id)
 
     @app.post("/jobs", status_code=201)
-    async def launch_job(body: JobIn) -> dict:
+    async def launch_job(body: JobIn, wait: float | None = Query(None, ge=0)) -> dict:
+        """`?wait=S` answers once the job settles or S seconds pass, whichever
+        is first, with the job as it stands (`AgentService.launch_job`)."""
         try:
             return await service.launch_job(
                 body.query, session_id=body.session_id, inputs=body.inputs,
                 document_name=body.document_name,
-                document_title=body.document_title, formats=body.formats)
+                document_title=body.document_title, formats=body.formats, wait=wait)
         except ValueError as refused:
             # The document cannot be produced here — an unusable name, a format
             # nothing renders. The client asked for something impossible, so it

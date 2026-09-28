@@ -399,6 +399,23 @@ class JobManager:
         """Fire-and-forget: run the job in a background task (cancellable)."""
         return self._background(job_id, self.run_job(job_id))
 
+    async def run_for(self, job_id: str, timeout: float) -> Job:
+        """Run a QUEUED job, waiting up to `timeout` seconds for it to settle.
+
+        Promotion on the clock, for any synchronous caller (0083): the run is
+        a background task from the first instant, so it outlives the wait, and
+        promoting it is only stopping waiting — nothing is cancelled, nothing
+        restarted. The answer is the record as it then stands: settled, or
+        still RUNNING and promoted. `asyncio.wait`, never `wait_for`, which
+        would cancel the run it gives up on. A run that crashed outside what
+        `_drive` settles raises here, to the one caller still listening.
+        """
+        task = self.start_job(job_id)
+        done, _ = await asyncio.wait({task}, timeout=timeout)
+        if done and not task.cancelled() and (crashed := task.exception()) is not None:
+            raise crashed
+        return await self._require(job_id)
+
     async def start_resume(self, job_id: str) -> Job:
         """Resume in a background task, and return the job now RUNNING.
 

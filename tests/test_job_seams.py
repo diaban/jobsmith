@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from support import until
 
 from jobsmith.engine.events import InProcessEvents, job_event
 from jobsmith.engine.graph import GraphSpec, JobFailed
@@ -283,3 +284,57 @@ async def test_the_result_is_persisted_with_the_ending(tmp_path):
 
     stored = mgr.repo.summaries[job.job_id]       # what a later reader sees
     assert stored["status"] == "done" and stored["result"] == {"answer": "The answer."}
+
+
+class GatedRunner(FakeRunner):
+    """A run that ends only once `gate` is set."""
+
+    def __init__(self, *updates):
+        super().__init__(*updates)
+        self.gate = asyncio.Event()
+
+    async def stream(self, job_id, input):
+        await self.gate.wait()
+        async for update in super().stream(job_id, input):
+            yield update
+
+
+async def test_run_for_answers_with_the_job_settled_within_its_time(tmp_path):
+    """Promotion on the clock (→ 0083): a run that ends in time comes back settled."""
+    mgr = make_manager(tmp_path, ended("quick"))
+    job = await mgr.create_job({"q": "q"})
+    done = await mgr.run_for(job.job_id, 5)
+    assert done.status is JobStatus.DONE and done.result == {"answer": "quick"}
+
+
+async def test_run_for_promotes_a_slow_run_without_stopping_it(tmp_path):
+    """Past the timeout the caller gets the job RUNNING, and the run goes on to
+    its end — promotion is only stopping waiting (→ 0083)."""
+    runner = GatedRunner(ended("slow"))
+    mgr = JobManager(repository=DictRepository(), runner=runner)
+    job = await mgr.create_job({"q": "q"})
+    promoted = await mgr.run_for(job.job_id, 0.05)
+    assert promoted.status is JobStatus.RUNNING
+    runner.gate.set()
+
+    async def settled():
+        current = await mgr.get_job(job.job_id)
+        return current if current and current.status is JobStatus.DONE else None
+
+    done = await until(settled, what="the promoted run settles")
+    assert done.result == {"answer": "slow"}
+
+
+async def test_run_for_raises_what_the_run_could_not_settle(tmp_path):
+    """A crash outside what the run settles — here, the store refusing the
+    ending — reaches the one caller still listening."""
+    class RefusingEnd(DictRepository):
+        async def save_summary(self, job):
+            if job.status is JobStatus.DONE:
+                raise RuntimeError("store gone")
+            await super().save_summary(job)
+
+    mgr = JobManager(repository=RefusingEnd(), runner=FakeRunner(ended()))
+    job = await mgr.create_job({"q": "q"})
+    with pytest.raises(RuntimeError, match="store gone"):
+        await mgr.run_for(job.job_id, 5)

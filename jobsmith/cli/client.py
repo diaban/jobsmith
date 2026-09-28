@@ -218,9 +218,10 @@ class DaemonClient(AgentService):
         return r.json()
 
     async def launch_job(self, query, *, session_id=None, inputs=None,
-                         document_name="", document_title="", formats=None) -> dict:
+                         document_name="", document_title="", formats=None,
+                         wait=None) -> dict:
         r = await self._request(
-            "POST", "/jobs",
+            "POST", "/jobs", params={} if wait is None else {"wait": wait},
             json={"query": query, "session_id": session_id, "inputs": inputs,
                   "document_name": document_name, "document_title": document_title,
                   # `null` and `[]` are two different asks (#84) — "you decide"

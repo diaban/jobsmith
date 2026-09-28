@@ -159,6 +159,16 @@ async def test_no_document_reads_the_same_on_both_backings(
     assert await client.list_outputs(job["job_id"]) == []
 
 
+async def test_a_launch_that_waits_answers_with_the_settled_job_on_both_backings(
+    store, checkpointer, tmp_path, through
+):
+    """`wait` is promotion on the clock for any caller (→ 0083): the job comes
+    back whole once it settles within the wait."""
+    client = through(chair_service(store, checkpointer, tmp_path))
+    job = await client.launch_job("just answer me", formats=[], wait=10)
+    assert job["status"] == "done" and job["final_answer"]
+
+
 async def test_a_binary_deliverable_is_refused_the_same_way_by_both_backings(
     store, checkpointer, tmp_path, through
 ):
