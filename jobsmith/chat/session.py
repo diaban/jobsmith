@@ -353,12 +353,10 @@ class JobNotificationMiddleware(AgentMiddleware):
     async def _finished_notice(
         self, told: dict[str, str]
     ) -> tuple[SystemMessage | None, list[DagJob]]:
-        pending = await self.manager.pending_deliveries(self.session_id)
-        # Told already, in a turn whose mark never came: index it, say nothing.
-        for job in pending:
-            if _told(job, told):
-                await self.manager.mark_delivered(job.job_id)
-        finished = [job for job in pending if not _told(job, told)]
+        # Told already, in a turn whose mark never came: say nothing —
+        # `aafter_model` marks it once this call is checkpointed.
+        finished = [job for job in await self.manager.pending_deliveries(self.session_id)
+                    if not _told(job, told)]
         if not finished:
             return None, []
         # Delivered first, then described: the answer is written into the turn
