@@ -140,3 +140,34 @@ async def test_the_default_steps_call_a_failed_model_call_transient_and_nothing_
     out = await AnalysisCapability(Model()).build().ainvoke({"query": "q", "results": {}})
     result = out["results"]["analysis"]
     assert result["ok"] is False and bool(result.get("retryable")) is retryable
+
+
+async def test_each_run_of_a_step_is_counted_once():
+    """`Send(node, state)` hands a sub-graph the whole parent state; the
+    append-only channels must not come back echoed, or a step's runs — which
+    bound its retries — and its errors are counted several times. → 0194"""
+    from conftest import FakeLLM, plan_json
+    from langgraph.checkpoint.memory import MemorySaver
+    from support import OneStep
+
+    from jobsmith.dag.builder import build_agent
+    from jobsmith.dag.deps import Deps
+    from jobsmith.dag.profile import AgentProfile as Profile
+
+    class Step(OneStep):
+        runs = 0
+
+        async def work(self, state):
+            if self.spec.name == "b":
+                Step.runs += 1
+                return self._emit_failure("the model call failed", retryable=True)
+            return self._emit_success({"echo": self.spec.name})
+
+    llm = FakeLLM({"planner": plan_json("a", "b", "c", deps={"b": ["a"], "c": ["b"]})},
+                  default="an answer long enough to pass the length floor")
+    graph = build_agent(Deps(llm=llm), CapabilityRegistry([Step(n) for n in "abc"]),
+                        profile=Profile(max_step_retries=2), checkpointer=MemorySaver())
+    out = await graph.ainvoke({"query": "q", "job_id": "n1"},
+                              config={"configurable": {"thread_id": "n1"}})
+    assert out["completed_capabilities"] == ["a", "b", "b", "b", "c"]
+    assert Step.runs == 3 and len(out["errors"]) == 3

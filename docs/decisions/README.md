@@ -111,6 +111,7 @@ current and writes the records a merged PR forgot, marked as reconstructed.
 | 0187 | [A FAILED job says why as data, and "retryable" is what a resume answers](0187-structured-failure.md) | `Job.failure` = kind (`raised`/`interrupted`/`declared`/`no_result`/`unreadable`), `pending`, `retryable` = `bool(pending)`, the resume gate's test; every FAILED through `_fail` | accepted |
 | 0189 | [An interrupted job is relaunched only where its graph allows it, by the daemon, once](0189-orphan-relaunch.md) | `GraphSpec.relaunch` (0 = never) bounds attempts; `relaunch_interrupted` from `serve` only; claimed on a shared store (lease, one heartbeat, re-read) | accepted |
 | 0191 | [A step that failed transiently runs again before its dependents; no replanning](0191-repair-transient-steps.md) | `_emit_failure(retryable=True)` (a raised model call, never an empty answer); executor re-dispatches within `max_step_retries`, counted in `completed_capabilities`; replan left out | accepted |
+| 0194 | [A capability is Sent the parent state without the append-only channels](0194-send-without-appended-channels.md) | `Send` strips `completed_capabilities`/`errors`: a sub-graph echoed them back and the parent appended them again, miscounting the runs 0191 bounds | accepted |
 
 ### Issues cited without a record of their own
 
