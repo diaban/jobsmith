@@ -65,7 +65,7 @@ Leakage gates (`make leak-check`, must return nothing): no `banking|banquier|vot
 
 ### The inbound port (`service.py`)
 
-`AgentService` is **the** use-case surface of the application — sessions and jobs — and `LocalAgentService` is its in-process implementation over a composed `AgentApp`. Every entrypoint is an *adapter* over it, never a second implementation:
+`AgentService` is **the** use-case surface — `JobService` + `ChatService`; the jobs half loads no chat — and `LocalAgentService` its in-process implementation over an `AgentApp`. Every entrypoint is an *adapter* over it, never a second implementation:
 
 | adapter | backing |
 |---|---|

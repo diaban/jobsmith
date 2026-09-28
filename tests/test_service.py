@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import subprocess
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -39,7 +41,10 @@ from jobsmith.engine.models import JobStatus
 from jobsmith.service import (
     AgentService,
     BinaryDeliverable,
+    ChatService,
+    JobService,
     LocalAgentService,
+    LocalJobService,
     ServiceUnavailable,
 )
 
@@ -48,6 +53,24 @@ def test_both_backings_fully_implement_the_port():
     for backing in (DaemonClient, EmbeddedClient):
         assert issubclass(backing, AgentService)
         assert not inspect.isabstract(backing), f"{backing.__name__} leaves the port unimplemented"
+
+
+def test_the_port_is_a_jobs_half_and_a_chat_half():
+    """`AgentService` is both; the jobs half loads nothing of the conversation
+    (→ docs/design/core-v1.md, finding 9)."""
+    assert issubclass(AgentService, JobService) and issubclass(AgentService, ChatService)
+    loaded = subprocess.run(
+        [sys.executable, "-c", "import sys, jobsmith.service; print(sorted(m for m in "
+         "sys.modules if m.startswith(('jobsmith.chat', 'langchain.')) or m == 'langchain'))"],
+        capture_output=True, text=True, timeout=120)
+    assert loaded.returncode == 0, loaded.stderr
+    assert loaded.stdout.strip() == "[]"
+
+
+async def test_the_jobs_half_serves_jobs_with_no_chat(store, checkpointer, tmp_path):
+    service = LocalJobService(make_manager(store, checkpointer, tmp_path))
+    job = await service.launch_job("just answer me", formats=[], wait=10)
+    assert job["status"] == "done" and job["final_answer"]
 
 
 def test_the_api_adds_no_use_case_of_its_own():
