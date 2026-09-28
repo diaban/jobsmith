@@ -291,6 +291,7 @@ def record_usage(
     output_tokens: int = 0,
     cached_input_tokens: int = 0,
     scope: str | None = None,
+    book: bool = True,
 ) -> Usage:
     """Book one LLM call. Called by adapters; a no-op with no ledger installed.
 
@@ -306,9 +307,23 @@ def record_usage(
     )
     usage = replace(usage, cost_usd=estimate_cost(model, usage)) if model else usage
     ledger = _current_ledger.get()
-    if ledger is not None:
+    if book and ledger is not None:
         ledger.add(scope or current_scope(), usage)
     return usage
+
+
+def usage_of(message: Any, *, model: str = "") -> Usage:
+    """What one LangChain model answer says it cost (`usage_metadata`), cache
+    reads kept apart; an empty `Usage` when it says nothing."""
+    usage = getattr(message, "usage_metadata", None)
+    if not usage:
+        return Usage()
+    meta = getattr(message, "response_metadata", None) or {}
+    name = meta.get("model_name") or meta.get("model") or model
+    cached = int((usage.get("input_token_details") or {}).get("cache_read") or 0)
+    return record_usage(name, input_tokens=int(usage.get("input_tokens") or 0) - cached,
+                        output_tokens=int(usage.get("output_tokens") or 0),
+                        cached_input_tokens=cached, book=False)
 
 
 class ModelCallUsage(BaseCallbackHandler):
@@ -324,19 +339,14 @@ class ModelCallUsage(BaseCallbackHandler):
     run_inline = True
 
     def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
+        model = (response.llm_output or {}).get("model_name") or ""
         for generations in response.generations:
             for generation in generations:
-                message = getattr(generation, "message", None)
-                usage = getattr(message, "usage_metadata", None)
-                if not usage:
-                    continue
-                meta = getattr(message, "response_metadata", None) or {}
-                model = (meta.get("model_name") or meta.get("model")
-                         or (response.llm_output or {}).get("model_name") or "")
-                cached = int((usage.get("input_token_details") or {}).get("cache_read") or 0)
-                record_usage(model, input_tokens=int(usage.get("input_tokens") or 0) - cached,
-                             output_tokens=int(usage.get("output_tokens") or 0),
-                             cached_input_tokens=cached)
+                spent = usage_of(getattr(generation, "message", None), model=model)
+                if spent:
+                    ledger = _current_ledger.get()
+                    if ledger is not None:
+                        ledger.add(current_scope(), spent)
 
 
 __all__ = [
@@ -351,6 +361,7 @@ __all__ = [
     "estimate_cost",
     "price_for",
     "record_usage",
+    "usage_of",
     "reset_price_overrides",
     "usage_ledger",
 ]
