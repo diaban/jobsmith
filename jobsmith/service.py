@@ -1,8 +1,11 @@
 """The inbound port: everything a front-end can ask of a running jobsmith.
 
 `AgentService` is the interface; `LocalAgentService` is the in-process
-implementation over a composed `AgentApp`. Every entrypoint is an *adapter*
-over this port, never a second implementation of the use cases:
+implementation over a composed `AgentApp`. Each is two halves, `JobService`
+and `ChatService` (and `LocalJobService`, `LocalChatService`): the jobs half
+loads nothing of the conversation, so a deployment that serves no chat does
+without it. Every entrypoint is an *adapter* over this port, never a second
+implementation of the use cases:
 
     cli/repl.py + cli/main.py   terminal      -> AgentService
     api/app.py                  HTTP + SSE    -> LocalAgentService
@@ -25,20 +28,12 @@ import dataclasses
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from .chat.runner import (
-    ChatEvent,
-    ChatRunner,
-    JobPlanned,
-    JobStarted,
-    Message,
-    Proposal,
-    Token,
-    ToolFinished,
-    ToolStarted,
-)
 from .dag.report import is_binary_format
+
+if TYPE_CHECKING:           # the chat half is loaded by the chat half alone
+    from .chat.runner import ChatEvent, ChatRunner
 
 # ------------------------------------------------------------------ the port
 
@@ -120,14 +115,15 @@ class ChatStreamError(RuntimeError):
 # and a front-end deserializing a dataclass would be a third implementation.
 # The two terminal shapes are byte-for-byte what `send`/`approve` have always
 # returned, which is what lets `send` be *defined* as draining this stream.
-_EVENT_TYPES: dict[type, str] = {
-    Token: "token",
-    ToolStarted: "tool_started",
-    ToolFinished: "tool_finished",
-    JobStarted: "job_started",
-    JobPlanned: "job_planned",
-    Message: "message",
-    Proposal: "proposal",
+# Keyed by class name, so the jobs half of this module never loads the chat.
+_EVENT_TYPES: dict[str, str] = {
+    "Token": "token",
+    "ToolStarted": "tool_started",
+    "ToolFinished": "tool_finished",
+    "JobStarted": "job_started",
+    "JobPlanned": "job_planned",
+    "Message": "message",
+    "Proposal": "proposal",
 }
 
 TERMINAL_EVENTS = ("message", "proposal")
@@ -135,7 +131,7 @@ TERMINAL_EVENTS = ("message", "proposal")
 
 def as_event(event: ChatEvent) -> dict:
     """One flow event as the dict the port carries."""
-    return {"type": _EVENT_TYPES[type(event)]} | dataclasses.asdict(event)
+    return {"type": _EVENT_TYPES[type(event).__name__]} | dataclasses.asdict(event)
 
 
 async def terminal_of(events: AsyncIterator[dict]) -> dict:
@@ -155,24 +151,12 @@ async def terminal_of(events: AsyncIterator[dict]) -> dict:
     return terminal
 
 
-class AgentService(ABC):
-    """What any front-end needs. Dict shapes match the HTTP API.
+class ChatService(ABC):
+    """The conversation half of the port: sessions, and turns as flows.
 
-    Three exceptions are part of this interface, and they are the whole of
-    what a caller may plan for: `BinaryDeliverable` (`get_report` was asked
-    for a file that is not text), `ChatStreamError` (a turn did not arrive
-    whole) and `ServiceUnavailable` (the backing could not be reached).
-    Every one of them reads identically on both backings, which is what lets
-    a front-end handle them by name instead of guarding every call. Anything
-    else that escapes a call is a bug in this process — it is deliberately
-    not translated, so it surfaces as itself.
-
-    `subscribe` is the exception to the exception: it says the same fact as a
-    value, because a queue is what its consumer is awaiting (see below).
+    A deployment that serves no chat does without it (docs/design/core-v1.md,
+    step 8): the jobs half is a port of its own.
     """
-
-    mode: str = "local"
-    persistent: bool = False   # do jobs outlive this process?
 
     # -- conversation --
 
@@ -216,6 +200,14 @@ class AgentService(ABC):
 
     async def approve(self, session_id: str, approved: bool) -> dict:
         return await terminal_of(self.stream_approval(session_id, approved))
+
+
+class JobService(ABC):
+    """The jobs half of the port — usable with no chat at all: loading it loads
+    nothing of the conversation (`chat/`, LangChain)."""
+
+    mode: str = "local"
+    persistent: bool = False   # do jobs outlive this process?
 
     # -- jobs --
 
@@ -369,36 +361,33 @@ class AgentService(ABC):
         return await self.get_job(matches[0]["job_id"])
 
 
+class AgentService(JobService, ChatService):
+    """What any front-end needs. Dict shapes match the HTTP API.
+
+    Three exceptions are part of this interface, and they are the whole of
+    what a caller may plan for: `BinaryDeliverable` (`get_report` was asked
+    for a file that is not text), `ChatStreamError` (a turn did not arrive
+    whole) and `ServiceUnavailable` (the backing could not be reached).
+    Every one of them reads identically on both backings, which is what lets
+    a front-end handle them by name instead of guarding every call. Anything
+    else that escapes a call is a bug in this process — it is deliberately
+    not translated, so it surfaces as itself.
+
+    `subscribe` is the exception to the exception: it says the same fact as a
+    value, because a queue is what its consumer is awaiting (see below).
+    """
+
+
 # ------------------------------------------------------- in-process backing
 
 
-class LocalAgentService(AgentService):
-    """Runs the agent in this process.
+class LocalChatService(ChatService):
+    """The conversation half, in this process: a session per id, rebuilt from
+    the checkpointer when this process has not seen it yet."""
 
-    Live events and output files were once its private extras; they are part
-    of the port now (#48). The HTTP adapter had always republished them
-    (`/events`, `/jobs/{id}/outputs/...`), so what was missing was the other
-    half — a remote backing that consumes them — and a front-end that had to
-    ask which backing it held before it could show progress was a front-end
-    written against two ports.
-
-    `mode`/`persistent` describe it as a CLI backing: used directly, jobs stop
-    when this process exits. Behind a daemon the same object is long-lived —
-    that is exactly what `DaemonClient.persistent = True` reports.
-    """
-
-    mode = "embedded"
-    persistent = False
-
-    def __init__(self, manager: Any, session_factory: Any, *, on_close: Any = None):
-        self.manager = manager
+    def __init__(self, session_factory: Any):
         self.session_factory = session_factory
-        self._on_close = on_close
         self._sessions: dict[str, Any] = {}
-
-    async def aclose(self) -> None:
-        if self._on_close is not None:
-            await self._on_close()
 
     # -- conversation --
 
@@ -406,6 +395,8 @@ class LocalAgentService(AgentService):
         """Sessions are rebuildable: this registry is only a cache, the actual
         conversation lives in the checkpointer under thread_id=session_id. So a
         client can keep chatting on its session id across a daemon restart."""
+        from .chat.runner import ChatRunner
+
         if session_id not in self._sessions:
             self._sessions[session_id] = self.session_factory(session_id).build()
         return ChatRunner(self._sessions[session_id])
@@ -429,6 +420,21 @@ class LocalAgentService(AgentService):
     async def stream_approval(self, session_id: str, approved: bool) -> AsyncIterator[dict]:
         async for event in self._runner(session_id).resume(session_id, approved):
             yield as_event(event)
+
+
+class LocalJobService(JobService):
+    """The jobs half, in this process, over the DAG's jobs (`dag/jobs.py`)."""
+
+    mode = "embedded"
+    persistent = False
+
+    def __init__(self, manager: Any, *, on_close: Any = None):
+        self.manager = manager
+        self._on_close = on_close
+
+    async def aclose(self) -> None:
+        if self._on_close is not None:
+            await self._on_close()
 
     # -- jobs --
 
@@ -529,3 +535,23 @@ class LocalAgentService(AgentService):
 
     def unsubscribe(self, queue: asyncio.Queue) -> None:
         self.manager.unsubscribe(queue)
+
+
+class LocalAgentService(LocalJobService, LocalChatService, AgentService):
+    """Runs the agent in this process.
+
+    Live events and output files were once its private extras; they are part
+    of the port now (#48). The HTTP adapter had always republished them
+    (`/events`, `/jobs/{id}/outputs/...`), so what was missing was the other
+    half — a remote backing that consumes them — and a front-end that had to
+    ask which backing it held before it could show progress was a front-end
+    written against two ports.
+
+    `mode`/`persistent` describe it as a CLI backing: used directly, jobs stop
+    when this process exits. Behind a daemon the same object is long-lived —
+    that is exactly what `DaemonClient.persistent = True` reports.
+    """
+
+    def __init__(self, manager: Any, session_factory: Any, *, on_close: Any = None):
+        LocalJobService.__init__(self, manager, on_close=on_close)
+        LocalChatService.__init__(self, session_factory)
