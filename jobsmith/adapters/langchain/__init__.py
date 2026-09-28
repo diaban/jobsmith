@@ -4,6 +4,7 @@ their endings once, in its thread. Imports the engine and LangChain, nothing
 of the bench."""
 from .delivery import DELIVERED_CHANNEL, DeliveredState, JobDeliveryMiddleware, inject, told
 from .launch import launch_tool, told_in_thread
+from .progress import JobProgressMiddleware
 
-__all__ = ["DELIVERED_CHANNEL", "DeliveredState", "JobDeliveryMiddleware", "inject",
+__all__ = ["DELIVERED_CHANNEL", "DeliveredState", "JobDeliveryMiddleware", "JobProgressMiddleware", "inject",
            "launch_tool", "told", "told_in_thread"]

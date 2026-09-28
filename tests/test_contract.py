@@ -178,3 +178,65 @@ def test_an_ending_is_told_by_its_attempt_whatever_the_clocks_say():
                   updated_at="1970-01-01T00:00:00+00:00")
     assert not told(resumed, {"j": 1}) and told(resumed, {"j": 2})
     assert not told(resumed, {}) and not told(resumed, {"j": "2026-09-28T21:00:00"})  # pre-#170 thread
+async def test_progress_is_told_when_it_moved_and_only_then():
+    """The adapter alone, on a graph that publishes nothing: its root steps
+    reach the model on the turn after they moved, and not again while nothing
+    moves (#171)."""
+    import asyncio
+    from typing import TypedDict
+
+    from conftest import ScriptedChatModel
+    from langchain.agents import create_agent
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.graph import END, START, StateGraph
+    from langgraph.store.memory import InMemoryStore
+    from support import until
+
+    from jobsmith.adapters.langchain import JobProgressMiddleware
+    from jobsmith.engine.delivery import Pulled
+    from jobsmith.engine.graph import GraphSpec
+    from jobsmith.engine.manager import JobManager
+
+    gate = asyncio.Event()
+
+    class State(TypedDict, total=False):
+        n: int
+
+    async def held(state):
+        await gate.wait()
+        return {"n": 2}
+
+    graph = StateGraph(State)
+    graph.add_node("fetch", lambda state: {"n": 1})
+    graph.add_node("held", held)
+    graph.add_edge(START, "fetch")
+    graph.add_edge("fetch", "held")
+    graph.add_edge("held", END)
+    jobs = JobManager(GraphSpec("slow", graph.compile(checkpointer=MemorySaver())),
+                      InMemoryStore(), deliverers=[Pulled("conversation")])
+    address = {"kind": "conversation", "id": "t1"}
+    job = await jobs.create_job({"n": 0}, label="the slow one", reply_to=address)
+    jobs.start_job(job.job_id)
+
+    async def fetched():
+        return "fetch" in (await jobs.get_job(job.job_id)).steps
+
+    await until(fetched, what="the first step persisted while the run is held")
+    model = ScriptedChatModel(responses=[AIMessage("It is fetching."), AIMessage("Still on it.")])
+    agent = create_agent(model, tools=[], middleware=[JobProgressMiddleware(jobs, address)],
+                         checkpointer=MemorySaver())
+    cfg = {"configurable": {"thread_id": "t1"}}
+    await agent.ainvoke({"messages": [HumanMessage("how is it going?")]}, cfg)
+    await agent.ainvoke({"messages": [HumanMessage("and now?")]}, cfg)
+    gate.set()
+
+    async def done():
+        return (await jobs.get_job(job.job_id)).status.value == "done"
+
+    await until(done, what="the held run to finish")
+
+    told = [[m.content for m in call if isinstance(m, SystemMessage)
+             and "[job progress]" in m.content] for call in model.calls]
+    assert len(told[0]) == 1 and "the slow one" in told[0][0] and "fetch" in told[0][0]
+    assert told[1] == []                                # nothing moved: nothing said

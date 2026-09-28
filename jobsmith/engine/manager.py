@@ -410,8 +410,9 @@ class JobManager:
 
         A fact is recorded as it arrives, whatever it says (`engine/facts.py`):
         persisted under its key, stamped with when it came, and broadcast — a
-        fact is progress. A root node that finished is noted, and travels with
-        the next write.
+        fact is progress. So is a root node that finished: noted and persisted,
+        one event per step, so a graph that publishes no facts still shows how
+        far it has got while it runs (#171).
         """
         match update:
             case Fact(key, value):
@@ -421,6 +422,7 @@ class JobManager:
                 await self._persist_summary(job)
             case NodeFinished(node):
                 job.steps[node] = now_iso()
+                await self._persist_summary(job)
             case _:
                 pass
 
