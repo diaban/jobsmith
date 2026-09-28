@@ -98,11 +98,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 from langgraph.types import Command, interrupt
 
-from ..adapters.langchain import DELIVERED_CHANNEL
+from ..adapters.langchain import told_in_thread
 from ..dag.jobs import DagJob, DagJobs
 from ..dag.report import (
     available_formats,
@@ -116,7 +116,7 @@ from ..dag.state import (
     SOURCE_FILES_INPUT_KEY,
     TERMINAL_UNANSWERED,
 )
-from ..engine.models import JobStatus, now_iso
+from ..engine.models import JobStatus
 from .runner import CUSTOM_ANSWER, CUSTOM_JOB_PLANNED, CUSTOM_JOB_STARTED
 
 #: How much of a referenced job's query the notice carries (#104): enough to
@@ -721,11 +721,8 @@ def make_job_tools(
             write({"event": CUSTOM_ANSWER, "text": settled.final_answer + "\n\n"})
         # Told right here, in the thread, with its result: so the completion
         # notice never announces, one turn later, a job the user has already
-        # been handed the answer to. The mark follows (`JobNotificationMiddleware`).
-        return Command(update={
-            "messages": [ToolMessage(_delivered(settled), tool_call_id=runtime.tool_call_id)],
-            DELIVERED_CHANNEL: {settled.job_id: now_iso()},
-        })
+        # been handed the answer to (`adapters/langchain`).
+        return told_in_thread(settled.job_id, _delivered(settled), runtime.tool_call_id or "")
 
     @tool
     async def job_status(job_id_prefix: str) -> str:
