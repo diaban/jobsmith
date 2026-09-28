@@ -16,12 +16,21 @@ Two ways a kind can be delivered, both here:
   it was, once the receiver has it. The engine gives such a kind its name and
   nothing else; what the address means is the registrant's.
 
+A third way is pushed (#166): `Pushed` is a kind the engine hands the job to
+itself — a webhook (`Webhook`), a queue — and never on the persist path. The
+ending is saved first; the push runs in a task of its own and is retried with
+a capped exponential backoff until it succeeds; only then is `delivered_at`
+stamped. Until then the record says it is pending, so a process that stops
+leaves it to the next start (`JobManager.recover_interrupted`) and nothing
+is lost. Two processes may both push one ending: at least once, by job id.
+
 Every address has a flat `key` the store can filter on (`pull:A1`): a nested
 filter fails on SQLite, a dotted one finds nothing in memory (measured,
 core-v1.md), and a flat string matches on every backend.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Protocol
 
 from .models import Job
@@ -76,4 +85,70 @@ class Pulled:
         return False
 
 
-__all__ = ["NONE", "Deliverer", "Nobody", "Pulled", "nobody"]
+class Pushed:
+    """A kind the engine pushes to, off the persist path (see the module).
+
+    `push(job)` hands one ending over and returns once the receiver has it;
+    it raises when it could not, and is then called again after `first_retry`
+    seconds, doubled each time up to `max_retry` — for as long as this
+    process lives, and from the next start after that. What it is given is
+    the record's summary with its id; `(job_id, attempt)` is what a receiver
+    deduplicates on, since a resumed job ends again.
+    """
+
+    kind: str = "push"
+    first_retry: float = 1.0
+    max_retry: float = 60.0
+
+    def key(self, reply_to: dict[str, Any]) -> str:
+        raise NotImplementedError
+
+    async def deliver(self, job: Job) -> bool:
+        return False                        # never inline: `JobManager` pushes
+
+    async def push(self, job: Job) -> None:
+        raise NotImplementedError
+
+    def delays(self):
+        """The waits between attempts: doubling, then `max_retry` for ever."""
+        delay = self.first_retry
+        while True:
+            yield delay
+            delay = min(delay * 2, self.max_retry)
+
+
+class Webhook(Pushed):
+    """`{"kind": "webhook", "url": …}`: the ending is POSTed there as JSON, and
+    any 2xx is delivered. Only to a URL under one of `allowed` — the prefixes
+    this deployment declared it may reach — since the address comes from
+    whoever launched the job. `client` is an `httpx.AsyncClient` (`.[api]`),
+    made on first use when not given."""
+
+    kind = "webhook"
+
+    def __init__(self, allowed: Sequence[str], *, client: Any = None, timeout: float = 10.0):
+        if not allowed:
+            raise ValueError("a webhook deliverer needs the URL prefixes it may reach")
+        self.allowed = tuple(allowed)
+        self._client = client
+        self.timeout = timeout
+
+    def key(self, reply_to: dict[str, Any]) -> str:
+        url = reply_to.get("url")
+        if not isinstance(url, str) or not url.startswith(self.allowed):
+            raise ValueError(f"a webhook address needs a \"url\" under {list(self.allowed)}: "
+                             f"{reply_to!r}")
+        return f"{self.kind}:{url}"
+
+    async def push(self, job: Job) -> None:
+        if self._client is None:
+            import httpx
+
+            self._client = httpx.AsyncClient(timeout=self.timeout)
+        response = await self._client.post(
+            job.reply_to["url"], json=job.summary() | {"job_id": job.job_id},
+            headers={"Idempotency-Key": f"{job.job_id}:{job.attempt}"})
+        response.raise_for_status()
+
+
+__all__ = ["NONE", "Deliverer", "Nobody", "Pulled", "Pushed", "Webhook", "nobody"]
