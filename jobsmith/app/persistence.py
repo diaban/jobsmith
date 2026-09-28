@@ -308,6 +308,17 @@ def _is_concurrent_setup(error: Exception) -> bool:
         "UNIQUE constraint failed", "duplicate column", "already exists", "locked"))
 
 
+# The advisory-lock key every jobsmith process takes around its Postgres setup:
+# any fixed bigint, the same everywhere ("jobsmith" read as a number).
+_SETUP_LOCK = int.from_bytes(b"jobsmith", "big") >> 1
+
+
+async def _took_setup_lock(conn: Any) -> bool:
+    cursor = await conn.execute("SELECT pg_try_advisory_lock(%s)", (_SETUP_LOCK,))
+    row = await cursor.fetchone()
+    return bool(row and row[0])
+
+
 async def _open_postgres(dsn: str, stack: AsyncExitStack, *, max_size: int = 10) -> tuple[Any, Any]:
     try:
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -334,9 +345,22 @@ async def _open_postgres(dsn: str, stack: AsyncExitStack, *, max_size: int = 10)
     stack.push_async_callback(pool.close)
 
     checkpointer = AsyncPostgresSaver(pool)
-    await checkpointer.setup()          # creates tables / runs migrations, idempotent
     store = AsyncPostgresStore(pool)
-    await store.setup()
+    # Each setup reads its migration version, then applies what is missing
+    # with nothing held in between, so two processes opening a FRESH database
+    # collide on the DDL (UniqueViolation) — measured, every time, on a new
+    # database (→ 0169). Unlike SQLite, Postgres has a lock for that: a
+    # session advisory lock on a connection of its own, which closing
+    # releases whatever happens, so the second process waits and then finds
+    # every migration applied. It is TRIED, never waited for in the server:
+    # the migrations' `CREATE INDEX CONCURRENTLY` waits for every statement
+    # in flight, a blocked `pg_advisory_lock` is one, and the two then wait
+    # on each other forever — measured, undetected by Postgres.
+    async with await AsyncConnection.connect(dsn, autocommit=True) as lock:
+        while not await _took_setup_lock(lock):
+            await asyncio.sleep(SETUP_PAUSE)
+        await checkpointer.setup()      # creates tables / runs migrations, idempotent
+        await store.setup()
     print(f"[persistence: postgres — pool of {max_size} on {_safe_dsn(dsn)}]", file=sys.stderr)
     return checkpointer, store
 

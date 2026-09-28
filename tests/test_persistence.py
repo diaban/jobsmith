@@ -1,7 +1,7 @@
 """Persistence backends: state survives a process restart; orphans are settled.
 
-SQLite stands in for the real backends here (Postgres shares the same
-checkpointer/store contract but needs a server — it is exercised manually).
+SQLite stands in for the real backends here; the Postgres cases need a server
+and run when `$JOBSMITH_TEST_PG` names one, as CI's service container does.
 """
 from __future__ import annotations
 
@@ -250,3 +250,40 @@ def test_the_test_process_never_reads_a_dot_env(monkeypatch, tmp_path):
     finally:                        # whatever happened, leak nothing onward
         for name in ("JOBSMITH_DB", "JOBSMITH_SANDBOX_PROBE", "JOBSMITH_LLM"):
             os.environ.pop(name, None)
+
+
+@pytest.fixture
+async def fresh_postgres():
+    """A database created for this test on the server `$JOBSMITH_TEST_PG` names,
+    dropped after: the only way to reach a first setup on a shared server."""
+    if not (dsn := os.environ.get("JOBSMITH_TEST_PG")):
+        pytest.skip("set $JOBSMITH_TEST_PG to a Postgres DSN")
+    import uuid
+    from urllib.parse import urlsplit, urlunsplit
+
+    import psycopg
+
+    name = f"jobsmith_fresh_{uuid.uuid4().hex[:12]}"
+    async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as admin:
+        await admin.execute(f'CREATE DATABASE "{name}"')
+        try:
+            yield urlunsplit(urlsplit(dsn)._replace(path=f"/{name}"))
+        finally:
+            await admin.execute(f'DROP DATABASE "{name}" WITH (FORCE)')
+
+
+async def test_apps_opening_a_fresh_postgres_together_all_get_it(fresh_postgres):
+    """Each app's `setup()` reads the migration version then applies what is
+    missing, so several opening a new database at once collided on the DDL
+    (`UniqueViolation` on `checkpoint_migrations`) — every CI run on a fresh
+    service container, every first start of two processes. → 0169"""
+    import asyncio
+    from contextlib import AsyncExitStack
+
+    from jobsmith.app.persistence import open_persistence
+
+    async def open_one() -> None:
+        async with AsyncExitStack() as stack:
+            await open_persistence(fresh_postgres, stack)
+
+    await asyncio.gather(*(open_one() for _ in range(5)))
