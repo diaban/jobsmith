@@ -649,7 +649,7 @@ handle per-provider tool formats), the planner DAG uses a dependency-light
 | `GET /jobs/{id}/outputs[/{name}]` · `/report` | the deliverables (`/report` is text-only: `415` on a PDF, pointing at the download) |
 | `GET /events` | SSE stream of job progress |
 
-An agent that is a graph of its own (`AgentDefinition.graph`) is served by the engine's door instead of the DAG's and the chat's: `POST /engine/jobs[?wait=S]` with `{input, graph, label, reply_to}` — the input as its graph takes it — then `GET /engine/jobs[/{id}]`, `POST /engine/jobs/{id}/cancel` and `/resume`, and `GET /events`.
+An agent that is a graph of its own (`AgentDefinition.graph`) is served by the engine's door instead of the DAG's and the chat's: `POST /engine/jobs[?wait=S]` with `{input, graph, label, reply_to}` — the input as its graph takes it — then `GET /engine/jobs[/{id}]`, `POST /engine/jobs/{id}/cancel` and `/resume`, and `GET /events`. A run that pauses at a LangGraph `interrupt()` is `needs_input`, what it asks in `asked`; `POST /engine/jobs/{id}/answer` with `{answer}` runs it on.
 
 ---
 

@@ -11,6 +11,8 @@ yields three updates:
     Output         what the run returned: the last root `values`, restricted
                    to the graph's output channels — exactly what `ainvoke`
                    would have returned. Only a run that completed has one.
+    Interrupted    the run paused at a LangGraph `interrupt()` instead: what
+                   it asks, and no Output (#167)
 
 A sub-graph's own steps and states are its business and never surface; its
 facts do, because `subgraphs=True` is what carries them to the parent's
@@ -28,6 +30,8 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
+
+from langgraph.types import Command
 
 from .facts import FACT_KEY
 from .usage import ModelCallUsage
@@ -52,7 +56,13 @@ class Output:
     value: Any
 
 
-JobUpdate = NodeFinished | Fact | Output
+@dataclass(frozen=True)
+class Interrupted:
+    """The run paused at an `interrupt()`: what it asks, one value per interrupt."""
+    asked: list[Any]
+
+
+JobUpdate = NodeFinished | Fact | Output | Interrupted
 
 
 class GraphRunner:
@@ -89,6 +99,11 @@ class GraphRunner:
         async for update in self._translate(None, job_id):
             yield update
 
+    async def answer(self, job_id: str, answer: Any) -> AsyncIterator[JobUpdate]:
+        """Re-enter a run paused at an `interrupt()`, which returns `answer`."""
+        async for update in self._translate(Command(resume=answer), job_id):
+            yield update
+
     async def pending(self, job_id: str) -> tuple[str, ...]:
         """Nodes the thread would run next — what a resume would execute.
 
@@ -102,6 +117,7 @@ class GraphRunner:
         """LangGraph's stream → the three updates above."""
         output: Any = None
         returned = False                    # a root `values` was seen
+        asked: list[Any] | None = None      # the run paused: what it asks
         async for namespace, mode, chunk in self.graph.astream(
             input,
             config=self._config(job_id),
@@ -115,10 +131,16 @@ class GraphRunner:
             elif namespace:
                 continue                    # a sub-graph's own steps and states
             elif mode == "updates":
+                if "__interrupt__" in chunk:
+                    asked = [pause.value for pause in chunk["__interrupt__"]]
                 for node in chunk:
                     if not node.startswith("__"):       # LangGraph's own markers
                         yield NodeFinished(node)
             elif mode == "values":
                 output, returned = chunk, True
-        if returned:
+        if asked is not None:
+            # Its last `values` carries the interrupts, not a result: a paused
+            # run returned nothing, and it read as "its result is not JSON".
+            yield Interrupted(asked)
+        elif returned:
             yield Output(output)

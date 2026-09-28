@@ -17,6 +17,7 @@ class JobStatus(StrEnum):
     DONE = "done"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    NEEDS_INPUT = "needs_input"             # paused at an interrupt, waiting for an answer
 
 
 @dataclass
@@ -34,6 +35,7 @@ class Job:
     input: Any = None                       # what the graph was given, as given
     result: Any = None                      # what `GraphSpec.result` made of its output
     error: str | None = None                # why it FAILED (never empty then)
+    asked: Any = None                       # what it asks while NEEDS_INPUT (JSON)
     # Where its ending goes (`engine/delivery.py`): JSON, `{"kind": …}`, and
     # the flat key its deliverer indexes it by; stamped once delivered.
     reply_to: dict[str, Any] = field(default_factory=lambda: {"kind": "none"})
@@ -64,6 +66,7 @@ class Job:
             "input": self.input,
             "result": self.result,
             "error": self.error,
+            "asked": self.asked,
             "reply_to": self.reply_to,
             "reply_key": self.reply_key,
             "delivered_at": self.delivered_at,

@@ -29,7 +29,8 @@ against this API.
 - Engine:     for an agent that is a graph of its own (#165), the engine's
   port instead of the DAG's and the chat's: POST /engine/jobs {input, graph,
   label, reply_to} (`?wait=S`), GET /engine/jobs (+?status), GET
-  /engine/jobs/{id}, POST /engine/jobs/{id}/cancel and /resume, and /events.
+  /engine/jobs/{id}, POST /engine/jobs/{id}/cancel, /resume and /answer
+  {answer} (a job paused at an interrupt, `needs_input`), and /events.
   Its own paths: its bodies are not the DAG's, and a client of the wrong
   kind gets a 404 rather than a body read the wrong way.
 
@@ -75,6 +76,10 @@ class JobIn(BaseModel):
     document_name: str = ""
     document_title: str = ""
     formats: list[str] | None = None
+
+
+class AnswerIn(BaseModel):
+    answer: Any = None              # what the paused run's `interrupt()` returns
 
 
 class EngineJobIn(BaseModel):
@@ -177,6 +182,14 @@ def _engine_routes(app: FastAPI, engine: LocalEngineService) -> None:
     async def resume_job(job_id: str):
         await _job_or_404(job_id)
         result = await engine.resume_job(job_id)
+        if result.get("error"):
+            raise HTTPException(409, result["error"])
+        return result
+
+    @app.post("/engine/jobs/{job_id}/answer")
+    async def answer_job(job_id: str, body: AnswerIn):
+        await _job_or_404(job_id)
+        result = await engine.answer_job(job_id, body.answer)
         if result.get("error"):
             raise HTTPException(409, result["error"])
         return result
