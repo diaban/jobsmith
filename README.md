@@ -602,14 +602,18 @@ connection is a bug waiting to happen.
 
 ```
 jobsmith/
-  engine/       the job engine: use cases, runner, repository, ownership, events, usage, artifacts
+  engine/       ★ the job engine, the product: use cases, runner, repository,
+                  ownership, events, usage — runs any LangGraph graph as a Job
+  artifacts/    files as facts: the per-job store, path safety
   dag/          the reference graph: router, planner, executor, generation, registry, reporters
+  adapters/
+    langchain/  the job ↔ conversation contract: the launch tool, delivery middleware
   chat/         conversational layer (LangChain create_agent) + job tools
   service.py    ★ the inbound port: what any front-end can ask of a running app
   api/          adapter — FastAPI: sessions, jobs, outputs, SSE
   cli/          adapter — daemon, clients, REPL, argparse entrypoint
   tui/          adapter — Textual: chat pane, job list, job detail
-  agents/       ★ what each agent IS — a capability pack + a profile
+  agents/       ★ what each agent IS — a capability pack + a profile, or a graph of its own
     default/      read_files/prior_jobs/documents → research → analysis
                   → critique, + slide_deck (a .pptx annex)
     banking/      a domain agent: its own capabilities, ports and adapters
@@ -641,7 +645,7 @@ handle per-provider tool formats), the planner DAG uses a dependency-light
 | `POST /sessions/{id}/approval` | answer a proposal — `{"approved": bool}` |
 | `.../messages/stream` · `.../approval/stream` | the same turn as SSE: `token`, `tool_started`, `tool_finished`, `job_started`, `job_planned`, then that same reply |
 | `GET /jobs` · `GET /jobs/{id}` | listing and full detail (plan, timings, results) |
-| `POST /jobs` · `POST /jobs/{id}/cancel` | direct launch, cancellation |
+| `POST /jobs[?wait=S]` · `POST /jobs/{id}/cancel` | direct launch (`wait` answers with the job once it settles or S seconds pass, whichever is first), cancellation |
 | `GET /jobs/{id}/outputs[/{name}]` · `/report` | the deliverables (`/report` is text-only: `415` on a PDF, pointing at the download) |
 | `GET /events` | SSE stream of job progress |
 
