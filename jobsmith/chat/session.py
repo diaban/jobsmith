@@ -20,17 +20,19 @@ from __future__ import annotations
 import os
 import sys
 import uuid
-from typing import Any
+from typing import Annotated, Any, NotRequired
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware import AgentMiddleware, AgentState, ExtendedModelResponse
 from langchain_core.messages import SystemMessage
+from langgraph.types import Command
 
-from ..dag.jobs import DagJob, DagJobs
+from ..dag.jobs import DagJob, DagJobs, session_address
 from ..dag.state import TERMINAL_UNANSWERED
-from ..engine.models import JobStatus
+from ..engine.models import JobStatus, now_iso
 from .runner import CUSTOM_ANSWER
 from .tools import (
+    DELIVERED_CHANNEL,
     IN_FLIGHT,
     make_job_tools,
     progress_line,
@@ -113,14 +115,37 @@ def pick_inline_answer_max(explicit: int | None = None) -> int:
         return DEFAULT_INLINE_ANSWER_MAX
 
 
+def _merge(told: dict[str, str], more: dict[str, str]) -> dict[str, str]:
+    return {**told, **more}
+
+
+class DeliveredState(AgentState):
+    """The thread's record of the jobs it was told of (`DELIVERED_CHANNEL`):
+    job id → when. A job whose ending is LATER than that (resumed since) is
+    news again."""
+
+    delivered_jobs: NotRequired[Annotated[dict[str, str], _merge]]
+
+
+def _told(job: Any, told: dict[str, str]) -> bool:
+    """This ending of the job is already in the thread."""
+    return told.get(job.job_id, "") > job.updated_at
+
+
 class JobNotificationMiddleware(AgentMiddleware):
     """Injects job notices into the model request, then records them as seen —
     only once the model has actually received them.
 
     Two notices, for two different needs:
 
-    - **completion** must never be missed, so it is pushed and marked announced
-      exactly once, persisted on the job itself;
+    - **completion** must never be missed, and never told twice: a job's id
+      enters the thread's `DELIVERED_CHANNEL` in the same update as the
+      model's answer to its notice — the same checkpoint — and a job already
+      there is never injected again. `delivered_at` is only the index of it,
+      marked AFTER that checkpoint (`aafter_model`), and repaired on the next
+      call when a crash came in between. So a crash before the checkpoint
+      tells it again (the failed turn left nothing), and one after it does
+      not: exactly once in the thread (docs/design/core-v1.md, G5);
     - **progress** is pushed too, but only on the turns where it *changed*
       (`progress_signature`), and remembered in memory only. Pushing it every
       turn would spend tokens to repeat yesterday's news; leaving it to a tool
@@ -132,6 +157,8 @@ class JobNotificationMiddleware(AgentMiddleware):
     accumulates in the persisted thread: a job reporting progress on five
     consecutive turns leaves zero notices behind it.
     """
+
+    state_schema = DeliveredState
 
     def __init__(
         self,
@@ -313,8 +340,25 @@ class JobNotificationMiddleware(AgentMiddleware):
                 f"Full answer (synthesize it, do not paste it):\n{job.final_answer}")
         return "\n".join(lines)
 
-    async def _finished_notice(self) -> tuple[SystemMessage | None, list[DagJob]]:
-        finished = await self.manager.pending_deliveries(self.session_id)
+    async def _mark_told(self, told: dict[str, str]) -> None:
+        """Index what the thread already records: `delivered_at` for every
+        settled job whose ending is in the channel and not marked yet."""
+        if not told:
+            return
+        for job in await self.manager.engine.pending_deliveries(
+                session_address(self.session_id)):
+            if _told(job, told):
+                await self.manager.mark_delivered(job.job_id)
+
+    async def _finished_notice(
+        self, told: dict[str, str]
+    ) -> tuple[SystemMessage | None, list[DagJob]]:
+        pending = await self.manager.pending_deliveries(self.session_id)
+        # Told already, in a turn whose mark never came: index it, say nothing.
+        for job in pending:
+            if _told(job, told):
+                await self.manager.mark_delivered(job.job_id)
+        finished = [job for job in pending if not _told(job, told)]
         if not finished:
             return None, []
         # Delivered first, then described: the answer is written into the turn
@@ -395,7 +439,8 @@ class JobNotificationMiddleware(AgentMiddleware):
         return [*messages[:head], *notices, *messages[head:]]
 
     async def awrap_model_call(self, request: Any, handler: Any) -> Any:
-        finished_notice, finished = await self._finished_notice()
+        told = (request.state or {}).get(DELIVERED_CHANNEL) or {}
+        finished_notice, finished = await self._finished_notice(told)
         progress_notice, in_flight_shown = await self._progress_notice()
         notices = [n for n in (finished_notice, progress_notice) if n is not None]
         if not notices:
@@ -404,13 +449,21 @@ class JobNotificationMiddleware(AgentMiddleware):
         response = await handler(
             request.override(messages=self._inject(list(request.messages), notices))
         )
-        # Only now that the model has actually seen them: mark completions
-        # announced, and re-baseline progress (rebuilt from the in-flight set,
-        # so a job that settles drops out of the map instead of lingering).
-        for job in finished:
-            await self.manager.mark_delivered(job.job_id)
+        # Only now that the model has actually seen them: re-baseline progress
+        # (rebuilt from the in-flight set, so a job that settles drops out of
+        # the map instead of lingering), and record the completions in the
+        # thread with this very answer — marked once that is checkpointed.
         self._reported = {job.job_id: progress_signature(job) for job in in_flight_shown}
-        return response
+        if not finished:
+            return response
+        now = now_iso()
+        return ExtendedModelResponse(model_response=response, command=Command(
+            update={DELIVERED_CHANNEL: {job.job_id: now for job in finished}}))
+
+    async def aafter_model(self, state: Any, runtime: Any) -> None:
+        """The model's answer is checkpointed: index what the thread now records."""
+        await self._mark_told(state.get(DELIVERED_CHANNEL) or {})
+        return None
 
 
 class ChatSession:

@@ -98,9 +98,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
-from langgraph.types import interrupt
+from langgraph.types import Command, interrupt
 
 from ..dag.jobs import DagJob, DagJobs
 from ..dag.report import (
@@ -115,7 +115,7 @@ from ..dag.state import (
     SOURCE_FILES_INPUT_KEY,
     TERMINAL_UNANSWERED,
 )
-from ..engine.models import JobStatus
+from ..engine.models import JobStatus, now_iso
 from .runner import CUSTOM_ANSWER, CUSTOM_JOB_PLANNED, CUSTOM_JOB_STARTED
 
 #: How much of a referenced job's query the notice carries (#104): enough to
@@ -153,6 +153,13 @@ DEFAULT_SYNC_TIMEOUT = 20.0
 
 # A job still running: the turn stopped waiting on it, or it has not ended yet.
 IN_FLIGHT = (JobStatus.QUEUED, JobStatus.RUNNING)
+
+# The thread's own record of the jobs it was told of, id → when (docs/design/
+# core-v1.md, "The guarantee"): an id enters it in the SAME update as the message that
+# told the model — the launch tool's result, or the model's answer to a
+# notice — so it is in the checkpoint exactly when that message is. The
+# job's `delivered_at` is only the index of it, written after.
+DELIVERED_CHANNEL = "delivered_jobs"
 
 
 def pick_sync_timeout(explicit: float | None = None) -> float:
@@ -503,7 +510,7 @@ def make_job_tools(
         document_name: str | None = None,
         document_title: str | None = None,
         formats: list[str] | None = None,
-    ) -> str:
+    ) -> str | Command:
         """Run a task on the job engine: research, analysis, reading files,
         anything needing several capability steps or material you do not have.
 
@@ -712,15 +719,18 @@ def make_job_tools(
         if settled.status in IN_FLIGHT:
             return _promoted(job, timeout)
 
-        # Reported right here, so the completion notice does not announce, one
-        # turn later, a job the user has already been handed the answer to.
-        await manager.mark_delivered(settled.job_id)
         if settled.final_answer:
             # Verbatim, into the turn itself. The trailing blank line keeps
             # the model's own sentence from running into the last one of the
             # answer — front-ends append tokens to a single growing answer.
             write({"event": CUSTOM_ANSWER, "text": settled.final_answer + "\n\n"})
-        return _delivered(settled)
+        # Told right here, in the thread, with its result: so the completion
+        # notice never announces, one turn later, a job the user has already
+        # been handed the answer to. The mark follows (`JobNotificationMiddleware`).
+        return Command(update={
+            "messages": [ToolMessage(_delivered(settled), tool_call_id=runtime.tool_call_id)],
+            DELIVERED_CHANNEL: {settled.job_id: now_iso()},
+        })
 
     @tool
     async def job_status(job_id_prefix: str) -> str:

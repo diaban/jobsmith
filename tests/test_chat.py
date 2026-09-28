@@ -420,6 +420,64 @@ async def test_finished_job_injected_once_then_marked_announced(store, checkpoin
     )
 
 
+class FailsOnce(ScriptedChatModel):
+    """A model whose first call dies — after the notice reached it, before
+    its answer could be checkpointed."""
+
+    def _next(self, messages):
+        failed = not self.calls
+        reply = super()._next(messages)
+        if failed:
+            raise RuntimeError("the process died mid-turn")
+        return reply
+
+
+async def test_a_crash_before_the_checkpoint_tells_the_job_again(store, checkpointer, tmp_path):
+    """The turn that died left nothing in the thread, so the job is told on the
+    next one — once there (→ docs/design/core-v1.md, G5)."""
+    session, _ = make_session(store, checkpointer, tmp_path, [AIMessage("unused")])
+    model = FailsOnce(responses=[AIMessage("It is done.")])
+    session.model = model
+    job = await session.manager.create_job("crunch numbers", session_id=session.session_id)
+    await session.manager.run_job(job.job_id)
+    agent = session.build()
+
+    with pytest.raises(RuntimeError, match="died"):
+        await agent.ainvoke({"messages": [HumanMessage("hi")]}, CFG)
+    assert (await session.manager.get_job(job.job_id)).announced is False
+    await agent.ainvoke({"messages": [HumanMessage("hi again")]}, CFG)
+
+    assert [len(notices(call, NOTICE_MARKER)) for call in model.calls] == [1, 1]
+    assert list((await agent.aget_state(CFG)).values["delivered_jobs"]) == [job.job_id]
+    assert (await session.manager.get_job(job.job_id)).announced is True
+
+
+async def test_a_crash_after_the_checkpoint_never_tells_the_job_twice(
+    store, checkpointer, tmp_path, monkeypatch
+):
+    """The answer is in the thread but the mark never came: the next turn only
+    marks it, and tells the model nothing (→ docs/design/core-v1.md, G5)."""
+    session, model = make_session(store, checkpointer, tmp_path, [
+        AIMessage("It is done."), AIMessage("You're welcome.")])
+    job = await session.manager.create_job("crunch numbers", session_id=session.session_id)
+    await session.manager.run_job(job.job_id)
+    agent = session.build()
+    mark = session.manager.mark_delivered
+
+    async def dies(job_id):
+        raise RuntimeError("the process died before the mark")
+
+    monkeypatch.setattr(session.manager, "mark_delivered", dies)
+    with pytest.raises(RuntimeError, match="before the mark"):
+        await agent.ainvoke({"messages": [HumanMessage("hi")]}, CFG)
+    assert (await session.manager.get_job(job.job_id)).announced is False
+    monkeypatch.setattr(session.manager, "mark_delivered", mark)
+    await agent.ainvoke({"messages": [HumanMessage("thanks")]}, CFG)
+
+    assert [len(notices(call, NOTICE_MARKER)) for call in model.calls] == [1, 0]
+    assert (await session.manager.get_job(job.job_id)).announced is True
+
+
 async def test_a_job_whose_report_failed_is_announced_honestly(
     store, checkpointer, tmp_path
 ):
