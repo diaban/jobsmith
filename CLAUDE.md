@@ -108,17 +108,16 @@ AgentDefinition(
 
 - `agents/default/`: `read_files`/`prior_jobs`/`documents`/`web_search` → `research` → `analysis` → `critique`, plus `slide_deck`. `analysis`/`critique` subclass `SingleStepCapability` (`_step.py`); `critique` overrides `_material` to read both. → 0000
   - **`documents` is the grounding step**, over the `DocumentSource` port (`sources.py`; `LocalFiles` is keyword ranking, no key, no network). → 0000
-  - **`read_files` reads a named file** (`documents` searches): port `DocumentReader`, path in `inputs["source_files"]` (`SOURCE_FILES_INPUT_KEY`), never parsed from the query; dropped when nothing was named; no model call; **a refusal is material, not silence**. → 0060
-  - **`prior_jobs` reads an earlier RUN, not its file**: `inputs["from_jobs"]`, port `PriorJobSource`; no model call; refusal is material; bounded at 24 000 characters, ≤ 3 jobs; session scope enforced in `chat/tools.py`. → 0074
-  - **`prior_jobs` and `read_files` are first in the registry list**: `KeywordLLM` chains it in order, and a gated step pruned from the middle severs grounding→reasoning. → 0074
-  - **`web_search`** = `DocumentsCapability` over `TavilySource`: page over snippet, `$TAVILY_SEARCH_DEPTH` default `advanced`, `max_chars=8_000` per document; client closed on the app's stack, an HTTP error raises. → 0075
+  - **`read_files` reads a named file** (`documents` searches): path in `inputs["source_files"]`, never parsed from the query; **a refusal is material, not silence**. → 0060
+  - **`prior_jobs` reads an earlier RUN, not its file** (`inputs["from_jobs"]`, bounded, session scope in `chat/tools.py`); it and `read_files` are **first in the registry** (`KeywordLLM` chains in order). → 0074
+  - **`web_search`** = `DocumentsCapability` over `TavilySource`: pages, not snippets, cut per document; an HTTP error raises. → 0075
   - **A capability nothing can serve stays out of the registry** — every conditional step is registered only when something backs it (`open_default_resources`); an empty registry is then answered directly. → 0000, 0038
   - **`slide_deck` is a generation, not a report format**: deck structure is asked of the model; only `pptx_deck.py` imports `python-pptx`; 16:9; refused without a job before the LLM call; the deck is an `annex`. **Its description says what it is NOT.** → 0035, 0061
   - **The deliverable is written for its reader, and answers**: prompts name the reader and oblige the answer first, from the material, doubt marked where it bears; `SUBJECT_ONLY_RULE` is on every material prompt and the generator, and names the deck (a separate step builds it, → 0129); `NO_ANSWER_INSTRUCTION` sets a high bar and shape for a refusal. → 0058, 0073
   - **The generator is told which files the run delivers** (`delivered_files_note`: requested formats + declared annexes, or "none") and names no other; no prompt offers a file by example. When the list names the answer itself, `ANSWER_FILE_RULE` says that entry **is** the text being written — never described, saved by hand or "delivered separately". → 0077, 0126
   - Retrieved passages carry a **quotable id** (`path#chunk`); `render_context` gives the model the material, `render_report` gives the human the provenance only.
-  - **`research` reads every retrieval step's material** (`GROUNDING`, not first-match) and `read_files`' refusals (`REFUSALS`), in its own prompt, bounded at 32 000 characters, and says so in `meta["grounded_on"]`. → 0081
-  - **`critique` checks the subject, not the work** (≤ 8 bullets, reads analysis *and* notes) and feeds the generator. Watch for an *Open questions* section appearing. → 0082
+  - **`research` reads every retrieval step's material** and `read_files`' refusals, bounded, and says so in `meta["grounded_on"]`. → 0081
+  - **`critique` checks the subject, not the work**, and feeds the generator. → 0082
 - `agents/banking/`: the domain example, with its **own ports** next to its capabilities (`deps.py`) and its own adapters (`fakes.py`); `vision` is registered only when the LLM satisfies `VisionClient`. → 0000
 - Selection: `--agent NAME` (CLI, applies to whichever process owns the engine — so pass it to `serve`), `build_app(agent=...)`, `make chat AGENT=banking`.
 
