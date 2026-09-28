@@ -151,6 +151,9 @@ MAX_CONTEXT_CHARS = 1500   # hard ceiling on the whole excerpt
 # instead of costing a card, a wait and a later notice.
 DEFAULT_SYNC_TIMEOUT = 20.0
 
+# A job still running: the turn stopped waiting on it, or it has not ended yet.
+IN_FLIGHT = (JobStatus.QUEUED, JobStatus.RUNNING)
+
 
 def pick_sync_timeout(explicit: float | None = None) -> float:
     """How long to wait before promoting: argument > $JOBSMITH_SYNC_TIMEOUT > 20s.
@@ -673,10 +676,10 @@ def make_job_tools(
         # did not ask for — and the id is what makes stopping it possible.
         write({"event": CUSTOM_JOB_STARTED, "job_id": job.job_id} | about)
 
-        # Background from the first instant, then waited on. Promotion is
-        # "stop waiting", so nothing is cancelled and nothing is restarted:
-        # the promoted run IS the run that was about to finish, and a turn
-        # that dies (a UI cancelling its worker) does not take it with it.
+        # Run, and waited on up to the timeout (`run_for`): promotion is "stop
+        # waiting", so the promoted run IS the run that was about to finish,
+        # and a turn that dies (a UI cancelling its worker) does not take it
+        # with it.
         #
         # The plan is announced while it waits (#86), from the manager's own
         # events — subscribed BEFORE the run starts, so the one that says the
@@ -690,29 +693,25 @@ def make_job_tools(
         # stopped the watch is retrieved here and goes no further.
         watch.add_done_callback(lambda t: t.cancelled() or t.exception())
         try:
-            task = manager.start_job(job.job_id)
-            done, _still_running = await asyncio.wait({task}, timeout=timeout)
-            if done:
+            settled = await manager.run_for(job.job_id, timeout)
+            if settled.status not in IN_FLIGHT:
                 # drain: what the run published before it ended is said
                 # before its answer, and then the watch is over (a queue too
                 # full to take the marker has shed events anyway)
                 with contextlib.suppress(asyncio.QueueFull):
                     events.put_nowait(None)
                     await asyncio.wait({watch})
+        except Exception as crashed:
+            # `_drive` folds every ordinary failure into the record; this is
+            # the extraordinary one, which `run_for` hands to its caller.
+            return (f"Job {job.job_id[:8]} crashed while running: {crashed}. "
+                    "Tell the user it did not run.")
         finally:
             watch.cancel()
             manager.unsubscribe(events)
-        if not done:
+        if settled.status in IN_FLIGHT:
             return _promoted(job, timeout)
 
-        # `_drive` folds every ordinary failure into the record, so retrieving
-        # the exception is about the extraordinary one — and about not leaving
-        # an un-retrieved task exception behind whatever happened.
-        if not task.cancelled() and (crashed := task.exception()) is not None:
-            return (f"Job {job.job_id[:8]} crashed while running: {crashed}. "
-                    "Tell the user it did not run.")
-
-        settled = await manager.get_job(job.job_id) or job
         # Reported right here, so the completion notice does not announce, one
         # turn later, a job the user has already been handed the answer to.
         await manager.mark_announced(settled.job_id)

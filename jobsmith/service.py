@@ -229,6 +229,7 @@ class AgentService(ABC):
         document_name: str = "",
         document_title: str = "",
         formats: Sequence[str] | None = None,
+        wait: float | None = None,
     ) -> dict:
         """Launch a job directly — the door the chat's approval does not use.
 
@@ -249,6 +250,11 @@ class AgentService(ABC):
         A name that is not a filename and a format nothing can render here are
         refused as `ValueError` on BOTH backings — the remote one maps the
         400 back — so a caller sees the same refusal whichever it holds.
+
+        `wait` is promotion on the clock for a synchronous caller (0083): the
+        job runs, and the answer waits up to `wait` seconds for it to settle,
+        then is the whole job as it stands — settled, or still running and
+        promoted. Without it, the answer is `{"job_id", "status"}` at once.
         """
         ...
 
@@ -427,10 +433,13 @@ class LocalAgentService(AgentService):
     # -- jobs --
 
     async def launch_job(self, query, *, session_id=None, inputs=None,
-                         document_name="", document_title="", formats=None) -> dict:
+                         document_name="", document_title="", formats=None,
+                         wait=None) -> dict:
         job = await self.manager.create_job(
             query, inputs, session_id=session_id, document_name=document_name,
             document_title=document_title, formats=formats)
+        if wait is not None:
+            return (await self.manager.run_for(job.job_id, wait)).to_dict()
         self.manager.start_job(job.job_id)
         return {"job_id": job.job_id, "status": job.status.value}
 

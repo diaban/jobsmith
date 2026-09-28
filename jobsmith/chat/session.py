@@ -30,7 +30,13 @@ from ..dag.jobs import DagJob, DagJobs
 from ..dag.state import TERMINAL_UNANSWERED
 from ..engine.models import JobStatus
 from .runner import CUSTOM_ANSWER
-from .tools import make_job_tools, progress_line, progress_signature, stream_writer
+from .tools import (
+    IN_FLIGHT,
+    make_job_tools,
+    progress_line,
+    progress_signature,
+    stream_writer,
+)
 
 DEFAULT_CHAT_SYSTEM_PROMPT = """You are an assistant that runs real tasks on a job engine.
 
@@ -60,7 +66,6 @@ DEFAULT_CHAT_SYSTEM_PROMPT = """You are an assistant that runs real tasks on a j
 NOTICE_MARKER = "background jobs finished"
 PROGRESS_MARKER = "background jobs still running"
 
-IN_FLIGHT = (JobStatus.QUEUED, JobStatus.RUNNING)
 MAX_PROGRESS_JOBS = 5   # jobs detailed in one progress notice; the rest are counted
 
 # How long an answer may be and still be handed to the reader *in the

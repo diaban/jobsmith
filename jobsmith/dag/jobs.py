@@ -335,6 +335,9 @@ class DagJobs:
     def start_job(self, job_id: str) -> asyncio.Task:
         return self.engine.start_job(job_id)
 
+    async def run_for(self, job_id: str, timeout: float) -> DagJob:
+        return DagJob(await self.engine.run_for(job_id, timeout))
+
     async def resume_job(self, job_id: str) -> DagJob:
         return DagJob(await self.engine.resume_job(job_id))
 
