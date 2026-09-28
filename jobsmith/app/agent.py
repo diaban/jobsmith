@@ -79,9 +79,13 @@ class AgentApp:
         return self.session_factory(session_id) if session_id else self.session_factory()
 
     def service(self) -> Any:
-        """The inbound port over this app — what every entrypoint talks to."""
-        from ..service import LocalAgentService
+        """The inbound port over this app — what every entrypoint talks to: the
+        DAG's jobs and the chat for a capability pack, the engine's own port
+        for a graph agent (#165)."""
+        from ..service import LocalAgentService, LocalEngineService
 
+        if self.dag is None:
+            return LocalEngineService(self.engine, on_close=self.aclose)
         return LocalAgentService(self.manager, self.session_factory, on_close=self.aclose)
 
     async def aclose(self) -> None:

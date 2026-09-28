@@ -15,6 +15,12 @@ That last line is the point: the CLI does not care whether the work happens
 in this process or in a daemon, because both answer the same port. Adding a
 UI or a bot is one more adapter, with no new use-case code.
 
+`EngineService` is the other door, and the generic one (#165): the job engine
+itself — any graph, its input as given, a `reply_to` — for an agent that is a
+graph of its own. It is not a half of `AgentService`: the DAG's jobs speak a
+request (query, document) that `DagJobs.create_job` checks before a job
+exists, and a raw door onto that graph would skip those checks.
+
 Replies are plain dicts on purpose — they are what crosses the HTTP boundary,
 so the local and remote backings are indistinguishable to a caller. A *turn*
 is a flow of those dicts (`stream`), and a reply is simply the one it ends on:
@@ -378,6 +384,47 @@ class AgentService(JobService, ChatService):
     """
 
 
+class EngineService(ABC):
+    """The job engine's own port: any graph, run as a job (#165).
+
+    What `JobManager` offers, as the dicts that cross HTTP: a job is created
+    with the input its graph takes, as given, and read back as the engine's
+    record (`Job.to_dict`) — nothing of a query, a document or a session.
+    Refusals follow `JobService`: an unknown graph or return-address kind is a
+    `ValueError` at launch, a resume refused is `{"status", "error"}`.
+    """
+
+    @abstractmethod
+    async def launch_job(self, input: Any = None, *, graph: str | None = None,
+                         label: str = "", reply_to: dict | None = None,
+                         wait: float | None = None) -> dict:
+        """Create a job and start it. `wait` is promotion on the clock (0083), as
+        in `JobService.launch_job`: without it, `{"job_id", "status"}` at once."""
+        ...
+
+    @abstractmethod
+    async def list_jobs(self, *, status: str | None = None,
+                        reply_to: dict | None = None) -> list[dict]: ...
+
+    @abstractmethod
+    async def get_job(self, job_id: str) -> dict | None: ...
+
+    @abstractmethod
+    async def cancel_job(self, job_id: str) -> dict: ...
+
+    @abstractmethod
+    async def resume_job(self, job_id: str) -> dict: ...
+
+    @abstractmethod
+    def subscribe(self, *, max_queue: int = 256) -> asyncio.Queue: ...
+
+    @abstractmethod
+    def unsubscribe(self, queue: asyncio.Queue) -> None: ...
+
+    async def aclose(self) -> None:
+        return None
+
+
 # ------------------------------------------------------- in-process backing
 
 
@@ -472,16 +519,7 @@ class LocalJobService(JobService):
         than an exception: the HTTP backing can only answer with a body, and
         the two backings must stay indistinguishable to a front-end.
         """
-        try:
-            job = await self.manager.start_resume(job_id)
-        except KeyError:
-            return {"job_id": job_id, "status": "unknown", "error": f"unknown job: {job_id}"}
-        except ValueError as e:
-            current = await self.manager.get_job(job_id)
-            return {"job_id": job_id,
-                    "status": current.status.value if current else "unknown",
-                    "error": str(e)}
-        return {"job_id": job_id, "status": job.status.value}
+        return await _resumed(self.manager, job_id)
 
     async def get_report(self, job_id: str) -> str | None:
         """The main deliverable as text — see the port for what None means.
@@ -555,3 +593,62 @@ class LocalAgentService(LocalJobService, LocalChatService, AgentService):
     def __init__(self, manager: Any, session_factory: Any, *, on_close: Any = None):
         LocalJobService.__init__(self, manager, on_close=on_close)
         LocalChatService.__init__(self, session_factory)
+
+
+class LocalEngineService(EngineService):
+    """The engine's port, in this process, over a `JobManager`."""
+
+    def __init__(self, engine: Any, *, on_close: Any = None):
+        self.engine = engine
+        self._on_close = on_close
+
+    async def aclose(self) -> None:
+        if self._on_close is not None:
+            await self._on_close()
+
+    async def launch_job(self, input=None, *, graph=None, label="", reply_to=None,
+                         wait=None) -> dict:
+        job = await self.engine.create_job(input, graph=graph, label=label, reply_to=reply_to)
+        if wait is not None:
+            return (await self.engine.run_for(job.job_id, wait)).to_dict()
+        self.engine.start_job(job.job_id)
+        return {"job_id": job.job_id, "status": job.status.value}
+
+    async def list_jobs(self, *, status=None, reply_to=None) -> list[dict]:
+        from .engine.models import JobStatus
+
+        jobs = await self.engine.list_jobs(
+            status=JobStatus(status) if status else None, reply_to=reply_to, limit=100)
+        return [j.summary() | {"job_id": j.job_id} for j in jobs]
+
+    async def get_job(self, job_id: str) -> dict | None:
+        job = await self.engine.get_job(job_id)
+        return job.to_dict() if job else None
+
+    async def cancel_job(self, job_id: str) -> dict:
+        job = await self.engine.cancel_job(job_id)
+        return {"job_id": job_id, "status": job.status.value if job else "unknown"}
+
+    async def resume_job(self, job_id: str) -> dict:
+        return await _resumed(self.engine, job_id)
+
+    def subscribe(self, *, max_queue: int = 256) -> asyncio.Queue:
+        return self.engine.subscribe(max_queue=max_queue)
+
+    def unsubscribe(self, queue: asyncio.Queue) -> None:
+        self.engine.unsubscribe(queue)
+
+
+async def _resumed(jobs: Any, job_id: str) -> dict:
+    """`start_resume` on either door, a refusal answered as a body (see
+    `JobService.resume_job`)."""
+    try:
+        job = await jobs.start_resume(job_id)
+    except KeyError:
+        return {"job_id": job_id, "status": "unknown", "error": f"unknown job: {job_id}"}
+    except ValueError as e:
+        current = await jobs.get_job(job_id)
+        return {"job_id": job_id,
+                "status": current.status.value if current else "unknown",
+                "error": str(e)}
+    return {"job_id": job_id, "status": job.status.value}

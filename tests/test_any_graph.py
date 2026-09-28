@@ -143,3 +143,78 @@ def test_an_agent_is_a_capability_pack_or_a_graph_never_both():
     with pytest.raises(ValueError, match="exactly one"):
         AgentDefinition(name="both", description="", capabilities=lambda ctx: [],
                         graph=lambda ctx: GraphSpec("g", None))
+
+
+def _counting_agent():
+    """A graph agent: its input is `{"n": int}`, its result that plus one."""
+    from jobsmith.agents.base import AgentDefinition
+
+    class State(TypedDict):
+        n: int
+
+    def graph(ctx):
+        g = StateGraph(State)
+        g.add_node("step", lambda state: {"n": state["n"] + 1})
+        g.add_edge(START, "step")
+        g.add_edge("step", END)
+        return GraphSpec("count", g.compile(checkpointer=ctx.checkpointer))
+
+    return AgentDefinition(name="count", description="counts one up", graph=graph)
+
+
+async def test_a_graph_agent_is_served_by_the_http_api(tmp_path):
+    """#165: the engine's own door — its input as given, its record back — on
+    the engine's paths; the DAG's `/jobs` is not there to be misread. → 0165"""
+    from support import client_for
+
+    from jobsmith.api import create_api
+    from jobsmith.app.agent import build_app
+    from jobsmith.app.providers import make_llm
+
+    app = await build_app(agent=_counting_agent(), llm=make_llm("fake"), chat_model=object(),
+                          db="memory", reports_dir=str(tmp_path))
+    async with client_for(create_api(app.service())) as client:
+        created = await client.post("/engine/jobs?wait=10",
+                                    json={"input": {"n": 41}, "label": "41 + 1"})
+        job = created.json()
+        assert (created.status_code, job["status"], job["graph"], job["result"]) == (
+            201, "done", "count", {"n": 42})
+        assert (await client.get(f"/engine/jobs/{job['job_id']}")).json()["label"] == "41 + 1"
+        listed = (await client.get("/engine/jobs?status=done")).json()
+        assert [j["job_id"] for j in listed] == [job["job_id"]]
+        assert (await client.get("/engine/jobs?status=failed")).json() == []
+        cancelled = await client.post(f"/engine/jobs/{job['job_id']}/cancel")
+        assert cancelled.json() == {"job_id": job["job_id"], "status": "done"}
+        assert (await client.get("/engine/jobs/nope")).status_code == 404
+
+        refused = await client.post(f"/engine/jobs/{job['job_id']}/resume")
+        assert refused.status_code == 409
+        unknown = await client.post("/engine/jobs", json={"input": {}, "graph": "nope"})
+        assert unknown.status_code == 400 and "nope" in unknown.json()["detail"]
+        assert (await client.get("/jobs")).status_code == 404
+    await app.aclose()
+
+
+async def test_jobsmith_serve_runs_a_graph_agent(tmp_path, monkeypatch):
+    """`jobsmith serve --agent <graph agent>` composes and serves it: the
+    uvicorn server is replaced by one request through the app it was handed."""
+    import uvicorn
+    from support import client_for
+
+    from jobsmith.agents import AGENTS
+    from jobsmith.cli.main import build_parser, serve
+
+    monkeypatch.setitem(AGENTS, "count", _counting_agent())
+    monkeypatch.setenv("JOBSMITH_LLM", "fake")
+    monkeypatch.setenv("JOBSMITH_REPORTS_DIR", str(tmp_path))
+    answered = {}
+
+    async def one_request(server):
+        async with client_for(server.config.app) as client:
+            answered.update((await client.post(
+                "/engine/jobs?wait=10", json={"input": {"n": 1}})).json())
+
+    monkeypatch.setattr(uvicorn.Server, "serve", one_request)
+    args = build_parser().parse_args(["--agent", "count", "--db", "memory", "serve"])
+    assert await serve(args) == 0
+    assert (answered["status"], answered["result"]) == ("done", {"n": 2})

@@ -26,6 +26,12 @@ against this API.
   when it is text (415 otherwise, naming the download).
 - Live:       GET /events — SSE stream of job-progress events
   (in-process pub/sub — cross-process events are #100).
+- Engine:     for an agent that is a graph of its own (#165), the engine's
+  port instead of the DAG's and the chat's: POST /engine/jobs {input, graph,
+  label, reply_to} (`?wait=S`), GET /engine/jobs (+?status), GET
+  /engine/jobs/{id}, POST /engine/jobs/{id}/cancel and /resume, and /events.
+  Its own paths: its bodies are not the DAG's, and a client of the wrong
+  kind gets a 404 rather than a body read the wrong way.
 
 Domain-agnostic: the domain arrives entirely through the injected service,
 which was composed from an agent definition by `build_app`. Sessions are
@@ -42,7 +48,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from ..engine.models import JobStatus
-from ..service import BinaryDeliverable, LocalAgentService
+from ..service import BinaryDeliverable, LocalAgentService, LocalEngineService
 
 
 class SessionIn(BaseModel):
@@ -69,6 +75,13 @@ class JobIn(BaseModel):
     document_name: str = ""
     document_title: str = ""
     formats: list[str] | None = None
+
+
+class EngineJobIn(BaseModel):
+    input: Any = None               # what the graph takes, as given (JSON)
+    graph: str | None = None        # the deployment's default when absent
+    label: str = ""
+    reply_to: dict[str, Any] | None = None
 
 
 # `JobOutput.format` is free-form domain vocabulary ("markdown", "html", ...);
@@ -100,8 +113,77 @@ def _report_media_type(job: dict) -> str:
     return REPORT_MEDIA_TYPES.get((main or {}).get("format") or "", "text/plain")
 
 
-def create_api(service: LocalAgentService) -> FastAPI:
+def create_api(service: LocalAgentService | LocalEngineService) -> FastAPI:
     app = FastAPI(title="jobsmith", version="0.1.0")
+
+    @app.get("/health")
+    async def health() -> dict:
+        """Probe used by the CLI to decide between daemon and embedded mode."""
+        return {"status": "ok", "service": "jobsmith", "version": app.version}
+
+    @app.get("/events")
+    async def events() -> StreamingResponse:
+        async def stream():
+            queue = service.subscribe()
+            try:
+                while True:
+                    event = await queue.get()
+                    if event is None:
+                        break      # the port's end-of-stream marker, not an event
+                    yield f"data: {json.dumps(event)}\n\n"
+            finally:
+                service.unsubscribe(queue)
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
+    if isinstance(service, LocalEngineService):
+        _engine_routes(app, service)
+    else:
+        _agent_routes(app, service)
+    return app
+
+
+def _engine_routes(app: FastAPI, engine: LocalEngineService) -> None:
+    """The engine's port, for a graph agent (#165): serialization plus one call."""
+
+    async def _job_or_404(job_id: str) -> dict:
+        job = await engine.get_job(job_id)
+        if job is None:
+            raise HTTPException(404, f"unknown job: {job_id}")
+        return job
+
+    @app.post("/engine/jobs", status_code=201)
+    async def launch_job(body: EngineJobIn, wait: float | None = Query(None, ge=0)) -> dict:
+        try:
+            return await engine.launch_job(body.input, graph=body.graph, label=body.label,
+                                           reply_to=body.reply_to, wait=wait)
+        except ValueError as refused:      # a graph or an address kind not served here
+            raise HTTPException(status_code=400, detail=str(refused)) from refused
+
+    @app.get("/engine/jobs")
+    async def list_jobs(status: JobStatus | None = None):
+        return await engine.list_jobs(status=status.value if status else None)
+
+    @app.get("/engine/jobs/{job_id}")
+    async def get_job(job_id: str):
+        return await _job_or_404(job_id)
+
+    @app.post("/engine/jobs/{job_id}/cancel")
+    async def cancel_job(job_id: str):
+        await _job_or_404(job_id)
+        return await engine.cancel_job(job_id)
+
+    @app.post("/engine/jobs/{job_id}/resume")
+    async def resume_job(job_id: str):
+        await _job_or_404(job_id)
+        result = await engine.resume_job(job_id)
+        if result.get("error"):
+            raise HTTPException(409, result["error"])
+        return result
+
+
+def _agent_routes(app: FastAPI, service: LocalAgentService) -> None:
+    """The DAG's jobs and the chat, for a capability pack."""
 
     async def _job_or_404(job_id: str) -> dict:
         job = await service.get_job(job_id)
@@ -110,11 +192,6 @@ def create_api(service: LocalAgentService) -> FastAPI:
         return job
 
     # ---------------- chat ----------------
-
-    @app.get("/health")
-    async def health() -> dict:
-        """Probe used by the CLI to decide between daemon and embedded mode."""
-        return {"status": "ok", "service": "jobsmith", "version": app.version}
 
     @app.post("/sessions", status_code=201)
     async def create_session(body: SessionIn | None = None) -> dict:
@@ -251,22 +328,3 @@ def create_api(service: LocalAgentService) -> FastAPI:
                                 and not job.get("deliverable_expected", True)
                                 else "no report for this job (not DONE yet?)")
         return Response(report, media_type=_report_media_type(job))
-
-    # ---------------- live events ----------------
-
-    @app.get("/events")
-    async def events() -> StreamingResponse:
-        async def stream():
-            queue = service.subscribe()
-            try:
-                while True:
-                    event = await queue.get()
-                    if event is None:
-                        break      # the port's end-of-stream marker, not an event
-                    yield f"data: {json.dumps(event)}\n\n"
-            finally:
-                service.unsubscribe(queue)
-
-        return StreamingResponse(stream(), media_type="text/event-stream")
-
-    return app
