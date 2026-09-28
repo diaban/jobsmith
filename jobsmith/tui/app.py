@@ -536,6 +536,7 @@ class JobsmithApp(App[None]):
             self._streaming = False
             self._activity("")
         self._answer = None
+        self._activity(render.turn_usage(terminal.get("usage") or {}))
         if terminal.get("type") == "proposal":
             self._propose(terminal)
         self.refresh_jobs()
