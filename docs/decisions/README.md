@@ -108,6 +108,7 @@ current and writes the records a merged PR forgot, marked as reconstructed.
 ### Issues cited without a record of their own
 
 - **#1** — the default agent's grounding steps (`documents`, `LocalFiles`, quotable ids) — rules kept in `CLAUDE.md`
+- **#5** — resume landed as [0005](0005-resume.md) and the issue was closed; its other half never got an issue, although [0086](0086-plan-announced-in-the-turn.md) says "remains #5": re-running part of a finished job is #168, interjection on a running plan is #177 (found by #174)
 - **#8** — the web UI, still open; named as the future consumer of `POST /sessions/{id}/messages` in [0050](0050-streamed-turn.md)
 - **#13** — `web_search` behind `DocumentSource`, its adapter `TavilySource` — see [0075](0075-web-pages-not-snippets.md)
 - **#36** — one agent, one purpose: the final text's brief is the agent's profile — referenced from [0035](0035-capability-artifacts-and-slide-deck.md)
