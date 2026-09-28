@@ -102,6 +102,7 @@ current and writes the records a merged PR forgot, marked as reconstructed.
 | 0134 | [Mutation testing on the diff replaces falsifying by hand](0134-mutation-on-the-diff.md) | `make mutate TESTS=…`: cosmic-ray + `cr-filter-git` on a scratch worktree, only the changed lines, survivors listed by line | accepted |
 | 0138 | [Job events cross processes on Postgres, by LISTEN/NOTIFY](0138-postgres-notify-events.md) | `PostgresNotifyEvents`: NOTIFY on publish, LISTEN while subscribed, both on connections off the pool; `WatchedEvents` shares the rest with SQLite | accepted |
 | 0141 | [Complete queries filter in the store; human listings cut after ordering](0141-complete-queries-at-scale.md) | `load_all` is complete (filters in the store, one query, no cut); `list_jobs` newest first then cut; `limit=None` for what must see everything | accepted |
+| 0161 | [The job engine is the product: it runs any LangGraph graph and tells each ending once](0161-core-v1-job-engine.md) | `engine/` knows no product (G4); `GraphSpec`, facts, `run_for`, `reply_to` + deliverers, LangChain usage; the DAG, files, chat and `adapters/langchain` sit on top; details in `docs/design/core-v1.md` | accepted |
 
 ### Issues cited without a record of their own
 
