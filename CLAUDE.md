@@ -210,7 +210,7 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 - **HTML takes no dependency**: escape everything first, add only our own tags, no links, nested lists clamped to the open-list stack. **The PDF is that page printed**; `.[pdf]` needs pango/cairo, **offered when installed** (`find_spec`) and **loaded on first need** (at startup only when the deployment default is PDF). → 0009, 0076, 0034, 0108
 - **Capabilities present their own results**: `Capability.render_report(result)` (twin of `render_context`, which targets the model) with `default_result_markdown` as the base implementation — prose stays prose, list[str] becomes bullets, only structured values fall back to JSON. Never grow that default to learn payload shapes: override `render_report` in the capability instead.
 - `Job.usage` refreshes on every persist; per-step usage is in `meta["usage"]`, failures included. → 0002
-- **Delivery** (`engine/delivery.py`): `reply_to` is JSON (`{"kind": …}`), indexed by a flat `reply_key` (nested filters break SQLite/memory); settling asks the kind's deliverer, True stamps `delivered_at`. `none` (default) is delivered as it settles; a pulled kind waits for `pending_deliveries`/`mark_delivered`. The DAG registers `session` (`dag/jobs.py`); `DagJob.session_id`/`announced` are derived.
+- **Delivery** (`engine/delivery.py`): `reply_to` is JSON, indexed by a flat `reply_key` (nested filters break SQLite/memory); an ending asks the kind's deliverer, True stamps `delivered_at`. `none` is delivered as it settles; a pulled kind waits for `pending_deliveries`/`mark_delivered`. The DAG registers `session`.
 
 ### Chat layer (`chat/`)
 
@@ -218,13 +218,14 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 
 - **`chat/runner.py` alone knows what `astream` emits**: `Token`, `ToolStarted`/`ToolFinished` (real tool name; wording is the front-end's), `JobStarted`, `JobPlanned`, then exactly one terminal, `Message` or `Proposal`. → 0050, 0083, 0086
 - **Tools** (`chat/tools.py`) wrap JobManager use-cases, scoped to the session's own jobs. `launch_job` **runs the task**: `create_job(session_id=...)` + `run_for(job_id, pick_sync_timeout())`.
-- **Synchronous by default, promoted by the clock**: `JobManager.run_for` = `start_job` then `asyncio.wait` (never `wait_for`) for `$JOBSMITH_SYNC_TIMEOUT` (20 s; `0` = never); no classification; a job finished in the turn is `mark_delivered`. → 0083
+- **Synchronous by default, promoted by the clock**: `JobManager.run_for` = `start_job` then `asyncio.wait` (never `wait_for`) for `$JOBSMITH_SYNC_TIMEOUT` (20 s; `0` = never); no classification; a job finished in the turn goes into `delivered_jobs` with the tool's result. → 0083
 - **The plan is announced while the turn waits**, from `manager.subscribe()` (subscribed before `start_job`, drained with `None` when the run ends, released in `finally`); never after promotion; a one-step plan is not announced. → 0086
 - **The answer is written verbatim into the turn**, never returned through the model; a promoted answer uses the same channel up to `$JOBSMITH_INLINE_ANSWER_MAX` (2 000), or at any length when no file was written. → 0083, 0085
 - **The approval card is a notice** (`job_started`: query, sources, `from_jobs` as short id + start of query, name/title/formats, job id); the gate survives behind `$JOBSMITH_APPROVE_JOBS`. → 0083, 0104
 - **The engine never sees the thread**: a self-contained `query`, plus `recent_conversation()` as `inputs[CONVERSATION_INPUT_KEY]`. `source_files` and `from_jobs` (resolved against **this session's** jobs) are `launch_job` arguments. → 0004, 0060, 0074
 - **Notifications** (`JobNotificationMiddleware.awrap_model_call`) are transient `SystemMessage`s in the model *request*, never in state. → 0006
-  - Completion (every terminal, `SETTLED`, via `pending_deliveries`) and progress (only when `progress_signature()` moved) notices go **directly after the system prompt** (`_inject`), where Anthropic hoists them. → 0006
+  - **Completion is told once per ending**: `delivered_jobs` (id → when) enters the thread with the answer (`ExtendedModelResponse`); `delivered_at` is marked after, in `aafter_model`. → G5
+  - Completion (every terminal, `SETTLED`) and progress (only when `progress_signature()` moved) notices go **directly after the system prompt** (`_inject`), where Anthropic hoists them. → 0006
 - **`conftest.ScriptedChatModel` implements `_astream`** with several chunks; the message list is also run through the real provider formatters, which only run with the chat extras (CI). → 0006
 
 ### HTTP API (`api/`)
