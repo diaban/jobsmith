@@ -20,19 +20,18 @@ from __future__ import annotations
 import os
 import sys
 import uuid
-from typing import Annotated, Any, NotRequired
+from typing import Any
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware, AgentState, ExtendedModelResponse
+from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import SystemMessage
-from langgraph.types import Command
 
+from ..adapters.langchain import JobDeliveryMiddleware, inject
 from ..dag.jobs import DagJob, DagJobs, session_address
 from ..dag.state import TERMINAL_UNANSWERED
-from ..engine.models import JobStatus, now_iso
+from ..engine.models import Job, JobStatus
 from .runner import CUSTOM_ANSWER
 from .tools import (
-    DELIVERED_CHANNEL,
     IN_FLIGHT,
     make_job_tools,
     progress_line,
@@ -115,50 +114,15 @@ def pick_inline_answer_max(explicit: int | None = None) -> int:
         return DEFAULT_INLINE_ANSWER_MAX
 
 
-def _merge(told: dict[str, str], more: dict[str, str]) -> dict[str, str]:
-    return {**told, **more}
+class JobNotificationMiddleware(JobDeliveryMiddleware):
+    """Tells the model of each ending of this session's jobs, in the DAG's
+    words, with the answer handed to the reader first when it belongs in the
+    conversation (#85).
 
-
-class DeliveredState(AgentState):
-    """The thread's record of the jobs it was told of (`DELIVERED_CHANNEL`):
-    job id → when. A job whose ending is LATER than that (resumed since) is
-    news again."""
-
-    delivered_jobs: NotRequired[Annotated[dict[str, str], _merge]]
-
-
-def _told(job: Any, told: dict[str, str]) -> bool:
-    """This ending of the job is already in the thread."""
-    return told.get(job.job_id, "") > job.updated_at
-
-
-class JobNotificationMiddleware(AgentMiddleware):
-    """Injects job notices into the model request, then records them as seen —
-    only once the model has actually received them.
-
-    Two notices, for two different needs:
-
-    - **completion** must never be missed, and never told twice: a job's id
-      enters the thread's `DELIVERED_CHANNEL` in the same update as the
-      model's answer to its notice — the same checkpoint — and a job already
-      there is never injected again. `delivered_at` is only the index of it,
-      marked AFTER that checkpoint (`aafter_model`), and repaired on the next
-      call when a crash came in between. So a crash before the checkpoint
-      tells it again (the failed turn left nothing), and one after it does
-      not: exactly once in the thread (docs/design/core-v1.md, G5);
-    - **progress** is pushed too, but only on the turns where it *changed*
-      (`progress_signature`), and remembered in memory only. Pushing it every
-      turn would spend tokens to repeat yesterday's news; leaving it to a tool
-      call would mean the model only knows when the user thinks to ask — and
-      the whole point is that the wait is opaque. So: push the one-line digest
-      when something moved, and keep `job_status` as the pull path for detail.
-
-    Both ride on `request.override(...)` rather than state, so nothing
-    accumulates in the persisted thread: a job reporting progress on five
-    consecutive turns leaves zero notices behind it.
+    Exactly once in the thread is the adapter's (`adapters/langchain`,
+    docs/design/core-v1.md G5): this class only says what each ending is.
+    Progress is `JobProgressMiddleware`'s.
     """
-
-    state_schema = DeliveredState
 
     def __init__(
         self,
@@ -167,14 +131,9 @@ class JobNotificationMiddleware(AgentMiddleware):
         *,
         inline_answer_max: int | None = None,
     ):
-        super().__init__()
+        super().__init__(manager.engine, session_address(session_id))
         self.manager = manager
-        self.session_id = session_id
         self.inline_answer_max = pick_inline_answer_max(inline_answer_max)
-        # job_id → last progress signature the model was shown. In memory
-        # because it is a conversational nicety, not a guarantee: after a
-        # daemon restart the worst case is one repeated progress line.
-        self._reported: dict[str, str] = {}
 
     def _deliver(self, job: DagJob) -> bool:
         """Write a finished job's answer into the turn, verbatim, when the
@@ -340,38 +299,42 @@ class JobNotificationMiddleware(AgentMiddleware):
                 f"Full answer (synthesize it, do not paste it):\n{job.final_answer}")
         return "\n".join(lines)
 
-    async def _mark_told(self, told: dict[str, str]) -> None:
-        """Index what the thread already records: `delivered_at` for every
-        settled job whose ending is in the channel and not marked yet."""
-        if not told:
-            return
-        for job in await self.manager.engine.pending_deliveries(
-                session_address(self.session_id)):
-            if _told(job, told):
-                await self.manager.mark_delivered(job.job_id)
-
-    async def _finished_notice(
-        self, told: dict[str, str]
-    ) -> tuple[SystemMessage | None, list[DagJob]]:
-        # Told already, in a turn whose mark never came: say nothing —
-        # `aafter_model` marks it once this call is checkpointed.
-        finished = [job for job in await self.manager.pending_deliveries(self.session_id)
-                    if not _told(job, told)]
-        if not finished:
-            return None, []
-        # Delivered first, then described: the answer is written into the turn
-        # before the model is told what to say about it, so a reader sees the
-        # result and then the sentence introducing it (#85).
-        notices = [self._notice_for(job, delivered=self._deliver(job))
-                   for job in finished]
+    async def notice(self, endings: list[Job]) -> SystemMessage:
+        # In full: a notice says what each job produced. Delivered first, then
+        # described: the answer is written into the turn before the model is
+        # told what to say about it, so a reader sees the result and then the
+        # sentence introducing it (#85).
+        jobs = [DagJob(await self.jobs.get_job(job.job_id) or job) for job in endings]
         return SystemMessage(
             f"[job update] The following {NOTICE_MARKER}. Announce each to the "
             "user now, following the instruction each one carries: some have "
             "already delivered their answer to the user word for word and only "
             "need a sentence, others need you to relay what happened and name "
             "the file.\n\n"
-            + "\n\n".join(notices)
-        ), finished
+            + "\n\n".join(self._notice_for(job, delivered=self._deliver(job))
+                           for job in jobs)
+        )
+
+
+class JobProgressMiddleware(AgentMiddleware):
+    """Tells the model how this session's running jobs are doing — only on the
+    turns where that CHANGED (`progress_signature`), and remembered in memory
+    only. Pushing it every turn would spend tokens to repeat yesterday's news;
+    leaving it to a tool call would mean the model only knows when the user
+    thinks to ask — and the whole point is that the wait is opaque. So: push
+    the one-line digest when something moved, and keep `job_status` as the
+    pull path for detail. It rides on the request (`inject`), so a job
+    reporting progress on five turns leaves zero notices in the thread.
+    """
+
+    def __init__(self, manager: DagJobs, session_id: str):
+        super().__init__()
+        self.manager = manager
+        self.session_id = session_id
+        # job_id → last progress signature the model was shown. In memory
+        # because it is a conversational nicety, not a guarantee: after a
+        # daemon restart the worst case is one repeated progress line.
+        self._reported: dict[str, str] = {}
 
     async def _in_flight(self) -> tuple[list[DagJob], int]:
         """The session's running/queued jobs, newest first, loaded in full.
@@ -410,58 +373,16 @@ class JobNotificationMiddleware(AgentMiddleware):
             + "\n".join(lines)
         ), shown
 
-    @staticmethod
-    def _inject(messages: list[Any], notices: list[SystemMessage]) -> list[Any]:
-        """Place transient notices directly after the leading system prompt.
-
-        NOT a stylistic choice — a provider constraint, so do not "helpfully"
-        move them later in the list. `langchain_anthropic._format_messages`
-        raises "Received multiple non-consecutive system messages" for any
-        SystemMessage that is not adjacent to the leading system block: a
-        notice appended last, or slotted just before the final turn, kills the
-        whole turn on Claude (the default provider whenever ANTHROPIC_API_KEY
-        is set). Anthropic hoists every system message into the top-level
-        `system` parameter anyway, so adjacency loses nothing there, and
-        OpenAI accepts either placement.
-
-        What the placement still buys, and why it is the right compromise: the
-        conversation itself is left untouched, so the user's own message stays
-        the last message — the turn being answered — and a status line is never
-        mistaken for the thing to reply to. Order within the notices carries
-        the rest of the intent: completion (an instruction to act on now)
-        before progress (background awareness).
-        """
-        head = 0
-        while head < len(messages) and isinstance(messages[head], SystemMessage):
-            head += 1
-        return [*messages[:head], *notices, *messages[head:]]
-
     async def awrap_model_call(self, request: Any, handler: Any) -> Any:
-        told = (request.state or {}).get(DELIVERED_CHANNEL) or {}
-        finished_notice, finished = await self._finished_notice(told)
-        progress_notice, in_flight_shown = await self._progress_notice()
-        notices = [n for n in (finished_notice, progress_notice) if n is not None]
-        if not notices:
+        progress_notice, shown = await self._progress_notice()
+        if progress_notice is None:
             return await handler(request)
-
         response = await handler(
-            request.override(messages=self._inject(list(request.messages), notices))
-        )
-        # Only now that the model has actually seen them: re-baseline progress
-        # (rebuilt from the in-flight set, so a job that settles drops out of
-        # the map instead of lingering), and record the completions in the
-        # thread with this very answer — marked once that is checkpointed.
-        self._reported = {job.job_id: progress_signature(job) for job in in_flight_shown}
-        if not finished:
-            return response
-        now = now_iso()
-        return ExtendedModelResponse(model_response=response, command=Command(
-            update={DELIVERED_CHANNEL: {job.job_id: now for job in finished}}))
-
-    async def aafter_model(self, state: Any, runtime: Any) -> None:
-        """The model's answer is checkpointed: index what the thread now records."""
-        await self._mark_told(state.get(DELIVERED_CHANNEL) or {})
-        return None
+            request.override(messages=inject(list(request.messages), [progress_notice])))
+        # Only now that the model has seen it: re-baseline, rebuilt from the
+        # in-flight set, so a job that settles drops out of the map.
+        self._reported = {job.job_id: progress_signature(job) for job in shown}
+        return response
 
 
 class ChatSession:
@@ -497,8 +418,11 @@ class ChatSession:
                                  sync_timeout=self.sync_timeout,
                                  approval_required=self.approval_required),
             system_prompt=self.system_prompt,
+            # Completion first (outermost), progress after it: an instruction
+            # to act on now before background awareness.
             middleware=[JobNotificationMiddleware(
-                self.manager, self.session_id,
-                inline_answer_max=self.inline_answer_max)],
+                            self.manager, self.session_id,
+                            inline_answer_max=self.inline_answer_max),
+                        JobProgressMiddleware(self.manager, self.session_id)],
             checkpointer=self.checkpointer,
         )

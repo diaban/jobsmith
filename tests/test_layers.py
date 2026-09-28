@@ -19,6 +19,7 @@ MAY_IMPORT: dict[str, set[str]] = {
     "engine": set(),
     "artifacts": {"engine"},
     "dag": {"engine", "artifacts"},
+    "adapters": {"engine"},
 }
 
 #: (importing file, imported module) crossings still to be removed.
