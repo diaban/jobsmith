@@ -110,6 +110,7 @@ current and writes the records a merged PR forgot, marked as reconstructed.
 | 0172 | [The chat's launch_job stays its own shell over the adapter's contract](0172-chat-launch-stays-a-shell.md) | shared: `run_for`, `told_in_thread`, `JobDeliveryMiddleware`; the chat's approval, notice, plan watch and verbatim answer stay in `chat/` rather than six hooks on `launch_tool` | accepted |
 | 0187 | [A FAILED job says why as data, and "retryable" is what a resume answers](0187-structured-failure.md) | `Job.failure` = kind (`raised`/`interrupted`/`declared`/`no_result`/`unreadable`), `pending`, `retryable` = `bool(pending)`, the resume gate's test; every FAILED through `_fail` | accepted |
 | 0189 | [An interrupted job is relaunched only where its graph allows it, by the daemon, once](0189-orphan-relaunch.md) | `GraphSpec.relaunch` (0 = never) bounds attempts; `relaunch_interrupted` from `serve` only; claimed on a shared store (lease, one heartbeat, re-read) | accepted |
+| 0191 | [A step that failed transiently runs again before its dependents; no replanning](0191-repair-transient-steps.md) | `_emit_failure(retryable=True)` (a raised model call, never an empty answer); executor re-dispatches within `max_step_retries`, counted in `completed_capabilities`; replan left out | accepted |
 
 ### Issues cited without a record of their own
 

@@ -37,6 +37,7 @@ class ResearchState(CapabilityBaseState, total=False):
     aspects: list[str]
     notes: str
     grounded_on: list[str]
+    call_failed: bool           # the notes call raised: worth another try (#191)
 
 
 #: `read_files`' rule, one step earlier (→ 0081): a refusal is material, so a
@@ -297,7 +298,7 @@ class ResearchCapability(Capability):
                 temperature=0.2,
             )
         except Exception:
-            notes = ""
+            return {"notes": "", "grounded_on": grounded_on, "call_failed": True}
         return {"notes": notes, "grounded_on": grounded_on}
 
     async def emit_success(self, state: ResearchState) -> dict:
@@ -317,8 +318,10 @@ class ResearchCapability(Capability):
         # wrote a file and then broke still declares it (#41): "it had
         # material and produced nothing" and "it had nothing" are two
         # different defects.
+        failed = bool(state.get("call_failed"))
         return self._emit_failure(
-            "research produced no notes",
+            "research: the model call failed" if failed else "research produced no notes",
+            retryable=failed,
             meta={"grounded_on": state.get("grounded_on") or []},
         )
 
