@@ -149,3 +149,17 @@ def test_a_conversation_built_from_the_adapter_alone_is_told_once():
     assert report["in_thread"] == 1
     assert report["recorded"] == [report["job_id"]] and report["delivered"]
     assert report["loaded"] == []               # no bench: no chat, dag, service, app…
+
+
+async def test_the_default_notice_says_how_each_job_ended():
+    """What an application that overrides nothing tells its model: the result
+    of a job that is DONE, the reason of one that is not."""
+    from jobsmith.adapters.langchain import JobDeliveryMiddleware
+    from jobsmith.engine.models import Job, JobStatus
+
+    done = Job(job_id="aaaaaaaa1", status=JobStatus.DONE, label="1 + 2", result={"sum": 3})
+    failed = Job(job_id="bbbbbbbb2", status=JobStatus.FAILED, label="1 / 0", error="division by zero")
+    notice = (await JobDeliveryMiddleware(None, {"kind": "none"}).notice([done, failed])).content
+
+    assert "Job aaaaaaaa ('1 + 2') is DONE. Its result: {\"sum\": 3}" in notice
+    assert "Job bbbbbbbb ('1 / 0') is FAILED. Why: division by zero" in notice
