@@ -38,3 +38,8 @@ class GraphSpec:
     # What `ainvoke` would have returned → the job's result (JSON). May raise
     # `JobFailed`. A graph whose output is its answer passes nothing.
     result: Callable[[Any], Any] = _as_is
+    # How many times a job of this graph whose process died may be resumed
+    # with nobody asking (`JobManager.relaunch_interrupted`, #189). A resume
+    # runs the interrupted node again from its start, and only the graph
+    # knows whether that is harmless: 0, never, unless it says so.
+    relaunch: int = 0

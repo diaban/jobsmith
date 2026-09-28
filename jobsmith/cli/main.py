@@ -248,6 +248,9 @@ async def serve(args) -> int:
 
     app = await build_app(db=args.db, agent=args.agent)
     try:
+        # The one process whose jobs outlive their command: it may resume
+        # what a dead one left, where the graph says it may (#189).
+        await app.engine.relaunch_interrupted()
         config = uvicorn.Config(
             create_api(app.service()), host="127.0.0.1", port=args.port
         )

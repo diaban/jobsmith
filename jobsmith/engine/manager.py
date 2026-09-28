@@ -714,6 +714,47 @@ class JobManager:
         await self._push_pending()
         return stale
 
+    async def relaunch_interrupted(self) -> list[Job]:
+        """Resume, with nobody asking, the jobs a dead process left whose graph
+        says they may be (`GraphSpec.relaunch`), each while its attempt is at
+        most that bound — a job that kills its process is not relaunched for
+        ever (#189). Candidates are what `recover_interrupted` settled, now or
+        at an earlier start: FAILED, `interrupted`, retryable.
+
+        For a process whose jobs outlive the command that started them — the
+        daemon: a short-lived command relaunching one would stop it again on
+        exit and spend an attempt for nothing. On a shared store each job is
+        claimed first, like a takeover (`_take_over`): our lease written, one
+        heartbeat waited, read again; a process that started at the same
+        moment wrote after us, and the job is its to relaunch.
+        """
+        candidates = [job for job in await self.list_jobs(status=JobStatus.FAILED, limit=None)
+                      if self._relaunchable(job)]
+        if self.repo.shared and candidates:
+            for job in candidates:
+                await self.repo.save_lease(job.job_id, self.identity.lease(self.lease.ttl))
+            await asyncio.sleep(self.lease.heartbeat)
+            candidates = [job for job in candidates
+                          if (lease := (await self.repo.load_control(job.job_id)).lease)
+                          is not None and lease.owner == self.identity.token]
+        relaunched = []
+        for job in candidates:
+            try:
+                relaunched.append(await self.start_resume(job.job_id))
+            except ValueError:              # resumed or answered meanwhile: not ours
+                if self.repo.shared:
+                    await self.repo.release_lease(job.job_id)
+        if relaunched:
+            print(f"[jobs: {len(relaunched)} interrupted job(s) relaunched]", file=sys.stderr)
+        return relaunched
+
+    def _relaunchable(self, job: Job) -> bool:
+        spec = self.specs.get(job.graph)
+        failure = job.failure or {}
+        return (spec is not None and job.attempt <= spec.relaunch
+                and failure.get("kind") == FailureKind.INTERRUPTED.value
+                and bool(failure.get("retryable")))
+
     # ---------------- Live events ----------------
 
     def subscribe(self, *, max_queue: int = 256) -> asyncio.Queue:
