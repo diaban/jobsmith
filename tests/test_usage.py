@@ -193,6 +193,26 @@ async def test_a_langchain_model_call_in_a_job_is_booked_under_its_node():
     assert done.usage["models"] == ["claude-opus-5"] and done.usage["cost_usd"]
 
 
+def test_the_callback_reads_what_each_answer_carries():
+    """A generation with no usage is skipped, not the rest; no cache details is
+    no cache read; the model name may only be in `llm_output`."""
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+
+    from jobsmith.engine.usage import ModelCallUsage
+
+    answer = LLMResult(generations=[[
+        ChatGeneration(message=AIMessage("no usage")),
+        ChatGeneration(message=AIMessage("x", usage_metadata={
+            "input_tokens": 10, "output_tokens": 2, "total_tokens": 12}))]],
+        llm_output={"model_name": "claude-opus-5"})
+    with usage_ledger() as ledger:
+        ModelCallUsage().on_llm_end(answer)
+    total = ledger.total()
+    assert (total.calls, total.input_tokens, total.cached_input_tokens, total.output_tokens,
+            total.models) == (1, 10, 0, 2, ("claude-opus-5",))
+
+
 # ---------------------------------------------------------------- adapters
 
 
