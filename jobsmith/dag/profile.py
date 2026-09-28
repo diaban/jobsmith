@@ -255,4 +255,7 @@ class AgentProfile:
         default_factory=lambda: (rule_nonempty_answer, rule_min_answer_len())
     )
     max_refine: int = 2
+    # How many more times a step that failed and said another try is worth it
+    # (`_emit_failure(retryable=True)`) runs, before its dependents do (#191).
+    max_step_retries: int = 1
     generation_temperature: float = 0.2

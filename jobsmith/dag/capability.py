@@ -179,6 +179,7 @@ class Capability(ABC):
         detail: str,
         *,
         recoverable: bool = True,
+        retryable: bool = False,
         meta: dict[str, Any] | None = None,
     ) -> dict:
         """Report this step as failed — with whatever it managed to produce.
@@ -188,6 +189,11 @@ class Capability(ABC):
         (`artifact_meta(...)`, see `artifacts/store.py`), or the file it left on
         disk is recorded nowhere. Same reasoning as the usage stamp below: a
         failed step's evidence is exactly the evidence worth keeping.
+
+        `retryable` says the failure was transient — a model call that raised,
+        not an answer that was empty — so the executor runs the step again
+        before its dependents, within the profile's `max_step_retries` (#191).
+        A failure that would come back the same costs a call for nothing.
         """
         err: NodeError = {
             "source": self.spec.name,
@@ -199,6 +205,8 @@ class Capability(ABC):
         # is worth having.
         result: CapabilityResult = {"ok": False, "error": detail,
                                     "meta": self._usage_meta(meta)}
+        if retryable:
+            result["retryable"] = True
         publish(f"step:{self.spec.name}", result)
         self._declare_files(result)
         return {

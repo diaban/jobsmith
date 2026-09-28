@@ -101,6 +101,7 @@ class CapabilityResult(TypedDict, total=False):
     data: dict[str, Any]        # capability-specific payload (matches its output_schema)
     error: str | None
     meta: dict[str, Any]        # via_fallback, timings, artifact refs, ...
+    retryable: bool             # failed, and another try is worth it (#191)
 
 
 def merge_results(
