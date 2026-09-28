@@ -4,8 +4,10 @@
 G2 here: a plain structured graph — no chat, no document, no planner — runs
 as a job on the engine alone, and the job's result is exactly what the graph
 returned, and — addressed to nobody — it is delivered as it settles. It runs
-in a fresh interpreter, so what it did NOT load is part of the proof. (G1, a
-ReAct graph, joins at step 8.)
+in a fresh interpreter, so what it did NOT load is part of the proof.
+
+G1 here: a LangChain ReAct agent (`create_agent`) is an agent of its own —
+composed by `build_app`, run by `run_for` — and its model calls are counted.
 """
 from __future__ import annotations
 
@@ -96,3 +98,48 @@ async def test_one_engine_runs_several_graphs_each_by_its_name():
     assert (named.graph, named.result) == ("plus_ten", {"n": 11})
     with pytest.raises(ValueError, match="plus_hundred"):
         await jobs.create_job({"n": 1}, graph="plus_hundred")
+
+
+async def test_a_react_agent_runs_as_a_job_through_the_composition_root(tmp_path):
+    """G1: nothing of the planner DAG is involved — the app is the engine
+    running the agent's own graph, and its answer is the job's result."""
+    from conftest import ScriptedChatModel
+    from langchain.agents import create_agent
+    from langchain_core.messages import AIMessage
+
+    from jobsmith.agents.base import AgentDefinition
+    from jobsmith.app.agent import build_app
+    from jobsmith.app.providers import make_llm
+    from jobsmith.engine.models import JobStatus
+
+    model = ScriptedChatModel(responses=[AIMessage(
+        "Four.", usage_metadata={"input_tokens": 12, "output_tokens": 2, "total_tokens": 14})])
+    react = AgentDefinition(
+        name="react", description="a ReAct loop, as LangChain builds it",
+        graph=lambda ctx: GraphSpec(
+            "react", create_agent(ctx.chat_model, tools=[], checkpointer=ctx.checkpointer),
+            result=lambda output: output["messages"][-1].text))
+    app = await build_app(agent=react, llm=make_llm("fake"), chat_model=model, db="memory",
+                          reports_dir=str(tmp_path))
+    try:
+        job = await app.engine.create_job({"messages": [{"role": "user", "content": "2 + 2?"}]},
+                                          label="2 + 2?")
+        done = await app.engine.run_for(job.job_id, 10)
+    finally:
+        await app.aclose()
+
+    assert (done.status, done.graph, done.result) == (JobStatus.DONE, "react", "Four.")
+    assert done.usage["calls"] == 1 and done.usage["output_tokens"] == 2
+    assert app.dag is None and app.chat is None
+    with pytest.raises(RuntimeError, match="its own graph"):
+        _ = app.manager
+
+
+def test_an_agent_is_a_capability_pack_or_a_graph_never_both():
+    from jobsmith.agents.base import AgentDefinition
+
+    with pytest.raises(ValueError, match="exactly one"):
+        AgentDefinition(name="neither", description="")
+    with pytest.raises(ValueError, match="exactly one"):
+        AgentDefinition(name="both", description="", capabilities=lambda ctx: [],
+                        graph=lambda ctx: GraphSpec("g", None))

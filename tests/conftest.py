@@ -97,8 +97,10 @@ class ScriptedChatModel(BaseChatModel):
         msg = self._next(messages)
         text = msg.text if isinstance(msg.text, str) else ""
         pieces = [text[i:i + self.chunk_size] for i in range(0, len(text), self.chunk_size)]
-        for piece in pieces or [""]:
-            yield ChatGenerationChunk(message=AIMessageChunk(content=piece))
+        for i, piece in enumerate(pieces or [""]):
+            # usage on ONE chunk: aggregation sums it
+            usage = msg.usage_metadata if i == 0 else None
+            yield ChatGenerationChunk(message=AIMessageChunk(content=piece, usage_metadata=usage))
         # Tool calls travel as `tool_call_chunks`, the only form the chunk
         # merger reassembles into a real `tool_calls` list — a chunk carrying
         # `tool_calls=` directly is dropped on aggregation and the agent then

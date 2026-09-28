@@ -94,7 +94,7 @@ The point of this layer: **a job must outlive the command that launched it**. `j
 
 ### Agents (`agents/`) — what an agent *is*
 
-An agent is **a capability pack + a profile (+ an optional chat persona, + whatever it needs open)**, and nothing else — `AgentDefinition` in `agents/base.py`. The runtime, job engine, chat, CLI and API are shared by all of them, so **adding an agent touches no shared code**: define the capabilities, register the definition in `agents/__init__.py`, done. `tests/test_agents.py` pins that property.
+An agent is **a capability pack + a profile (+ an optional chat persona, + whatever it needs open)**, or **a graph of its own** (`graph=`, a `GraphSpec` factory: `AgentApp.engine` runs it, no DAG, no chat) — `AgentDefinition` in `agents/base.py`. The runtime, job engine, chat, CLI and API are shared by all of them, so **adding an agent touches no shared code**: define the capabilities, register the definition in `agents/__init__.py`, done. `tests/test_agents.py` pins that property.
 
 ```python
 AgentDefinition(

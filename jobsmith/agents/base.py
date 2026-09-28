@@ -10,6 +10,7 @@ of them; a new agent supplies only what is genuinely domain-specific.
       capabilities(ctx)      what it can do       -> the registry, hence the planner
       profile                how it speaks        -> prompts, validation rules
       chat_prompt            the conversational persona (optional)
+      graph(ctx)             OR a graph of its own -> the job engine runs it as is
 
 That is the whole contract. `build_app(agent=...)` composes any of them, so
 adding an agent never means writing another composition root — which is
@@ -39,6 +40,7 @@ from ..dag.capability import Capability
 from ..dag.deps import LLMClient
 from ..dag.prior_jobs import PriorJobSource
 from ..dag.profile import AgentProfile
+from ..engine.graph import GraphSpec
 
 
 @dataclass(frozen=True)
@@ -85,16 +87,33 @@ class AgentContext:
     artifacts: ArtifactStore | None = None
     readable_roots: tuple[str, ...] = ()
     prior_jobs: PriorJobSource | None = None
+    # What a GRAPH agent is built from besides the above: the checkpointer its
+    # graph must be compiled with (a resume re-enters its thread), and the
+    # deployment's LangChain chat model, for a graph made of one.
+    checkpointer: Any = None
+    chat_model: Any = None
 
 
 @dataclass(frozen=True)
 class AgentDefinition:
+    """A capability pack the planner DAG runs (`capabilities` + `profile`), OR
+    any LangGraph graph of its own (`graph`: a factory of the `GraphSpec` the
+    job engine runs — docs/design/core-v1.md, step 8). Exactly one of the two.
+    A graph agent gets the job engine and no chat: the chat's tools launch
+    the DAG."""
+
     name: str
     description: str
-    capabilities: Callable[[AgentContext], list[Capability]]
-    profile: AgentProfile
+    capabilities: Callable[[AgentContext], list[Capability]] | None = None
+    profile: AgentProfile | None = None
     chat_prompt: str | None = None
     open_resources: Callable[[AsyncExitStack], Awaitable[Any]] | None = None
+    graph: Callable[[AgentContext], GraphSpec] | None = None
+
+    def __post_init__(self) -> None:
+        if (self.graph is None) == (self.capabilities is None):
+            raise ValueError(f"agent {self.name!r}: give it a capability pack or a graph, "
+                             f"exactly one")
 
 
 async def open_agent_resources(definition: AgentDefinition, stack: AsyncExitStack) -> Any:
