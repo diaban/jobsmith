@@ -108,17 +108,16 @@ AgentDefinition(
 
 - `agents/default/`: `read_files`/`prior_jobs`/`documents`/`web_search` → `research` → `analysis` → `critique`, plus `slide_deck`. `analysis`/`critique` subclass `SingleStepCapability` (`_step.py`); `critique` overrides `_material` to read both. → 0000
   - **`documents` is the grounding step**, over the `DocumentSource` port (`sources.py`; `LocalFiles` is keyword ranking, no key, no network). → 0000
-  - **`read_files` reads a named file** (`documents` searches): port `DocumentReader`, path in `inputs["source_files"]` (`SOURCE_FILES_INPUT_KEY`), never parsed from the query; dropped when nothing was named; no model call; **a refusal is material, not silence**. → 0060
-  - **`prior_jobs` reads an earlier RUN, not its file**: `inputs["from_jobs"]`, port `PriorJobSource`; no model call; refusal is material; bounded at 24 000 characters, ≤ 3 jobs; session scope enforced in `chat/tools.py`. → 0074
-  - **`prior_jobs` and `read_files` are first in the registry list**: `KeywordLLM` chains it in order, and a gated step pruned from the middle severs grounding→reasoning. → 0074
-  - **`web_search`** = `DocumentsCapability` over `TavilySource`: page over snippet, `$TAVILY_SEARCH_DEPTH` default `advanced`, `max_chars=8_000` per document; client closed on the app's stack, an HTTP error raises. → 0075
+  - **`read_files` reads a named file** (`documents` searches): path in `inputs["source_files"]`, never parsed from the query; **a refusal is material, not silence**. → 0060
+  - **`prior_jobs` reads an earlier RUN, not its file** (`inputs["from_jobs"]`, bounded, session scope in `chat/tools.py`); it and `read_files` are **first in the registry** (`KeywordLLM` chains in order). → 0074
+  - **`web_search`** = `DocumentsCapability` over `TavilySource`: pages, not snippets, cut per document; an HTTP error raises. → 0075
   - **A capability nothing can serve stays out of the registry** — every conditional step is registered only when something backs it (`open_default_resources`); an empty registry is then answered directly. → 0000, 0038
   - **`slide_deck` is a generation, not a report format**: deck structure is asked of the model; only `pptx_deck.py` imports `python-pptx`; 16:9; refused without a job before the LLM call; the deck is an `annex`. **Its description says what it is NOT.** → 0035, 0061
   - **The deliverable is written for its reader, and answers**: prompts name the reader and oblige the answer first, from the material, doubt marked where it bears; `SUBJECT_ONLY_RULE` is on every material prompt and the generator, and names the deck (a separate step builds it, → 0129); `NO_ANSWER_INSTRUCTION` sets a high bar and shape for a refusal. → 0058, 0073
   - **The generator is told which files the run delivers** (`delivered_files_note`: requested formats + declared annexes, or "none") and names no other; no prompt offers a file by example. When the list names the answer itself, `ANSWER_FILE_RULE` says that entry **is** the text being written — never described, saved by hand or "delivered separately". → 0077, 0126
   - Retrieved passages carry a **quotable id** (`path#chunk`); `render_context` gives the model the material, `render_report` gives the human the provenance only.
-  - **`research` reads every retrieval step's material** (`GROUNDING`, not first-match) and `read_files`' refusals (`REFUSALS`), in its own prompt, bounded at 32 000 characters, and says so in `meta["grounded_on"]`. → 0081
-  - **`critique` checks the subject, not the work** (≤ 8 bullets, reads analysis *and* notes) and feeds the generator. Watch for an *Open questions* section appearing. → 0082
+  - **`research` reads every retrieval step's material** and `read_files`' refusals, bounded, and says so in `meta["grounded_on"]`. → 0081
+  - **`critique` checks the subject, not the work**, and feeds the generator. → 0082
 - `agents/banking/`: the domain example, with its **own ports** next to its capabilities (`deps.py`) and its own adapters (`fakes.py`); `vision` is registered only when the LLM satisfies `VisionClient`. → 0000
 - Selection: `--agent NAME` (CLI, applies to whichever process owns the engine — so pass it to `serve`), `build_app(agent=...)`, `make chat AGENT=banking`.
 
@@ -204,7 +203,7 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 - **`dag/prior.py`** (`RepositoryPriorJobs`) is the only place that knows how a finished run's material is reached. → 0074
 - **Ownership is on the record** (`engine/ownership.py`, `("jobs_v1", id, "control")`): a lease written **before** RUNNING, heartbeat 2 s, TTL 30 s; **a cancel is a request the owner acts on**, never a status written over its run. → 0010
 - **Events cross processes on a shared database** (`WatchedEvents`, watching **only while someone is subscribed**, announcing a job whose `updated_at` moved): SQLite polls `PRAGMA data_version` on its own read-only connection and, only when it moved, re-reads what changed since its last look; Postgres `NOTIFY`s on publish and `LISTEN`s on a connection off the pool; memory stays `InProcessEvents`. Postgres tests run when `$JOBSMITH_TEST_PG` names a DSN. → 0100, 0138
-- **Resume** re-enters with `None`, gated on CANCELLED/FAILED **and** non-empty `runner.pending()`; seeds usage; `_begin_resume` clears `job.error`, `job.result` and `job.delivered_at`. No partial re-run of a finished DAG. → 0005
+- **Resume** re-enters with `None`, gated on CANCELLED/FAILED **and** non-empty `runner.pending()`; seeds usage; `_begin_resume` clears `job.error`, `job.result` and `job.delivered_at`, and counts `job.attempt`. No partial re-run of a finished DAG. → 0005
 - **Vocabulary**: an **output** is what the job produces for the human (`DagJob.outputs`, role `main`|`alternate`|`annex`); a **result** is a capability's payload (`results`). `DagJob.report_path` = the main output's path; the engine's record has neither (`dag/jobs.py` derives them from facts). → 0000
 - **Reporters** (`dag/report.py`): `build_document` → `JobDocument` → `FileReporter` subclasses (`render`, or `serialize` for bytes); `is_binary_format`. → 0009
 - **Exactly one output is `role="main"`** (the first format; the rest `alternate`, never `annex`); `compose_reporters` refuses two Reporters on one extension. `pick_report_formats()` only says *which* file when one is wanted and none was named. A failed write leaves the job DONE; the view's `error` names the format. → 0028, 0096
@@ -228,7 +227,7 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 - **The approval card is a notice** (`job_started`: query, sources, `from_jobs` as short id + start of query, name/title/formats, job id); the gate survives behind `$JOBSMITH_APPROVE_JOBS`. → 0083, 0104
 - **The engine never sees the thread**: a self-contained `query`, plus `recent_conversation()` as `inputs[CONVERSATION_INPUT_KEY]`. `source_files` and `from_jobs` (resolved against **this session's** jobs) are `launch_job` arguments. → 0004, 0060, 0074
 - **Notifications are transient `SystemMessage`s in the model request, never state**: completion = `adapters/langchain.JobDeliveryMiddleware` (chat's words: `JobNotificationMiddleware`), progress = `JobProgressMiddleware`, both placed **directly after the system prompt** (`inject`), where Anthropic hoists them. → 0006
-  - **Completion is told once per ending**: `delivered_jobs` (id → when) enters the thread with the answer (`ExtendedModelResponse`); `delivered_at` marks after, in `aafter_model`. → 0161 (G5)
+  - **Completion is told once per ending**: `delivered_jobs` (id → attempt, never a time: #170) enters the thread with the answer (`ExtendedModelResponse`); `delivered_at` marks after, in `aafter_model`. → 0161 (G5)
 - **`conftest.ScriptedChatModel` implements `_astream`** with several chunks; the message list is also run through the real provider formatters, which only run with the chat extras (CI). → 0006
 
 ### HTTP API (`api/`)

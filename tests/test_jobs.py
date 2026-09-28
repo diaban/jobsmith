@@ -287,6 +287,7 @@ async def test_every_terminal_is_announceable_and_a_resume_unmarks_it(
     done = await mgr.resume_job(job.job_id)
     assert done.status is JobStatus.DONE
     assert done.announced is False                # news again, like `error` is cleared
+    assert (done.record.attempt, job.record.attempt) == (2, 1)   # which ending it is (#170)
     assert [j.job_id for j in await mgr.pending_deliveries("s1")] == [job.job_id]
 
 

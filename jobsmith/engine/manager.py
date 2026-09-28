@@ -269,8 +269,10 @@ class JobManager:
         # ...and so is the delivery of the stop: a job picked back up is news
         # again. Without this, a cancelled job delivered to its address and
         # then resumed to DONE is never pending again, and its answer never
-        # reaches whoever asked for it.
+        # reaches whoever asked for it. The attempt says WHICH ending a
+        # receiver was told of, with no clock to compare (#170).
         job.delivered_at = None
+        job.attempt += 1
         # A cancel request is a message to the attempt it stopped; left in the
         # store, it would stop the resumed one on its first heartbeat.
         if self.repo.shared:

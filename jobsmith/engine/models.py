@@ -39,6 +39,7 @@ class Job:
     reply_to: dict[str, Any] = field(default_factory=lambda: {"kind": "none"})
     reply_key: str = "none"
     delivered_at: str | None = None
+    attempt: int = 1                        # counted up by each resume: which ending this is
     created_at: str = ""                    # ISO timestamps
     updated_at: str = ""
     # What the run published while it ran (`engine/facts.py`): the graph's own
@@ -66,6 +67,7 @@ class Job:
             "reply_to": self.reply_to,
             "reply_key": self.reply_key,
             "delivered_at": self.delivered_at,
+            "attempt": self.attempt,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "facts_at": self.facts_at,

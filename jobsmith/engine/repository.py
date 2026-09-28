@@ -185,6 +185,7 @@ class StoreJobRepository:
             reply_to=s.get("reply_to") or {"kind": "none"},
             reply_key=s.get("reply_key") or "none",
             delivered_at=s.get("delivered_at"),
+            attempt=s.get("attempt") or 1,
             created_at=s.get("created_at", ""),
             updated_at=s.get("updated_at", ""),
             facts_at=s.get("facts_at") or {},
