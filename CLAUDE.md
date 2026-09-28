@@ -182,7 +182,7 @@ Capability `build()` MUST use `self.state_graph(PrivateState)` (which sets `outp
 
 ### Jobs layer (`engine/`)
 
-`JobManager` holds **only the use cases** — `create_job` / `run_job` (awaitable) / `start_job` (background task) / `resume_job` (awaitable) / `start_resume` (background) / `get_job` / `list_jobs` / `cancel_job` / `recover_interrupted`. Everything else is a collaborator behind a port, so each changes for its own reason:
+`JobManager` holds **only the use cases** — `create_job` / `run_job` (awaitable) / `start_job` (background task) / `run_for` (waits up to a timeout, then promotes) / `resume_job` (awaitable) / `start_resume` (background) / `get_job` / `list_jobs` / `cancel_job` / `recover_interrupted`. Everything else is a collaborator behind a port, so each changes for its own reason:
 
 | collaborator | responsibility | file |
 |---|---|---|
@@ -217,8 +217,8 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 `ChatSession(manager, model, *, session_id, system_prompt, checkpointer).build()` → a `langchain.agents.create_agent` (LangChain model, NOT the framework's LLMClient — deliberate two-stack split: LangChain handles per-provider tool formats; the job engine stays dependency-light).
 
 - **`chat/runner.py` alone knows what `astream` emits**: `Token`, `ToolStarted`/`ToolFinished` (real tool name; wording is the front-end's), `JobStarted`, `JobPlanned`, then exactly one terminal, `Message` or `Proposal`. → 0050, 0083, 0086
-- **Tools** (`chat/tools.py`) wrap JobManager use-cases, scoped to the session's own jobs. `launch_job` **runs the task**: `create_job(session_id=...)` + `start_job`, then it *waits* on that task for `pick_sync_timeout()`.
-- **Synchronous by default, promoted by the clock**: `start_job` then `asyncio.wait` (never `wait_for`) for `$JOBSMITH_SYNC_TIMEOUT` (20 s; `0` = never); no classification; a job finished in the turn is `mark_announced`. → 0083
+- **Tools** (`chat/tools.py`) wrap JobManager use-cases, scoped to the session's own jobs. `launch_job` **runs the task**: `create_job(session_id=...)` + `run_for(job_id, pick_sync_timeout())`.
+- **Synchronous by default, promoted by the clock**: `JobManager.run_for` = `start_job` then `asyncio.wait` (never `wait_for`) for `$JOBSMITH_SYNC_TIMEOUT` (20 s; `0` = never); no classification; a job finished in the turn is `mark_announced`. → 0083
 - **The plan is announced while the turn waits**, from `manager.subscribe()` (subscribed before `start_job`, drained with `None` when the run ends, released in `finally`); never after promotion; a one-step plan is not announced. → 0086
 - **The answer is written verbatim into the turn**, never returned through the model; a promoted answer uses the same channel up to `$JOBSMITH_INLINE_ANSWER_MAX` (2 000), or at any length when no file was written. → 0083, 0085
 - **The approval card is a notice** (`job_started`: query, sources, `from_jobs` as short id + start of query, name/title/formats, job id); the gate survives behind `$JOBSMITH_APPROVE_JOBS`. → 0083, 0104
@@ -232,7 +232,7 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 `create_api(service) -> FastAPI` (extra `.[api]`; served by `jobsmith serve`, whichever agent is composed). A pure adapter: every route is serialization plus one `AgentService` call — if job or chat logic reappears here, it belongs in `service.py`.
 
 - **Chat**: `POST /sessions`, `/sessions/{id}/messages`, `/sessions/{id}/approval`, each with a `/stream` SSE twin (no queue behind it). → 0050
-- **Jobs**: `GET /jobs[?session_id&status]`, `GET /jobs/{id}` (plan/step_finished_at/results — the UI's DAG data), `POST /jobs` (direct launch), `POST /jobs/{id}/cancel`, `POST /jobs/{id}/resume` (409 when the job has nothing left to run — `AgentService.resume_job` answers refusals as `{"status", "error"}` on both backings, so `DaemonClient` maps the code back into that dict).
+- **Jobs**: `GET /jobs[?session_id&status]`, `GET /jobs/{id}` (plan/step_finished_at/results — the UI's DAG data), `POST /jobs[?wait=S]` (direct launch; `wait` = `run_for`), `POST /jobs/{id}/cancel`, `POST /jobs/{id}/resume` (409 when the job has nothing left to run — `AgentService.resume_job` answers refusals as `{"status", "error"}` on both backings, so `DaemonClient` maps the code back into that dict).
 - **Outputs**: `/jobs/{id}/outputs[/{name}]`; `/report` serves text (type from `REPORT_MEDIA_TYPES`), **415** for a binary deliverable. → 0034
 - **Live**: `GET /events`, in-process, drops on full; untestable through `ASGITransport` (hangs), so `DaemonClient.subscribe` is tested under uvicorn. → 0048
 
