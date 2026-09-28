@@ -35,13 +35,15 @@ feature.
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import dataclasses
 import json
 import sys
 import uuid
 from collections.abc import Sequence
 from typing import Any
 
-from .delivery import Deliverer, Nobody, nobody
+from .delivery import Deliverer, Nobody, Pushed, nobody
 from .events import InProcessEvents, JobEvents, job_event
 from .graph import GraphSpec, JobFailed
 from .models import Job, JobStatus, now_iso
@@ -109,6 +111,7 @@ class JobManager:
         self.repo: JobRepository = repository or StoreJobRepository(store)
         self.events: JobEvents = events or InProcessEvents()
         self._tasks: dict[str, asyncio.Task] = {}  # in-process cancellation handles
+        self._pushes: dict[str, asyncio.Task] = {}  # "job_id#attempt" → its push
         # Who this manager is on the leases it writes, and the timings of
         # ownership (#10). Only consulted when the repository is `shared`:
         # a process-local store pays nothing for any of it.
@@ -126,10 +129,13 @@ class JobManager:
         # Delivered as it settles, if its kind delivers then (`delivery.py`).
         # Every ending is written here, whichever path wrote it — the one
         # place to stand. A kind this process does not serve is left to one
-        # that does, undelivered.
+        # that does, undelivered. A pushed kind is never called here: the
+        # ending is saved first, then pushed by a task of its own (#166).
+        deliverer = None
         if job.status in SETTLED and job.delivered_at is None:
             deliverer = self.deliverers.get(job.reply_to.get("kind", ""))
-            if deliverer is not None and await deliverer.deliver(job):
+            if deliverer is not None and not isinstance(deliverer, Pushed) \
+                    and await deliverer.deliver(job):
                 job.delivered_at = now_iso()
         job.updated_at = now_iso()
         # Inside `run_job` a usage ledger is installed for this run, so every
@@ -140,6 +146,8 @@ class JobManager:
             job.usage = ledger.total().to_dict()
         await self.repo.save_summary(job)
         self.events.publish(job_event(job))
+        if isinstance(deliverer, Pushed):
+            self._push_later(deliverer, job)
 
     # ---------------- Lifecycle ----------------
 
@@ -666,6 +674,7 @@ class JobManager:
         if alive:
             print(f"[jobs: {alive} job(s) still running in another process, left to it]",
                   file=sys.stderr)
+        await self._push_pending()
         return stale
 
     # ---------------- Live events ----------------
@@ -689,6 +698,52 @@ class JobManager:
         jobs = [job for job in await self.list_jobs(reply_to=reply_to, limit=None)
                 if job.status in SETTLED and job.delivered_at is None]
         return jobs
+
+    def _push_later(self, deliverer: Pushed, job: Job) -> None:
+        """Push one ending in a task of its own, once per attempt in this process.
+
+        A fresh context: the task must not carry the run's usage ledger or
+        anything else of the run that happened to schedule it.
+        """
+        key = f"{job.job_id}#{job.attempt}"
+        if key in self._pushes:
+            return
+        task = asyncio.create_task(self._push(deliverer, dataclasses.replace(job)),
+                                   name=f"push:{key}", context=contextvars.Context())
+        self._pushes[key] = task
+        task.add_done_callback(lambda _: self._pushes.pop(key, None))
+
+    async def _push(self, deliverer: Pushed, job: Job) -> None:
+        """Retry until the receiver has it (`delivery.Pushed`), then stamp.
+
+        Stamped only while the record is still that ending: a job resumed
+        meanwhile ends again, and that later ending has its own push.
+        """
+        delays = deliverer.delays()
+        while True:
+            try:
+                await deliverer.push(job)
+                break
+            except Exception as failed:       # a receiver's failure is retried, never raised
+                delay = next(delays)
+                print(f"[jobs: push of {job.job_id} to {job.reply_key} failed ({failed}); "
+                      f"again in {delay:g}s]", file=sys.stderr)
+                await asyncio.sleep(delay)
+        current = await self.get_job(job.job_id)
+        if current is not None and current.attempt == job.attempt \
+                and current.status in SETTLED and current.delivered_at is None:
+            current.delivered_at = now_iso()
+            await self._persist_summary(current)
+
+    async def _push_pending(self) -> None:
+        """Push again what a stopped process left pending — at startup."""
+        if not any(isinstance(d, Pushed) for d in self.deliverers.values()):
+            return
+        for job in await self.repo.load_all():
+            deliverer = self.deliverers.get(job.reply_to.get("kind", ""))
+            if isinstance(deliverer, Pushed) and job.status in SETTLED \
+                    and job.delivered_at is None:
+                self._push_later(deliverer, job)
 
     async def mark_delivered(self, job_id: str) -> None:
         """The receiver has it: stamp `delivered_at`, once."""
