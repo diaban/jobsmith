@@ -23,16 +23,15 @@ import uuid
 from typing import Any
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import SystemMessage
 
-from ..adapters.langchain import JobDeliveryMiddleware, inject
+from ..adapters.langchain import JobDeliveryMiddleware
+from ..adapters.langchain import JobProgressMiddleware as BaseProgressMiddleware
 from ..dag.jobs import DagJob, DagJobs, session_address
 from ..dag.state import TERMINAL_UNANSWERED
 from ..engine.models import Job, JobStatus
 from .runner import CUSTOM_ANSWER
 from .tools import (
-    IN_FLIGHT,
     make_job_tools,
     progress_line,
     progress_signature,
@@ -316,73 +315,36 @@ class JobNotificationMiddleware(JobDeliveryMiddleware):
         )
 
 
-class JobProgressMiddleware(AgentMiddleware):
-    """Tells the model how this session's running jobs are doing — only on the
-    turns where that CHANGED (`progress_signature`), and remembered in memory
-    only. Pushing it every turn would spend tokens to repeat yesterday's news;
-    leaving it to a tool call would mean the model only knows when the user
-    thinks to ask — and the whole point is that the wait is opaque. So: push
-    the one-line digest when something moved, and keep `job_status` as the
-    pull path for detail. It rides on the request (`inject`), so a job
-    reporting progress on five turns leaves zero notices in the thread.
+class JobProgressMiddleware(BaseProgressMiddleware):
+    """Tells the model how this session's running jobs are doing, in the DAG's
+    terms: steps of the plan done out of all, and what is running now
+    (`progress_line`). Pushed only when that moved (`progress_signature`),
+    never in the thread — the adapter's (`adapters/langchain`). Pull detail
+    with `job_status`.
     """
 
     def __init__(self, manager: DagJobs, session_id: str):
-        super().__init__()
+        super().__init__(manager.engine, session_address(session_id),
+                         max_jobs=MAX_PROGRESS_JOBS)
         self.manager = manager
-        self.session_id = session_id
-        # job_id → last progress signature the model was shown. In memory
-        # because it is a conversational nicety, not a guarantee: after a
-        # daemon restart the worst case is one repeated progress line.
-        self._reported: dict[str, str] = {}
 
-    async def _in_flight(self) -> tuple[list[DagJob], int]:
-        """The session's running/queued jobs, newest first, loaded in full.
+    async def load(self, job: Job) -> DagJob | None:
+        # In full: a summary has the finished steps but not the plan, and the
+        # plan is what lets the line say "2/4 steps done" rather than "running".
+        return await self.manager.get_job(job.job_id)
 
-        `list_jobs` returns index summaries, which carry the status and the
-        finished steps but not the plan — so the few newest in-flight jobs are
-        re-read in full, which is what lets the notice say "2/4 steps done"
-        instead of just "running". The cap bounds both the store reads and the
-        tokens: beyond it the notice only counts.
-        """
-        in_flight = [job for status in IN_FLIGHT
-                     for job in await self.manager.list_jobs(
-                         session_id=self.session_id, status=status, limit=None)]
-        in_flight.sort(key=lambda j: j.created_at, reverse=True)
-        loaded = [await self.manager.get_job(job.job_id) for job in in_flight[:MAX_PROGRESS_JOBS]]
-        # A job can settle between the listing and the reload; leave it to the
-        # completion notice rather than reporting it as still running.
-        shown = [job for job in loaded if job is not None and job.status in IN_FLIGHT]
-        return shown, max(len(in_flight) - len(shown), 0)
+    def signature(self, job: Any) -> str:
+        return progress_signature(job)
 
-    async def _progress_notice(self) -> tuple[SystemMessage | None, list[DagJob]]:
-        shown, others = await self._in_flight()
-        moved = [
-            job for job in shown
-            if progress_signature(job) != self._reported.get(job.job_id)
-        ]
-        if not moved:
-            return None, shown
-        lines = [progress_line(job) for job in moved]
-        if others:
-            lines.append(f"(+{others} more still running)")
+    def line(self, job: Any) -> str:
+        return progress_line(job)
+
+    async def notice(self, lines: list[str]) -> SystemMessage:
         return SystemMessage(
             f"[job progress] The following {PROGRESS_MARKER} — no results yet, "
             "do not announce them as finished. Mention the state only if the "
             "user asks or it is genuinely useful.\n"
-            + "\n".join(lines)
-        ), shown
-
-    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
-        progress_notice, shown = await self._progress_notice()
-        if progress_notice is None:
-            return await handler(request)
-        response = await handler(
-            request.override(messages=inject(list(request.messages), [progress_notice])))
-        # Only now that the model has seen it: re-baseline, rebuilt from the
-        # in-flight set, so a job that settles drops out of the map.
-        self._reported = {job.job_id: progress_signature(job) for job in shown}
-        return response
+            + "\n".join(lines))
 
 
 class ChatSession:

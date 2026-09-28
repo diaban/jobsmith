@@ -70,7 +70,9 @@ class Job:
             "attempt": self.attempt,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
-            "facts_at": self.facts_at,
-            "steps": self.steps,
+            # copies: a run keeps adding to these, and a store that keeps
+            # the object it was given (memory) must not see it move (#171)
+            "facts_at": dict(self.facts_at),
+            "steps": dict(self.steps),
             "usage": self.usage,
         }
