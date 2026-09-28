@@ -20,6 +20,15 @@ class JobStatus(StrEnum):
     NEEDS_INPUT = "needs_input"             # paused at an interrupt, waiting for an answer
 
 
+class FailureKind(StrEnum):
+    """How a job came to be FAILED (#187): `Job.failure["kind"]`."""
+    RAISED = "raised"               # a node raised
+    INTERRUPTED = "interrupted"     # the process running it stopped
+    DECLARED = "declared"           # the run said so (`graph.JobFailed`)
+    NO_RESULT = "no_result"         # the stream ended without returning
+    UNREADABLE = "unreadable"       # what it returned could not be the result
+
+
 @dataclass
 class Job:
     """Snapshot view of a job. `job_id` doubles as the LangGraph thread_id.
@@ -36,6 +45,9 @@ class Job:
     result: Any = None                      # what `GraphSpec.result` made of its output
     error: str | None = None                # why it FAILED (never empty then)
     asked: Any = None                       # what it asks while NEEDS_INPUT (JSON)
+    # Why it FAILED, as data: {"kind": FailureKind, "pending": the nodes a
+    # resume would run, "retryable": whether a resume takes it} (#187).
+    failure: dict[str, Any] | None = None
     # Where its ending goes (`engine/delivery.py`): JSON, `{"kind": …}`, and
     # the flat key its deliverer indexes it by; stamped once delivered.
     reply_to: dict[str, Any] = field(default_factory=lambda: {"kind": "none"})
@@ -67,6 +79,7 @@ class Job:
             "result": self.result,
             "error": self.error,
             "asked": self.asked,
+            "failure": self.failure,
             "reply_to": self.reply_to,
             "reply_key": self.reply_key,
             "delivered_at": self.delivered_at,
