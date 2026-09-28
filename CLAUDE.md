@@ -8,14 +8,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-`jobsmith` is both a **product** — a general-purpose conversational agent (`python -m jobsmith`) that answers simple messages directly and **runs** everything else on the job engine: a task runs inside the turn and answers there, and one that outlives a clock is promoted to a **background job** and surfaced back into the conversation when it lands (#83) — and the **domain-agnostic framework** it is built on (LangGraph, object-oriented node pattern): a registry-driven planner emits a DAG of pluggable capabilities (self-describing agentic sub-graphs); a wave-based executor fans them out in parallel; a generation pipeline merges their results; each run is a persistent, trackable, cancellable **Job**; a chat layer (`jobsmith/chat/`, LangGraph prebuilt ReAct agent) sits on top. **`jobsmith/agents/` holds the agent definitions** (a capability pack + a profile: `default` = grounding (`read_files`/`prior_jobs`/`documents`)→research→analysis→critique (+ `slide_deck`), `banking` = the domain example) and **`jobsmith/app/` is the composition root that runs any of them** (provider selection, persistence, `build_app(agent=...)`).
+`jobsmith` is a **job engine** (`jobsmith/engine/`) — the product since 2026-09-27: it runs any LangGraph graph as a durable, trackable, cancellable **Job** and delivers each ending exactly once to a return address (`reply_to`). → 0161. On top of it sits one **reference graph**, the planner DAG (`jobsmith/dag/`, object-oriented node pattern): a registry-driven planner emits a DAG of pluggable capabilities (self-describing agentic sub-graphs); a wave-based executor fans them out in parallel; a generation pipeline merges their results. **`jobsmith/agents/` holds the agent definitions** (a capability pack + a profile: `default` = grounding (`read_files`/`prior_jobs`/`documents`)→research→analysis→critique (+ `slide_deck`), `banking` = the domain example) **or a graph of its own** (`AgentDefinition.graph`: a bare LangChain agent, no DAG, no chat), and **`jobsmith/app/` is the composition root** that runs any of them (provider selection, persistence, `build_app(agent=...)`). The bench — `chat/` (`python -m jobsmith`: answers a simple message directly, runs everything else on the engine, inside the turn if quick, promoted to a **background job** on the clock and told once when it lands, #83), `cli/`, `api/`, `tui/` — drives and tests the engine; it is not the differentiator.
 
 `README.md` is the human-facing counterpart of this file: product pitch, quickstart,
 CLI/API surface, limits. Keep it in sync when a command or a limit changes.
 
 ## Commands
 
-A Makefile wraps the common ones: `make help` lists them (`install`, `install-all`, `test [T=kw]`, `test-fast` = skip what's marked `slow`, `lint`, `fix`, `types`, `check` = lint+types+leak-gate+tests, `eval`/`eval-llm` = score the prompts on the golden set, `serve`/`chat`/`ui`/`jobs` = the global agent, `chat-banking`/`api-banking`/`demo-banking` = the example, `clean`). Raw equivalents:
+A Makefile wraps the common ones: `make help` lists them (`install`, `install-all`, `test [T=kw]`, `test-fast` = skip what's marked `slow`, `lint`, `fix`, `types`, `check` = lint+types+leak-gate+tests, `eval`/`eval-llm` = score the prompts on the golden set, `serve`/`chat`/`ui`/`jobs` = the global agent, `chat-banking`/`serve-banking`/`demo-banking` = the example, `clean`). Raw equivalents:
 
 ```bash
 uv venv --python 3.12 .venv && uv pip install -e ".[dev,api,anthropic]"  # setup
@@ -43,7 +43,7 @@ jobsmith --agent banking chat | serve                       # any agent, same sh
 - **The protocol runs as commands, not by hand**: `make check` (parallel, `pytest -n auto`), `make probe`, `make mutate TESTS=…` (mutants on the diff's lines, instead of breaking the fix by hand), `make combo PRS="a b"` for PRs in flight, `make hooks` (ruff + `uv lock --check` at commit), `gh pr merge --auto --squash` instead of watching CI; `tests/test_decision_records.py` checks the index and every `→ NNNN`. → 0133, 0134
 - **Falsify with the targeted test** (file or `-k`), not the whole suite: `make test-fast` (`-m "not slow"`) while iterating, the full suite once before the PR — a delegated task that re-runs everything per falsification pays the slow tests' cost every time. → 0109
 - **One short-lived branch per issue**, off `main`: `feat/<n>-<slug>`, `fix/<n>-<slug>`, `chore/<slug>` (`gh issue develop <n>` creates one already linked). Open a PR, let CI run, merge, delete. **No `develop` branch** (no releases yet; PR + CI is the integration point). Releases, when they come, are tags.
-- `main` stays green. CI (`.github/workflows/ci.yml`) runs what `make check` runs — lint, **types**, the leakage gate, tests — on push and PR across Python 3.11 and 3.12, plus `uv lock --check` so the lockfile cannot silently drift from pyproject. CI installs **every** extra — the stricter reading, since optional providers only resolve and type-check there.
+- `main` stays green. CI (`.github/workflows/ci.yml`) runs what `make check` runs — lint, **types**, the leakage gate, tests — on push and PR across Python 3.11 and 3.12, plus `uv lock --check` so the lockfile cannot silently drift from pyproject. CI installs **every** extra — stricter, since optional providers only resolve and type-check there.
 - **The type gate (`make types`, pyright)** is the only check that sees a signature that lies; `[tool.pyright]` configures editor and gate at once. → 0031
   - **`reportTypedDictNotRequiredAccess` is on**: `query` is `Required[str]` (guaranteed at entry); every other state key is guaranteed only by graph order and is read with `.get()` plus a default, next to a comment naming the node that guarantees it. **Never blanket-`# pyright: ignore` it** — a site where neither is honest is a finding about the graph. → 0031
   - `reportMissingImports` is a **warning**, not an error (lazy optional extras); scope is `jobsmith/` only, `typeCheckingMode: basic`. → 0031
@@ -61,7 +61,7 @@ jobsmith --agent banking chat | serve                       # any agent, same sh
   **Gotchas** (verified): a venv is path-specific — never symlink or copy one across worktrees; `.env`/`agent.db`/`artifacts/` are gitignored, so a fresh worktree has no API key until `make worktree` copies it. → 0000
 - `make coverage`: the interactive layers (`cli/`, `chat/tools.py`) are the thin ones — a change there brings its tests with it. → 0000
 
-Leakage gates (`make leak-check`, must return nothing): no `banking|banquier|votre|analyste` in shared code, `agents/default`, `agents/base.py` or `evals/` — **not** `agents/banking`, which may be as domain-specific as it likes; no product word (`ENGINE_WORDS`) in `engine/`, docstrings included (G4, core-v1.md).
+Leakage gates (`make leak-check`, must return nothing): no `banking|banquier|votre|analyste` in shared code, `agents/default`, `agents/base.py` or `evals/` — **not** `agents/banking`, which may be as domain-specific as it likes; no product word (`ENGINE_WORDS`) in `engine/` (G4). → 0161
 
 ### The inbound port (`service.py`)
 
@@ -111,10 +111,10 @@ AgentDefinition(
   - **`read_files` reads a named file** (`documents` searches): port `DocumentReader`, path in `inputs["source_files"]` (`SOURCE_FILES_INPUT_KEY`), never parsed from the query; dropped when nothing was named; no model call; **a refusal is material, not silence**. → 0060
   - **`prior_jobs` reads an earlier RUN, not its file**: `inputs["from_jobs"]`, port `PriorJobSource`; no model call; refusal is material; bounded at 24 000 characters, ≤ 3 jobs; session scope enforced in `chat/tools.py`. → 0074
   - **`prior_jobs` and `read_files` are first in the registry list**: `KeywordLLM` chains it in order, and a gated step pruned from the middle severs grounding→reasoning. → 0074
-  - **`web_search`** = `DocumentsCapability` over `TavilySource`: page over snippet, `$TAVILY_SEARCH_DEPTH` default `advanced`, `max_chars=8_000` per document, cut written into the text. `TavilySource`'s client is closed on the app's stack; an HTTP error raises. → 0075
+  - **`web_search`** = `DocumentsCapability` over `TavilySource`: page over snippet, `$TAVILY_SEARCH_DEPTH` default `advanced`, `max_chars=8_000` per document; client closed on the app's stack, an HTTP error raises. → 0075
   - **A capability nothing can serve stays out of the registry** — every conditional step is registered only when something backs it (`open_default_resources`); an empty registry is then answered directly. → 0000, 0038
-  - **`slide_deck` is a generation, not a report format**: deck structure is asked of the model; only `pptx_deck.py` imports `python-pptx`; 16:9; refused without a job before the LLM call; non-JSON salvaged as `meta["via_fallback"]`; a failed write declares nothing; the deck is an `annex`. **Its description says what it is NOT.** → 0035, 0061
-  - **The deliverable is written for its reader**, and **answers**: the prompts that produce it name the reader and oblige the answer first, from the material, doubt marked where it bears; `SUBJECT_ONLY_RULE` is on every material prompt and the generator, and names the deck (built by a separate step: no slides in the material, → 0129); `NO_ANSWER_INSTRUCTION` sets a high bar and a shape for a refusal. → 0058, 0073
+  - **`slide_deck` is a generation, not a report format**: deck structure is asked of the model; only `pptx_deck.py` imports `python-pptx`; 16:9; refused without a job before the LLM call; the deck is an `annex`. **Its description says what it is NOT.** → 0035, 0061
+  - **The deliverable is written for its reader, and answers**: prompts name the reader and oblige the answer first, from the material, doubt marked where it bears; `SUBJECT_ONLY_RULE` is on every material prompt and the generator, and names the deck (a separate step builds it, → 0129); `NO_ANSWER_INSTRUCTION` sets a high bar and shape for a refusal. → 0058, 0073
   - **The generator is told which files the run delivers** (`delivered_files_note`: requested formats + declared annexes, or "none") and names no other; no prompt offers a file by example. When the list names the answer itself, `ANSWER_FILE_RULE` says that entry **is** the text being written — never described, saved by hand or "delivered separately". → 0077, 0126
   - Retrieved passages carry a **quotable id** (`path#chunk`); `render_context` gives the model the material, `render_report` gives the human the provenance only.
   - **`research` reads every retrieval step's material** (`GROUNDING`, not first-match) and `read_files`' refusals (`REFUSALS`), in its own prompt, bounded at 32 000 characters, and says so in `meta["grounded_on"]`. → 0081
@@ -137,16 +137,20 @@ Wiring only, no content — everything here is domain-neutral:
 
 ## Architecture
 
+### Layers
+
+`engine` imports nothing of ours; `artifacts`/`dag` may import `engine` (`dag` also `artifacts`); `adapters/langchain` may import `engine`; the bench (`agents/`, `chat/`, `service.py`, `app/`, `api/`, `cli/`, `tui/`) may import anything — gate G3, `tests/test_layers.py`'s `ALLOWED` allowlist, empty since the split finished; a needed new crossing is added there with a reason. → 0161
+
 ### The OO pattern
 
-Every graph step is a class instance owning its deps and config. Node logic is **async instance methods** registered directly (`g.add_node("planner", self.planner.run)`); routers are **sync methods**; capabilities expose `.build()` returning a compiled sub-graph mounted as one parent node. `AgentBuilder` (`dag/builder.py`) is the composition root and holds references to every step instance (swap one before `.build()` in tests).
+Every step of the reference graph (`dag/`) is a class instance owning its deps and config. Node logic is **async instance methods** registered directly (`g.add_node("planner", self.planner.run)`); routers are **sync methods**; capabilities expose `.build()` returning a compiled sub-graph mounted as one parent node. `AgentBuilder` (`dag/builder.py`) is the composition root and holds references to every step instance (swap one before `.build()` in tests).
 
 ### Core concepts (read these files first)
 
 - **`dag/capability.py`** — `Capability` ABC + `CapabilitySpec` (name, description, JSON-schema dicts, `requires_inputs`). Capabilities take *exactly the clients they need* in their constructors; the framework never introspects them. Terminal sub-graph nodes call `_emit_success`/`_emit_failure` so every capability reports uniformly.
 - **`dag/registry.py`** — `CapabilityRegistry`: single source of truth for what the agent can do. The planner prompt, executor Send targets, and builder node map all derive from it. **Frozen at `build()`** — a compiled graph's capability set is fixed; new capability ⇒ new `AgentBuilder` (compilation is milliseconds).
 - **`dag/state.py`** — capability results live in one `results: dict[str, CapabilityResult]` with a dict-union reducer. Fan-in safety: each capability writes only its own key; registry-unique names + no-duplicate plan steps ⇒ disjoint keys. **Determinism caveat:** consumers must iterate in *plan order*, never dict order (ContextMerger does).
-- **`engine/usage.py`** — an **ambient ledger** (`ContextVar` per run) adapters push into with `record_usage`, and LangChain model calls through the runner's `ModelCallUsage` callback; scope = the root node of `checkpoint_ns` as named (a capability's is `cap_<name>`), else `unattributed`; `$JOBSMITH_PRICES`; unpriced ⇒ `cost_usd: None`; calls outside a run (chat) are not counted. → 0002
+- **`engine/usage.py`** — an **ambient ledger** (`ContextVar` per run) adapters push into with `record_usage`, plus LangChain calls via the runner's `ModelCallUsage` callback; scope = the root node of `checkpoint_ns` as named (a capability's is `cap_<name>`), else `unattributed`; `$JOBSMITH_PRICES`; unpriced ⇒ `cost_usd: None`; calls outside a run (chat) are not counted. → 0002, 0161
 - **`artifacts/paths.py`** — `safe_name` (one component) and `resolve_within` (refused unless it **lands** in a declared root; resolves before comparing). → 0060
 - **`dag/prior_jobs.py`** — the `PriorJobSource` port, in `dag/` because the composition root supplies it. → 0074
 - **`dag/profile.py`** — `AgentProfile` is the entire domain surface: prompt templates, user-facing messages, input/output validation rules (plain callables), `max_refine`. Core defaults are neutral English; the banking example overrides them (French messages live *only* in `agents/banking/profile.py`).
@@ -210,11 +214,11 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 - **HTML takes no dependency**: escape everything first, add only our own tags, no links, nested lists clamped to the open-list stack. **The PDF is that page printed**; `.[pdf]` needs pango/cairo, **offered when installed** (`find_spec`) and **loaded on first need** (at startup only when the deployment default is PDF). → 0009, 0076, 0034, 0108
 - **Capabilities present their own results**: `Capability.render_report(result)` (twin of `render_context`, which targets the model) with `default_result_markdown` as the base implementation — prose stays prose, list[str] becomes bullets, only structured values fall back to JSON. Never grow that default to learn payload shapes: override `render_report` in the capability instead.
 - `Job.usage` refreshes on every persist; per-step usage is in `meta["usage"]`, failures included. → 0002
-- **Delivery** (`engine/delivery.py`): `reply_to` is JSON, indexed by a flat `reply_key` (nested filters break SQLite/memory); an ending asks the kind's deliverer, True stamps `delivered_at`. `none` is delivered as it settles; a pulled kind waits for `pending_deliveries`/`mark_delivered`. The DAG registers `session`.
+- **Delivery** (`engine/delivery.py`): `reply_to` is JSON, indexed by a flat `reply_key`; an ending asks the kind's deliverer, True stamps `delivered_at`. `none` delivers as it settles; a pulled kind waits for `pending_deliveries`/`mark_delivered`. The DAG registers `session`. → 0161
 
 ### Chat layer (`chat/`)
 
-`ChatSession(manager, model, *, session_id, system_prompt, checkpointer).build()` → a `langchain.agents.create_agent` (LangChain model, NOT the framework's LLMClient — deliberate two-stack split: LangChain handles per-provider tool formats; the job engine stays dependency-light).
+`ChatSession(manager, model, *, session_id, system_prompt, checkpointer).build()` → a `langchain.agents.create_agent` (LangChain model, NOT the DAG's `LLMClient` (`dag/deps.py`) — deliberate two-stack split: LangChain handles per-provider tool formats; the job engine stays dependency-light).
 
 - **`chat/runner.py` alone knows what `astream` emits**: `Token`, `ToolStarted`/`ToolFinished` (real tool name; wording is the front-end's), `JobStarted`, `JobPlanned`, then exactly one terminal, `Message` or `Proposal`. → 0050, 0083, 0086
 - **Tools** (`chat/tools.py`) wrap JobManager use-cases, scoped to the session's own jobs; the generic launch tool is `adapters/langchain.launch_tool` (G5). `launch_job` **runs the task**: `create_job(session_id=...)` + `run_for(job_id, pick_sync_timeout())`.
@@ -223,9 +227,8 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 - **The answer is written verbatim into the turn**, never returned through the model; a promoted answer uses the same channel up to `$JOBSMITH_INLINE_ANSWER_MAX` (2 000), or at any length when no file was written. → 0083, 0085
 - **The approval card is a notice** (`job_started`: query, sources, `from_jobs` as short id + start of query, name/title/formats, job id); the gate survives behind `$JOBSMITH_APPROVE_JOBS`. → 0083, 0104
 - **The engine never sees the thread**: a self-contained `query`, plus `recent_conversation()` as `inputs[CONVERSATION_INPUT_KEY]`. `source_files` and `from_jobs` (resolved against **this session's** jobs) are `launch_job` arguments. → 0004, 0060, 0074
-- **Notifications** are transient `SystemMessage`s in the model *request*, never in state: completion = `adapters/langchain.JobDeliveryMiddleware` (the chat's words: `JobNotificationMiddleware`), progress = `JobProgressMiddleware`. → 0006
-  - **Completion is told once per ending**: `delivered_jobs` (id → when) enters the thread with the answer (`ExtendedModelResponse`); `delivered_at` is marked after, in `aafter_model`. → G5
-  - Completion (every terminal, `SETTLED`) and progress (only when `progress_signature()` moved) notices go **directly after the system prompt** (`inject`), where Anthropic hoists them. → 0006
+- **Notifications are transient `SystemMessage`s in the model request, never state**: completion = `adapters/langchain.JobDeliveryMiddleware` (chat's words: `JobNotificationMiddleware`), progress = `JobProgressMiddleware`, both placed **directly after the system prompt** (`inject`), where Anthropic hoists them. → 0006
+  - **Completion is told once per ending**: `delivered_jobs` (id → when) enters the thread with the answer (`ExtendedModelResponse`); `delivered_at` marks after, in `aafter_model`. → 0161 (G5)
 - **`conftest.ScriptedChatModel` implements `_astream`** with several chunks; the message list is also run through the real provider formatters, which only run with the chat extras (CI). → 0006
 
 ### HTTP API (`api/`)
