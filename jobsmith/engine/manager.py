@@ -112,6 +112,7 @@ class JobManager:
         self.events: JobEvents = events or InProcessEvents()
         self._tasks: dict[str, asyncio.Task] = {}  # in-process cancellation handles
         self._pushes: dict[str, asyncio.Task] = {}  # "job_id#attempt" → its push
+        self._amending: set[str] = set()     # stopped to be amended: not an ending
         # Who this manager is on the leases it writes, and the timings of
         # ownership (#10). Only consulted when the repository is `shared`:
         # a process-local store pays nothing for any of it.
@@ -132,7 +133,8 @@ class JobManager:
         # that does, undelivered. A pushed kind is never called here: the
         # ending is saved first, then pushed by a task of its own (#166).
         deliverer = None
-        if job.status in SETTLED and job.delivered_at is None:
+        if job.status in SETTLED and job.delivered_at is None \
+                and job.job_id not in self._amending:
             deliverer = self.deliverers.get(job.reply_to.get("kind", ""))
             if deliverer is not None and not isinstance(deliverer, Pushed) \
                     and await deliverer.deliver(job):
@@ -240,6 +242,41 @@ class JobManager:
         job.status = JobStatus.RUNNING
         await self._persist_summary(job)
         return True
+
+    async def amend_job(self, job_id: str, update: dict[str, Any], *,
+                        facts: dict[str, Any] | None = None) -> Job:
+        """Change a job's course while it runs (#177): stop it where it stands,
+        write `update` into its checkpoint (the graph's reducers apply it),
+        record `facts` — what the change says of the run — and run it on as a
+        new attempt, in the background. The job is answered RUNNING.
+
+        A step running when the amendment arrives is stopped, and runs again
+        from its start unless the update removed it: the price of a cancel.
+        The stop is not an ending, so it is delivered to nobody. A job
+        stopped already (CANCELLED, FAILED with work left) is amended the same
+        way; one running in another process is refused — amend it there.
+        """
+        self._amending.add(job_id)
+        try:
+            task = self._tasks.get(job_id)
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            job = await self._require(job_id)
+            if job.status is JobStatus.RUNNING:
+                raise ValueError(f"job {job_id} runs in another process: amend it there")
+            if job.status not in RESUMABLE or not await self._runner(job).pending(job_id):
+                raise ValueError(f"job {job_id} is {job.status.value} with nothing left to "
+                                 f"run: there is no course to change")
+            await self._runner(job).update(job_id, update)
+            for key, value in (facts or {}).items():
+                await self._apply(job, Fact(key, value))
+            return await self.start_resume(job_id)
+        finally:
+            self._amending.discard(job_id)
 
     async def answer_job(self, job_id: str, answer: Any) -> Job:
         """Answer a job paused at an `interrupt()` (NEEDS_INPUT) and run it on:
@@ -774,7 +811,8 @@ class JobManager:
         ending and the stamp are read here, from that one receiver's jobs.
         """
         jobs = [job for job in await self.list_jobs(reply_to=reply_to, limit=None)
-                if job.status in SETTLED and job.delivered_at is None]
+                if job.status in SETTLED and job.delivered_at is None
+                and job.job_id not in self._amending]
         return jobs
 
     def _push_later(self, deliverer: Pushed, job: Job) -> None:

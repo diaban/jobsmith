@@ -104,6 +104,11 @@ class GraphRunner:
         async for update in self._translate(Command(resume=answer), job_id):
             yield update
 
+    async def update(self, job_id: str, values: dict[str, Any]) -> None:
+        """Write `values` into the thread's checkpoint, through the graph's own
+        reducers — the next run from it starts from what they make of it."""
+        await self.graph.aupdate_state(self._config(job_id), values)
+
     async def pending(self, job_id: str) -> tuple[str, ...]:
         """Nodes the thread would run next — what a resume would execute.
 

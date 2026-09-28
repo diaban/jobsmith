@@ -377,6 +377,34 @@ class DagJobs:
     async def cancel_job(self, job_id: str) -> DagJob | None:
         return _view(await self.engine.cancel_job(job_id))
 
+    async def drop_steps(self, job_id: str, names: Sequence[str]) -> DagJob:
+        """Take steps out of a running job's plan — "skip the critique" (#177).
+
+        The DAG's meaning over the engine's `amend_job`: the plan in the
+        checkpoint loses those steps and every `depends_on` on them, and the
+        `plan` fact says so. A step the plan does not have, one that already
+        finished, and a plan left with nothing are refused, in these words.
+        """
+        from .planner import without_steps
+
+        job = await self.get_job(job_id)
+        if job is None:
+            raise KeyError(f"unknown job: {job_id}")
+        plan = job.plan
+        if not plan:
+            raise ValueError(f"job {job_id} has no plan yet: there is nothing to skip")
+        planned = [step["capability"] for step in plan["steps"]]
+        if unknown := [n for n in names if n not in planned]:
+            raise ValueError(f"not in the plan of job {job_id}: {', '.join(unknown)} "
+                             f"(it has {', '.join(planned)})")
+        if finished := [n for n in names if n in job.step_finished_at]:
+            raise ValueError(f"already done in job {job_id}: {', '.join(finished)}")
+        amended = without_steps(plan, names)
+        if not amended["steps"]:
+            raise ValueError(f"that would leave job {job_id} nothing to do: cancel it instead")
+        return DagJob(await self.engine.amend_job(job_id, {"plan": amended},
+                                                  facts={PLAN_FACT: amended}))
+
     async def recover_interrupted(self) -> list[DagJob]:
         return [DagJob(job) for job in await self.engine.recover_interrupted()]
 
