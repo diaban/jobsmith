@@ -223,9 +223,9 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 - **The answer is written verbatim into the turn**, never returned through the model; a promoted answer uses the same channel up to `$JOBSMITH_INLINE_ANSWER_MAX` (2 000), or at any length when no file was written. → 0083, 0085
 - **The approval card is a notice** (`job_started`: query, sources, `from_jobs` as short id + start of query, name/title/formats, job id); the gate survives behind `$JOBSMITH_APPROVE_JOBS`. → 0083, 0104
 - **The engine never sees the thread**: a self-contained `query`, plus `recent_conversation()` as `inputs[CONVERSATION_INPUT_KEY]`. `source_files` and `from_jobs` (resolved against **this session's** jobs) are `launch_job` arguments. → 0004, 0060, 0074
-- **Notifications** (`JobNotificationMiddleware.awrap_model_call`) are transient `SystemMessage`s in the model *request*, never in state. → 0006
+- **Notifications** are transient `SystemMessage`s in the model *request*, never in state: completion = `adapters/langchain.JobDeliveryMiddleware` (the chat's words: `JobNotificationMiddleware`), progress = `JobProgressMiddleware`. → 0006
   - **Completion is told once per ending**: `delivered_jobs` (id → when) enters the thread with the answer (`ExtendedModelResponse`); `delivered_at` is marked after, in `aafter_model`. → G5
-  - Completion (every terminal, `SETTLED`) and progress (only when `progress_signature()` moved) notices go **directly after the system prompt** (`_inject`), where Anthropic hoists them. → 0006
+  - Completion (every terminal, `SETTLED`) and progress (only when `progress_signature()` moved) notices go **directly after the system prompt** (`inject`), where Anthropic hoists them. → 0006
 - **`conftest.ScriptedChatModel` implements `_astream`** with several chunks; the message list is also run through the real provider formatters, which only run with the chat extras (CI). → 0006
 
 ### HTTP API (`api/`)

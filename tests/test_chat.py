@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from types import SimpleNamespace
 
 import pytest
 from conftest import FakeLLM, ScriptedChatModel, plan_json
@@ -29,6 +30,7 @@ from support import (
     wait_settled,
 )
 
+from jobsmith.adapters.langchain import inject
 from jobsmith.artifacts.store import JobOutput
 from jobsmith.chat import ChatRunner, ChatSession, JobStarted, Token, ToolFinished
 from jobsmith.chat.session import (
@@ -462,16 +464,16 @@ async def test_a_crash_after_the_checkpoint_never_tells_the_job_twice(
     job = await session.manager.create_job("crunch numbers", session_id=session.session_id)
     await session.manager.run_job(job.job_id)
     agent = session.build()
-    mark = session.manager.mark_delivered
+    mark = session.manager.engine.mark_delivered
 
     async def dies(job_id):
         raise RuntimeError("the process died before the mark")
 
-    monkeypatch.setattr(session.manager, "mark_delivered", dies)
+    monkeypatch.setattr(session.manager.engine, "mark_delivered", dies)
     with pytest.raises(RuntimeError, match="before the mark"):
         await agent.ainvoke({"messages": [HumanMessage("hi")]}, CFG)
     assert (await session.manager.get_job(job.job_id)).announced is False
-    monkeypatch.setattr(session.manager, "mark_delivered", mark)
+    monkeypatch.setattr(session.manager.engine, "mark_delivered", mark)
     await agent.ainvoke({"messages": [HumanMessage("thanks")]}, CFG)
 
     assert [len(notices(call, NOTICE_MARKER)) for call in model.calls] == [1, 0]
@@ -917,7 +919,7 @@ def test_a_tool_calling_thread_also_formats(store, checkpointer, tmp_path):
     ]
     notice = SystemMessage(f"[job progress] {PROGRESS_MARKER}: 1/2 steps done")
 
-    injected = JobNotificationMiddleware._inject(thread, [notice])
+    injected = inject(thread, [notice])
     system, formatted = format_for_anthropic(anthropic, injected)
 
     assert_notices_hoisted(system)
@@ -1086,7 +1088,7 @@ def test_length_never_decides_when_there_is_no_file_to_decide_against():
     for the reason #28 and #84 each give for their own half — a write that
     failed, or a request that asked for no document.
     """
-    middleware = JobNotificationMiddleware(None, "s1", inline_answer_max=0)
+    middleware = JobNotificationMiddleware(SimpleNamespace(engine=None), "s1", inline_answer_max=0)
     answered = dag_job(job_id="abcdef0123", status=JobStatus.DONE, query="q",
                    final_answer="The answer, which is longer than nothing at all.")
     assert middleware._deliver(answered) is True

@@ -102,6 +102,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.types import Command, interrupt
 
+from ..adapters.langchain import DELIVERED_CHANNEL
 from ..dag.jobs import DagJob, DagJobs
 from ..dag.report import (
     available_formats,
@@ -154,12 +155,6 @@ DEFAULT_SYNC_TIMEOUT = 20.0
 # A job still running: the turn stopped waiting on it, or it has not ended yet.
 IN_FLIGHT = (JobStatus.QUEUED, JobStatus.RUNNING)
 
-# The thread's own record of the jobs it was told of, id → when (docs/design/
-# core-v1.md, "The guarantee"): an id enters it in the SAME update as the message that
-# told the model — the launch tool's result, or the model's answer to a
-# notice — so it is in the checkpoint exactly when that message is. The
-# job's `delivered_at` is only the index of it, written after.
-DELIVERED_CHANNEL = "delivered_jobs"
 
 
 def pick_sync_timeout(explicit: float | None = None) -> float:
