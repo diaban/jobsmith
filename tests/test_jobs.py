@@ -2,18 +2,24 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
 from datetime import datetime
 from pathlib import Path
+from typing import TypedDict
 
 import pytest
 from conftest import FakeLLM, plan_json
-from support import SlowEcho, cancelled_midway, dag_job, make_manager
+from langgraph.graph import END, START, StateGraph
+from support import SlowEcho, cancelled_midway, dag_job, make_manager, until
 
+from jobsmith.app.persistence import open_persistence
 from jobsmith.dag.builder import build_agent
 from jobsmith.dag.deps import Deps
 from jobsmith.dag.jobs import session_address
 from jobsmith.dag.profile import DEFAULT_EMPTY_QUERY_MESSAGE
 from jobsmith.dag.registry import CapabilityRegistry
+from jobsmith.engine.graph import GraphSpec
+from jobsmith.engine.manager import JobManager
 from jobsmith.engine.models import JobStatus
 from jobsmith.engine.runner import Fact, GraphRunner
 
@@ -151,6 +157,85 @@ async def test_resume_finishes_a_cancelled_job_without_redoing_finished_steps(
     # and the deliverable is produced the same way a first attempt produces it
     assert done.report_path is not None
     assert "final answer" in Path(done.report_path).read_text()
+
+
+async def test_a_step_stopped_between_its_writes_runs_again_on_resume(db):
+    """A stop can land after a node wrote its state and before it wrote its
+    route: LangGraph keeps the half and would count the task as done, ending
+    the graph there. The job stays resumable and the node runs again. → 0202"""
+    routing, gate = asyncio.Event(), asyncio.Event()
+
+    async def route(state: Counter) -> str:        # the state is written, the route not yet
+        routing.set()
+        await gate.wait()
+        return "second"
+
+    graph = StateGraph(Counter)
+    graph.add_node("first", lambda state: {"n": state["n"] + 1})
+    graph.add_node("second", lambda state: {"n": state["n"] * 10})
+    graph.add_edge(START, "first")
+    graph.add_conditional_edges("first", route, ["second"])
+    graph.add_edge("second", END)
+    async with AsyncExitStack() as stack:
+        checkpointer, store = await open_persistence(db, stack)
+        jobs = JobManager(GraphSpec("g", graph.compile(checkpointer=checkpointer)), store)
+        job = await jobs.create_job({"n": 1})
+        jobs.start_job(job.job_id)
+        await routing.wait()
+        await jobs.cancel_job(job.job_id)
+        stopped = await until(lambda: _with_status(jobs, job.job_id, JobStatus.CANCELLED),
+                              what="the stop")
+        assert await jobs.pending(job.job_id) == ("first",)
+        gate.set()
+        done = await jobs.resume_job(job.job_id)
+        assert (done.status, done.result, done.attempt) == (JobStatus.DONE, {"n": 20}, 2)
+        assert stopped.attempt == 1
+
+
+async def test_a_step_stopped_mid_work_leaves_its_finished_siblings_alone(checkpointer, store):
+    """Only a task caught between its writes is repaired: a stop mid-work runs
+    just the stopped task again, never a sibling that finished. → 0202"""
+    entered, gate, quick_runs = asyncio.Event(), asyncio.Event(), []
+
+    async def slow(state: Counter) -> Counter:
+        entered.set()
+        await gate.wait()
+        return {}
+
+    def quick(state: Counter) -> Counter:
+        quick_runs.append(1)
+        return {"n": state["n"] + 1}
+
+    graph = StateGraph(Counter)
+    graph.add_node("quick", quick)
+    graph.add_node("slow", slow)
+    graph.add_edge(START, "quick")
+    graph.add_edge(START, "slow")
+    graph.add_edge("quick", END)
+    graph.add_edge("slow", END)
+    jobs = JobManager(GraphSpec("g", graph.compile(checkpointer=checkpointer)), store)
+    job = await jobs.create_job({"n": 1})
+    jobs.start_job(job.job_id)
+    await entered.wait()
+    await until(lambda: _pending_is(jobs, job.job_id, ("slow",)), what="quick's writes")
+    await jobs.cancel_job(job.job_id)
+    await until(lambda: _with_status(jobs, job.job_id, JobStatus.CANCELLED), what="the stop")
+    gate.set()
+    assert (await jobs.resume_job(job.job_id)).status is JobStatus.DONE
+    assert quick_runs == [1]
+
+
+async def _pending_is(jobs, job_id: str, nodes: tuple[str, ...]) -> bool:
+    return await jobs.pending(job_id) == nodes
+
+
+class Counter(TypedDict):
+    n: int
+
+
+async def _with_status(jobs, job_id: str, status: JobStatus):
+    job = await jobs.get_job(job_id)
+    return job if job.status is status else None
 
 
 async def test_resume_settles_a_job_its_process_died_on(store, checkpointer, tmp_path):

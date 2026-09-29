@@ -64,6 +64,12 @@ class Interrupted:
 
 JobUpdate = NodeFinished | Fact | Output | Interrupted
 
+# LangGraph's control channels in a task's pending writes (private in
+# `langgraph._internal._constants`, checked on 1.2.11): what a task writes
+# about itself, not output. `_ERROR` is how a stop or a failure is kept.
+_ERROR = "__error__"
+_CONTROL = {_ERROR, "__interrupt__", "__resume__", "__error_source_node__"}
+
 
 class GraphRunner:
     """Runs a job's graph and yields what happened, in job terms."""
@@ -83,6 +89,29 @@ class GraphRunner:
         async for update in self._translate(input, job_id):
             yield update
 
+    async def _repaired(self, job_id: str) -> None:
+        """Before re-entering a checkpoint: if a stop caught a task between its
+        writes (`_half_written`), fork the checkpoint without the writes it
+        holds, so that task runs again instead of being counted as done (#202).
+        Every task of that superstep then runs again, the finished ones
+        included: the price of repairing it through LangGraph's public API."""
+        if await self._half_written(await self.graph.aget_state(self._config(job_id))):
+            await self.graph.aupdate_state(self._config(job_id), None, as_node="__copy__")
+
+    async def _half_written(self, snapshot: Any) -> tuple[str, ...]:
+        """Tasks a stop (or an error) caught after they wrote part of their
+        output — their state, say, but not the edge to the next node. LangGraph
+        (checked on 1.2.11) persists that part with the error, and a resume
+        then re-applies it, counts the task as done and never writes the edge:
+        the graph ends there, and `next` already says nothing is left (#202)."""
+        saved = await self.graph.checkpointer.aget_tuple(snapshot.config)
+        channels: dict[str, set[str]] = {}
+        for task_id, channel, _ in (saved.pending_writes if saved else None) or ():
+            channels.setdefault(task_id, set()).add(channel)
+        return tuple(task.name for task in snapshot.tasks
+                     if _ERROR in (written := channels.get(task.id, set()))
+                     and written - _CONTROL)
+
     async def resume(self, job_id: str) -> AsyncIterator[JobUpdate]:
         """Re-enter the thread's checkpoint instead of starting a new run.
 
@@ -96,27 +125,31 @@ class GraphRunner:
         Only call this when `pending()` is non-empty: on a thread with no
         checkpoint LangGraph raises (it has no input to start from).
         """
+        await self._repaired(job_id)
         async for update in self._translate(None, job_id):
             yield update
 
     async def answer(self, job_id: str, answer: Any) -> AsyncIterator[JobUpdate]:
         """Re-enter a run paused at an `interrupt()`, which returns `answer`."""
+        await self._repaired(job_id)
         async for update in self._translate(Command(resume=answer), job_id):
             yield update
 
     async def update(self, job_id: str, values: dict[str, Any]) -> None:
         """Write `values` into the thread's checkpoint, through the graph's own
         reducers — the next run from it starts from what they make of it."""
+        await self._repaired(job_id)
         await self.graph.aupdate_state(self._config(job_id), values)
 
     async def pending(self, job_id: str) -> tuple[str, ...]:
         """Nodes the thread would run next — what a resume would execute.
 
         Empty means there is nothing to resume: either no checkpoint exists
-        (the run never started) or the graph already reached its end.
+        (the run never started) or the graph already reached its end. A task
+        a stop caught between its writes is pending too (`_half_written`).
         """
         snapshot = await self.graph.aget_state(self._config(job_id))
-        return tuple(snapshot.next or ())
+        return tuple(dict.fromkeys((*(snapshot.next or ()), *await self._half_written(snapshot))))
 
     async def _translate(self, input: Any, job_id: str) -> AsyncIterator[JobUpdate]:
         """LangGraph's stream → the three updates above."""
