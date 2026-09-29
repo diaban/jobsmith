@@ -7,7 +7,10 @@ build order. **Status: proposed.** The owner has decided three things (listed un
 "Decided"); everything else here is a proposal to accept or amend. "Open questions" lists
 what the owner has to settle before step 0 lands. Claims about today's code were read on
 b4f0be6 and carry a file reference; claims marked *(to check)* are hypotheses a step's
-probe must confirm.
+probe must confirm. Revised the same day after an outside review of the note: a baseline
+that does not depend on step 1, the planner's constrained output marked as the riskiest
+hypothesis with its fallback, and two holes in the IR's semantics (`output` absent, `when`
+and references).
 
 ## Why
 
@@ -116,6 +119,28 @@ A small JSON language, filled by the planner under a JSON schema generated from 
 registry (the op names are an `enum`, each op's `args` are its input schema), so the
 set of things the model can write is closed.
 
+**That constraint is the riskiest hypothesis of the note** *(to check)*, and the owner's
+principle rests on it. Two obstacles:
+
+- **The client cannot constrain by schema today.** `dag/clients.py` knows only
+  `{"type": "json_object"}`, and says Anthropic has no direct equivalent (line 18): the
+  constraint is "JSON", not "this JSON". Each provider needs schema support added
+  (structured output, or a forced tool call).
+- **The generated schema is hard.** It is a union discriminated by `op` (`op` constant,
+  `args` by op), where every argument is either a value of its type or a `$…` reference
+  string, plus `map` and `when`. Strict modes limit `oneOf`, `pattern`, depth and the
+  number of properties, differently per provider. And every "value or reference" argument
+  weakens the constraint: a reference's real type is only checked by the analysis (check 4).
+
+**Step 1 opens with a probe**: generate the schema of the default agent's real registry,
+submit it in strict mode to Anthropic and to OpenAI, and record what is accepted, what is
+refused, and the rate of programs valid on the first call. **The fallback, decided now**:
+where a provider accepts only part of it, the schema constrains `op`, the step structure,
+ids and `map`; arguments are left to the analysis and the repair. Where a provider accepts
+none, the planner writes JSON as today and the analysis carries it all. Either way the
+promise shrinks, and the note says so: what the measurement then compares is "a checked
+program" against ReAct, not "a closed language" against ReAct.
+
 ```json
 {"version": 1,
  "steps": [
@@ -137,14 +162,25 @@ set of things the model can write is closed.
   reference is a whole argument value; there is no string interpolation (`"see $x"` is a
   literal). Dependencies are **derived** from references plus `after`; the planner no
   longer writes `depends_on`, which removes a class of inconsistent plans.
-- **`output`** names the step whose result is the program's answer material. Absent, it
-  is the last step (today's behaviour: generation reads everything, in plan order).
+- **`output`**, optional, is a list of step ids that **restricts** the answer material to
+  their results (a `map` step's instances in item order). **Absent, the material is every
+  successful result, in program order**:
+  today's behaviour, where `ContextMerger.run` (`dag/generation.py`) merges all of them,
+  not the last one. (A first draft said "absent ⇒ the last step": a default-agent plan
+  would then have handed generation the critique alone, a silent regression the
+  structural evals might not catch.)
 - **`instruction`** is not special: it is a string argument that ops calling a model
   declare in their input schema. An op that is deterministic has none.
 - **`when`** (step 3, reserved in v1's schema): `{"ref": "$triage.kind", "in": ["a",
-  "b"]}`. A step whose condition is false is **skipped**, its dependents too unless they
-  also depend on a step that ran. The value must be typed by an `enum` in the producer's
-  output schema, so the branch set is closed. No `else`: two guarded steps.
+  "b"]}`. A step whose condition is false is **skipped**. The value must be typed by an
+  `enum` in the producer's output schema, so the branch set is closed. No `else`: two
+  guarded steps. **Skipping propagates through references, not only dependencies**
+  (settled now, because the schema reserves `when` in v1): a step that references a
+  skipped step is skipped too, unless the argument carrying that reference is declared
+  nullable in the op's input schema, in which case it is `null`. A step whose only link
+  to a skipped step is `after` runs. The analysis checks the rule can apply: a reference
+  to a guarded step in an argument that is not nullable is a finding, unless the
+  referencing step may itself be skipped.
 - **`verify`** steps: see recompilation (step 4).
 
 **What the IR never gets**: loops, recursion, user-defined functions, string templates,
@@ -268,7 +304,8 @@ recomputes the ready steps each wave, and Sends them. It evolves:
   (recoverable), not the job;
 - a `map` step expands into its instances, within `concurrency`;
 - retries are counted per id, `_APPENDED` (0194) still stripped from what is Sent;
-- the program's `output` feeds the generation pipeline, which stays as it is
+- the answer material (every successful result in program order, or `output`'s
+  restriction) feeds the generation pipeline, which stays as it is
   (`merge_results` → `generation` → `validate_output` → …): the compiler changes how
   material is gathered, not how the deliverable is written.
 
@@ -324,8 +361,18 @@ model, not an agent in `agents/`), and no harness running one case set through t
 agents. Step −1 builds both:
 
 - `agents/react/`: `AgentDefinition(graph=…)` over `create_agent`, whose tools are **the
-  same registry's ops**, wrapped as tools. The comparison is then orchestration against
-  orchestration, not tools against tools.
+  retrieval ops only** (`web_search`, `documents`, `read_files`, `prior_jobs`), each
+  wrapped with a `query` argument that stands for `state["query"]` (`read_files` and
+  `prior_jobs` take their `inputs` keys as arguments). **The agent does the analysis and
+  the critique itself.** Not the reasoning ops: today they take no arguments and read
+  their material from the graph state by name (`_material`, `agents/default/_step.py`),
+  so wrapped before step 1 gives them arguments, `analysis` and `critique` would find
+  `results` empty and reason "from the request alone": a baseline weakened by
+  construction, and a comparison biased toward the compiler, which is what step −1
+  exists to prevent. This is also the fairest comparison: a compiled orchestration
+  against an agent that orchestrates and reasons alone. Comparing on the same reasoning
+  ops as well is possible only after step 1; if it is wanted, it is a second baseline
+  run then, and said to be one.
 - `evals/compare.py`: the same cases, both agents, one table; the llm tier only (the
   structural tier cannot measure a model), bounded like `make probe` (≤ 300 calls).
 - New cases that need a width known at run time (the "compare the repositories" family),
@@ -342,12 +389,14 @@ that changes the planner's output), G3 and G4 unchanged.
   refused; every existing test passes with plans that have no ids.
 - **C1, references.** A step's argument comes from a reference; a type mismatch is a
   finding before any step runs; a planner that fixes it on the second call runs; one that
-  never does fails as today.
+  never does fails as today. A default-agent program with no `output` hands generation
+  every successful result, as today (asserted on `merged_context`).
 - **C2, map.** 9 items ⇒ 9 instances, never more than `concurrency` in flight; the job
   killed after instance 6 resumes with 3 sends (counted); a list over `max_items` is cut
   and the cut is in the view; `partial` keeps the successes.
 - **C3, effects.** A non-read-only op never runs before an answer (`needs_input`); the
-  analysis refuses free text where an `enum` exists.
+  analysis refuses free text where an `enum` exists; a step referencing a skipped step
+  is skipped, or gets `null` where the argument is nullable.
 - **C4, recompilation.** A rewrite after a verify failure runs; a finished id is never
   re-run; the rewritten program survives a crash between waves.
 - **C5, programs.** A supplied program runs with zero planner calls (counted on the
@@ -357,15 +406,17 @@ that changes the planner's output), G3 and G4 unchanged.
 
 ## Order: one PR per step (split when over budget, 0130)
 
-−1. **Baseline**: the ReAct agent over the registry's ops, `evals/compare.py`, the
+−1. **Baseline**: the ReAct agent over the retrieval ops, `evals/compare.py`, the
     run-time-width cases. No change under `dag/`.
 0. **Step identity** (C0), without lifting the duplicate ban until open question 1 is
    settled. Split: 0a `id` + keys + facts + executor; 0b `drop_steps`, view, TUI, REPL,
    chat; 0c capabilities read material through the by-op fallback; 0d usage per
    instance, then the ban lifted.
-1. **Minimal IR**: ids, typed args, references, `output`; binding schemas; `OpSpec` +
-   `Effects` declared (not yet enforced); the planner constrained by the generated
-   schema; analysis checks 1-4 and 6; repair. C1.
+1. **Minimal IR**, opened by the strict-mode probe (see "The IR"): its result picks full
+   constraint, the fallback, or plain JSON, per provider, before the planner changes.
+   Then ids, typed args, references, `output`; binding schemas; schema support in
+   `dag/clients.py`; `OpSpec` + `Effects` declared (not yet enforced); analysis checks
+   1-4 and 6; repair. C1.
 2. **`map`** (C2), and the default agent's first op that makes sense per item.
 3. **Effects enforced, `when`, checks 5, 7-9, `ReviewOp`** (C3).
 4. **Recompilation**: `verify`, or `amend_job` from outside, whichever the probe keeps
