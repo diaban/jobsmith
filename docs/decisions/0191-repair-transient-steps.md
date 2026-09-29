@@ -1,7 +1,7 @@
 # 0191 — A step that failed transiently runs again before its dependents; no replanning
 
 - **Issue:** #191 (the "repair or replan" loop of #167) · **Status:** accepted
-- **Rule in `CLAUDE.md`:** none yet (the budget pass adds it: `_emit_failure(retryable=True)` only for a transient failure; the executor re-runs it within `max_step_retries`, before its dependents)
+- **Rule in `CLAUDE.md`:** "A transient one is retried" (Graph flow, under Two error channels) — added by the scribe, 2026-09-29
 
 **Context.** A failed capability lands in `results` with `ok: False`, and its dependents run on what is left. That happens even when the failure was transient. The default steps (`_step.py`, `research`) turned a model call that raised (network, rate limit, timeout) into "produced no output".
 

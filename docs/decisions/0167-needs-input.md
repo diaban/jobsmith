@@ -1,7 +1,7 @@
 # 0167 — A run paused at an interrupt waits for an answer, with its own status
 
 - **Issue:** #167 (the "needs input" loop; the three others stay open there) · **Status:** accepted
-- **Rule in `CLAUDE.md`:** none yet (the budget pass adds it: an `interrupt()` is `needs_input` + `asked`, answered by `answer_job`; not an ending, not delivered)
+- **Rule in `CLAUDE.md`:** "A run paused at an `interrupt()` waits for an answer" (Jobs layer) and "Engine" (HTTP API) — added by the scribe, 2026-09-29
 
 **Context.** A graph paused at a LangGraph `interrupt()` ended FAILED with "its result is not JSON". The runner took the run's last root `values` for its result, and that chunk carries the `Interrupt` objects (checked on langgraph 1.2.11: `updates` yields `{"__interrupt__": (Interrupt(value, id),)}`, then `values` repeats it).
 

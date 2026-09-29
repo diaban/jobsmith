@@ -4,6 +4,7 @@
 - **Status:** accepted · partially superseded by [0085](0085-answer-in-the-conversation.md)
 - **Source:** migrated verbatim from `CLAUDE.md` at `8326b98` (#102). The text is the original; only the headings (which section of `CLAUDE.md` it lived in) and the links were added.
 - **See also:** [0041](0041-files-outlive-the-run.md), [0083](0083-synchronous-by-default.md), [0085](0085-answer-in-the-conversation.md)
+- **Note (scribe, 2026-09-29):** the Progress paragraph below describes a chat-only `JobProgressMiddleware`; since #171 (PR #180, no record filed — a direct fix) the base class moved to `adapters/langchain.JobProgressMiddleware` (root steps, one event each, from `steps`/`facts_at`), and the chat's is now a subclass keeping this text's wording and signature. Flagged, not fixed, here rather than rewritten.
 
 ## From “Chat layer (`chat/`)”
 

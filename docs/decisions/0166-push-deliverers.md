@@ -1,7 +1,7 @@
 # 0166 — A pushed return address is delivered off the persist path, retried until it lands
 
 - **Issue:** #166 · **Status:** accepted
-- **Rule in `CLAUDE.md`:** none yet (the budget pass adds it, under Delivery: a `Pushed` kind is never called inline; saved, then pushed by its own task, backoff, stamped after; pending pushes resume at startup)
+- **Rule in `CLAUDE.md`:** "A pushed kind (`Pushed`) never delivers inline" (Jobs layer, under Delivery) — added by the scribe, 2026-09-29
 
 **Context.** `JobManager._persist_summary` asked the deliverer inline at every ending. That suits `none` and a pulled kind (0161), not a push (webhook, queue): a slow push would delay the persist, one that raised would break the settlement, and a failed one was never retried.
 

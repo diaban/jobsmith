@@ -1,7 +1,7 @@
 # 0187 — A FAILED job says why as data, and "retryable" is what a resume answers
 
 - **Issue:** #187 (the "structured failure" loop of #167) · **Status:** accepted
-- **Rule in `CLAUDE.md`:** none yet (the budget pass adds it: every FAILED goes through `_fail`; `retryable` = a live frontier, the resume gate's own test)
+- **Rule in `CLAUDE.md`:** "A FAILED job says why, as data" (Jobs layer) — added by the scribe, 2026-09-29
 
 **Context.** A FAILED job carried only `error`, a string. The only way to learn whether it could be resumed, and where it stopped, was to try `resume_job` or read the prose.
 
