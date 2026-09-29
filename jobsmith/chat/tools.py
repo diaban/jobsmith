@@ -1,8 +1,8 @@
 """LangChain tools wrapping the JobManager use-cases for the chat agent.
 
 `launch_job` runs a task **in the turn** and promotes it to the background
-when it turns out to be slow. The other tools are read/cancel operations
-scoped to the chat session's own jobs.
+when it turns out to be slow. The other tools read, cancel, or take steps out
+of (#196) the chat session's own jobs.
 
 Synchronous by default, background by promotion (#83)
 -----------------------------------------------------
@@ -771,4 +771,26 @@ def make_job_tools(
         # just found is the honest fallback.
         return f"Job {job.job_id[:8]} is now {(cancelled or job).status.value}."
 
-    return [launch_job, job_status, list_my_jobs, cancel_job]
+    @tool
+    async def skip_steps(job_id_prefix: str, steps: list[str]) -> str:
+        """Take steps out of one of this session's running jobs, by id prefix,
+        and let it run on without them: "skip the critique", "no need for the
+        slides". `steps` are plan step names, as job_status lists them.
+
+        The job is NOT cancelled: steps already done stay done, and a step
+        running right now restarts unless it is one of those skipped. Use
+        cancel_job only when the user wants the whole job stopped."""
+        job = await _find(manager, session_id, job_id_prefix)
+        if job is None:
+            return f"No unique job of this session matches prefix {job_id_prefix!r}."
+        try:
+            amended = await manager.drop_steps(job.job_id, steps)
+        except ValueError as refused:
+            # The DAG's refusals name what to do instead (the plan's steps,
+            # "cancel it instead"): handed back as they are, the model can act.
+            return f"Nothing was skipped: {refused}"
+        plan = [s["capability"] for s in (amended.plan or {}).get("steps", [])]
+        return (f"Job {job.job_id[:8]} runs on without {', '.join(steps)}; its plan "
+                f"is now: {', '.join(plan)}.")
+
+    return [launch_job, job_status, list_my_jobs, cancel_job, skip_steps]

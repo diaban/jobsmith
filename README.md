@@ -646,6 +646,7 @@ handle per-provider tool formats), the planner DAG uses a dependency-light
 | `.../messages/stream` · `.../approval/stream` | the same turn as SSE: `token`, `tool_started`, `tool_finished`, `job_started`, `job_planned`, then that same reply |
 | `GET /jobs` · `GET /jobs/{id}` | listing and full detail (plan, timings, results) |
 | `POST /jobs[?wait=S]` · `POST /jobs/{id}/cancel` | direct launch (`wait` answers with the job once it settles or S seconds pass, whichever is first), cancellation |
+| `POST /jobs/{id}/drop` | take steps out of a running job's plan — `{"steps": [...]}`; it runs on without them (`409` on a refusal, with the reason) |
 | `GET /jobs/{id}/outputs[/{name}]` · `/report` | the deliverables (`/report` is text-only: `415` on a PDF, pointing at the download) |
 | `GET /events` | SSE stream of job progress |
 
@@ -821,9 +822,10 @@ Honest v1 boundaries:
   (#167, engine door only — see [HTTP API](#http-api)). A job that **finished**
   has nothing to re-enter and is refused: pushing it further (redo one step,
   extend the analysis) is a new job built on the old one (`from_jobs`, #168),
-  never a second attempt. Dropping a step from a *running* plan is `amend_job`
-  (#177), reachable today from the engine, not yet from the chat or the DAG's
-  own API (#196).
+  never a second attempt. A step can be dropped from a *running* plan
+  (`amend_job`, #177): say "skip the critique" in the chat, or
+  `POST /jobs/{id}/drop` (#196). A step running at that moment restarts,
+  unless it is the one dropped.
 - **Cost accounting covers both jobs and conversations.** The job engine books
   every LLM call; the chat layer's own model calls (LangChain, the other side
   of the two-stack split) are summed per turn and returned as the terminal

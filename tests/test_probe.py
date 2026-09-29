@@ -30,6 +30,19 @@ async def test_grep_tallies_a_match_instead_of_the_value():
     assert tally.counts == {"true": 2}
 
 
+async def test_the_chat_node_tallies_the_tool_the_model_chose():
+    """The chat's model call is no DAG node: the probe composes it from the
+    session (prompt, job tools) and reads the first tool called. → 0196"""
+    context = {"notice": "[job progress] 3f9c2a1b: running analysis",
+               "history": [["human", "compare A and B"], ["ai", "It runs in the background."]]}
+    launches, replies = await probe("chat", [
+        {"id": "task", "state": {**context, "query": "compare C and D"}, "expect": "launch_job"},
+        {"id": "hi", "state": {**context, "query": "hello"}},
+    ], read="tool", n=2, provider="fake")
+    assert (launches.passed, launches.counts) == (2, {'"launch_job"': 2})
+    assert replies.counts == {"null": 2}
+
+
 async def test_it_refuses_a_probe_over_the_budget_before_composing_anything():
     with pytest.raises(ValueError, match="over the budget"):
         await probe("router", [{"id": "x", "query": "q"}] * 31, read="route", n=10)

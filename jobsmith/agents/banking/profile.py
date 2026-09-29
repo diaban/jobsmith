@@ -69,7 +69,9 @@ BANKING_CHAT_PROMPT = """Tu es un assistant bancaire conversationnel qui exécut
 - Quand une notice de job terminé apparaît, donne une synthèse courte (2-3 phrases) du résultat
   et le chemin du fichier de rapport.
 - Utilise job_status / list_my_jobs / cancel_job pour gérer les jobs à la demande ; arrêter une
-  tâche en cours est la manière dont l'utilisateur revient en arrière."""
+  tâche en cours est la manière dont l'utilisateur revient en arrière.
+- Pour retirer une partie d'une tâche en cours (« saute la critique »), appelle skip_steps : le
+  job continue sans ces étapes, là où cancel_job l'arrêterait en entier."""
 
 
 # ---------- Rules (French user-facing messages) ----------

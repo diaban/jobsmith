@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-`jobsmith` is a **job engine** (`jobsmith/engine/`) — the product since 2026-09-27: it runs any LangGraph graph as a durable, trackable, cancellable **Job** and delivers each ending exactly once to a return address (`reply_to`). → 0161. On top sits one **reference graph**, the planner DAG (`jobsmith/dag/`): a registry-driven planner emits a DAG of capabilities, a wave-based executor fans them out, a generation pipeline merges results. **`jobsmith/agents/` holds the agent definitions** (a capability pack + a profile — `default` and `banking` ship — **or a graph of its own**, `AgentDefinition.graph`: no DAG, no chat); **`jobsmith/app/`** composes any of them (`build_app(agent=...)`). The bench — `chat/` (background job on the clock, told once it lands, #83), `cli/`, `api/`, `tui/` — drives and tests the engine; it is not the differentiator.
+`jobsmith` is a **job engine** (`jobsmith/engine/`) — the product since 2026-09-27: it runs any LangGraph graph as a durable, trackable, cancellable **Job** and delivers each ending exactly once to a return address (`reply_to`). → 0161. On top sits one **reference graph**, the planner DAG (`jobsmith/dag/`): a registry-driven planner emits a DAG of capabilities, a wave-based executor fans them out, a generation pipeline merges results. **`jobsmith/agents/` holds the agent definitions** (a capability pack + a profile — `default` and `banking` ship — **or a graph of its own**, `AgentDefinition.graph`: no DAG, no chat); **`jobsmith/app/`** composes any of them (`build_app(agent=...)`). The bench — `chat/`, `cli/`, `api/`, `tui/` — drives and tests the engine; it is not the differentiator.
 
 `README.md` is the human-facing counterpart of this file: product pitch, quickstart,
 CLI/API surface, limits. Keep it in sync when a command or a limit changes.
@@ -209,7 +209,7 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 - **Resume** re-enters with `None`, gated on CANCELLED/FAILED **and** non-empty `runner.pending()`; seeds usage; `_begin_resume` clears `job.error`, `job.result` and `job.delivered_at`, and counts `job.attempt`. **No partial re-run of a finished DAG**: that request is a new job with `from_jobs` on the old one, never a new attempt. → 0005, 0168
 - **A run paused at an `interrupt()` waits for an answer**: `needs_input` + `Job.asked`; `answer_job` resumes it with `Command(resume=…)` as a new attempt, clearing `asked`; not an ending, never delivered. → 0167
 - **A FAILED job says why, as data**: `Job.failure = {kind, pending, retryable}`; `retryable` is the same test the resume gate applies (`bool(pending)`), so the two cannot disagree. → 0187
-- **`amend_job`** stops a running job, writes an update into its checkpoint (`runner.update`), and resumes it as a new attempt — the stop is never delivered. The DAG's meaning is `DagJobs.drop_steps`: a finished step stays, a running one restarts unless dropped. → 0177
+- **`amend_job`** stops a running job, writes an update into its checkpoint (`runner.update`), and resumes it as a new attempt — the stop is never delivered. The DAG's meaning is `DagJobs.drop_steps`: a finished step stays, a running one restarts unless dropped. → 0177. The chat's `skip_steps` (refusals returned as text) and `POST /jobs/{id}/drop` (409) reach it. → 0196
 - **Vocabulary**: an **output** is what the job produces for the human (`DagJob.outputs`, role `main`|`alternate`|`annex`); a **result** is a capability's payload (`results`). `DagJob.report_path` = the main output's path; the engine's record has neither (`dag/jobs.py` derives them from facts). → 0000
 - **Reporters** (`dag/report.py`): `build_document` → `JobDocument` → `FileReporter` subclasses (`render`, or `serialize` for bytes); `is_binary_format`. → 0009
 - **Exactly one output is `role="main"`** (the first format; the rest `alternate`, never `annex`); `compose_reporters` refuses two Reporters on one extension. `pick_report_formats()` only says *which* file when one is wanted and none was named. A failed write leaves the job DONE; the view's `error` names the format. → 0028, 0096
@@ -247,7 +247,7 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 - **Outputs**: `/jobs/{id}/outputs[/{name}]`; `/report` serves text (type from `REPORT_MEDIA_TYPES`), **415** for a binary deliverable. → 0034
 - **Live**: `GET /events`, in-process, drops on full; untestable through `ASGITransport` (hangs), so `DaemonClient.subscribe` is tested under uvicorn. → 0048
 
-### Terminal UI (`tui/`) — the first UI, and why it is a TUI
+### Terminal UI (`tui/`)
 
 `jobsmith ui` (`.[tui]`) renders the same port and events beside `jobsmith chat`; `subscribe()` drives every repaint, no poll, no timer. → 0048
 
@@ -269,7 +269,7 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 - **A prompt is asserted through the named rule it must carry** (`SUBJECT_ONLY_RULE`, `CAVEATS_RULE`, `BRIEF_RULE`, `UNREADABLE_RULE`: `RULE in prompt`), never by its wording — wording is the evals' to judge. A rule worth a test is a constant in the product. → 0110
 - **Shared builders live in `tests/support.py`** (`OneStep` — a one-node capability: write `work` only —, `SlowEcho`, `ChartCapability`, `make_manager`, `planning`, `make_session`, `chat_turn`, `service_over`, `make_app`, `wait_done`, `until` — wait on state, never a fixed sleep —, `StubPdf`); **a test file never imports from another test file**. → 0110
 - `tests/conftest.py` — `FakeLLM` scripts responses by **substring of the system prompt** (`{"planner": ..., "ONLY the provided": ...}`); `plan_json()` builds planner responses. Fixtures: `checkpointer` (MemorySaver), `store` (InMemoryStore).
-- `tests/test_banking_example.py` is the behavior-parity suite for the pre-refactor agent (French rejection messages, citation rule, vision-dropped-without-image).
+- `tests/test_banking_example.py` pins the banking agent's behavior (French rejection messages, citation rule, vision dropped without an image).
 - Tests import capabilities/stubs directly and assert on the final state dict (`terminal_kind`, `results`, `completed_capabilities`).
 - **The default registry is configuration-dependent**: ask `conftest.registered_capabilities(app)`, never hardcode it (CI installs `.[pptx]`); its **order** is load-bearing for `KeywordLLM`. → 0035
 

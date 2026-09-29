@@ -271,6 +271,14 @@ class JobService(ABC):
     async def resume_job(self, job_id: str) -> dict: ...
 
     @abstractmethod
+    async def drop_steps(self, job_id: str, steps: Sequence[str]) -> dict:
+        """Take steps out of a running job's plan and run it on without them
+        (`DagJobs.drop_steps`, #196). Answered like `resume_job`:
+        `{"job_id", "status"}`, or a refusal as `{"status", "error"}` whose
+        words say what to do instead."""
+        ...
+
+    @abstractmethod
     async def get_report(self, job_id: str) -> str | None:
         """The main deliverable as text, or None when the job has none.
 
@@ -527,6 +535,10 @@ class LocalJobService(JobService):
         """
         return await _resumed(self.manager, job_id)
 
+    async def drop_steps(self, job_id: str, steps: Sequence[str]) -> dict:
+        return await _resumed(self.manager, job_id,
+                              lambda amended: self.manager.drop_steps(amended, steps))
+
     async def get_report(self, job_id: str) -> str | None:
         """The main deliverable as text — see the port for what None means.
 
@@ -650,8 +662,9 @@ class LocalEngineService(EngineService):
 
 
 async def _resumed(jobs: Any, job_id: str, start: Any = None) -> dict:
-    """`start_resume` (or `start`) on either door, a refusal answered as a
-    body (see `JobService.resume_job`)."""
+    """`start_resume` (or `start`: an answer, an amendment — each a new
+    attempt) on either door, a refusal answered as a body (see
+    `JobService.resume_job`)."""
     try:
         job = await (start or jobs.start_resume)(job_id)
     except KeyError:

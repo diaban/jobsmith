@@ -61,7 +61,10 @@ DEFAULT_CHAT_SYSTEM_PROMPT = """You are an assistant that runs real tasks on a j
   genuinely useful ("(the research step is done, analysis is running)"). Never
   present it as an answer, and never make the whole reply about it.
 - Use job_status / list_my_jobs / cancel_job to manage jobs when asked; a
-  running task can be stopped, which is how a user undoes one."""
+  running task can be stopped, which is how a user undoes one.
+- To leave part of a running task out ("skip the critique", "no slides after
+  all"), call skip_steps: the job runs on without those steps, where
+  cancel_job would stop all of it."""
 
 NOTICE_MARKER = "background jobs finished"
 PROGRESS_MARKER = "background jobs still running"

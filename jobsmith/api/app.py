@@ -20,7 +20,8 @@ against this API.
   step timestamps, artifacts), POST /jobs (direct launch, bypassing chat;
   `?wait=S` answers with the job once it settles or S seconds pass),
   POST /jobs/{id}/cancel, POST /jobs/{id}/resume (restart a stopped job from
-  its checkpoint; 409 when it has nothing left to run).
+  its checkpoint; 409 when it has nothing left to run), POST /jobs/{id}/drop
+  {steps} (take steps out of a running plan; 409 on a refusal).
 - Outputs:    GET /jobs/{id}/outputs — the files the job produced for the
   human; /outputs/{name} downloads one; /report is a shortcut to the main one
   when it is text (415 otherwise, naming the download).
@@ -76,6 +77,10 @@ class JobIn(BaseModel):
     document_name: str = ""
     document_title: str = ""
     formats: list[str] | None = None
+
+
+class DropIn(BaseModel):
+    steps: list[str]                # plan step names to take out of the run
 
 
 class AnswerIn(BaseModel):
@@ -284,6 +289,16 @@ def _agent_routes(app: FastAPI, service: LocalAgentService) -> None:
         """
         await _job_or_404(job_id)
         result = await service.resume_job(job_id)
+        if result.get("error"):
+            raise HTTPException(409, result["error"])
+        return result
+
+    @app.post("/jobs/{job_id}/drop")
+    async def drop_steps(job_id: str, body: DropIn):
+        """Take steps out of a running job's plan; it runs on without them.
+        A refusal is 409 with the reason, as for a resume."""
+        await _job_or_404(job_id)
+        result = await service.drop_steps(job_id, body.steps)
         if result.get("error"):
             raise HTTPException(409, result["error"])
         return result

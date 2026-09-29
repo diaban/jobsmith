@@ -122,3 +122,34 @@ async def test_a_plan_cannot_be_emptied(store, checkpointer, tmp_path):
         await jobs.drop_steps(job.job_id, ["research"])
     gate.set()
     assert (await until(lambda: settled(jobs, job.job_id), what="the untouched run")).final_answer
+
+
+async def test_a_plan_the_checkpoint_does_not_hold_yet_is_not_amended(
+    store, checkpointer, tmp_path, monkeypatch
+):
+    """The plan fact is published from inside the planner, before its
+    checkpoint: amending then is refused, and the job is not stopped. → 0196"""
+    gate, entered = asyncio.Event(), asyncio.Event()
+
+    class First(OneStep):
+        async def work(self, state):
+            entered.set()
+            await gate.wait()
+            return self._emit_success({"echo": self.spec.name})
+
+    jobs = make_manager(store, checkpointer, tmp_path,
+                        caps=[First("research"), First("analysis")])
+    job = await jobs.create_job("compare A and B")
+    jobs.start_job(job.job_id)
+    await entered.wait()
+
+    async def still_planning(job_id):
+        return ("planner",)
+
+    monkeypatch.setattr(jobs.engine, "pending", still_planning)
+    with pytest.raises(ValueError, match="still planning"):
+        await jobs.drop_steps(job.job_id, ["analysis"])
+    running = await jobs.get_job(job.job_id)
+    assert (running.status, running.attempt) == (JobStatus.RUNNING, 1)
+    gate.set()
+    assert (await until(lambda: settled(jobs, job.job_id), what="the untouched run")).results

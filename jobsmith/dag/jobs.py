@@ -23,6 +23,7 @@ from .state import TERMINAL_UNANSWERED, CapabilityResult, Plan
 
 #: The facts the DAG publishes (`dag/planner.py`, `dag/capability.py`).
 PLAN_FACT = "plan"
+PLANNER_NODE = "planner"         # the node that writes the plan (`builder.py`)
 STEP_FACT = "step:"
 _ROLE_ORDER = {"main": 0, "alternate": 1}
 
@@ -402,6 +403,12 @@ class DagJobs:
         amended = without_steps(plan, names)
         if not amended["steps"]:
             raise ValueError(f"that would leave job {job_id} nothing to do: cancel it instead")
+        # The plan fact is published from inside the planner, before its
+        # checkpoint is written (#196): amended then, the planner would run
+        # again over the change — and a stop in that window leaves nothing to
+        # resume. Refused before anything is stopped.
+        if PLANNER_NODE in await self.engine.pending(job_id):
+            raise ValueError(f"job {job_id} is still planning: try again in a moment")
         return DagJob(await self.engine.amend_job(job_id, {"plan": amended},
                                                   facts={PLAN_FACT: amended}))
 
