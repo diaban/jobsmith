@@ -14,3 +14,5 @@
 - Top-level `*.md` only, not `**/*.md`: nested Markdown could one day be a fixture or a prompt; `.claude/agents/scribe.md` runs the full path.
 
 **Measured.** Locally: the scope script gives `true` on #199 (d1d032a) and #193 (3462465), `false` on #197 (42bb050), and `false` on a push, an empty diff, a code file moved into `docs/`, a nested `.md`, a top-level `Makefile`, a non-ASCII name (quoted by git) and a commit with no parent. The fast path in a venv without `langgraph`: 86 passed in 0.09 s. Falsified: a dangling `→ 9999` in `CLAUDE.md` fails 2 of its tests.
+
+**On CI.** Full path, #200 (workflow + docs): `Scope` listed `.github/workflows/ci.yml` and said `false`; every step ran, `Docs tests` skipped; `check` 79 s (3.11), 73 s (3.12). Fast path, #201 (this record only): `Scope` said `true`; install, lint, pyright, leak gate and suite skipped, 88 passed; `check` 21 s (3.11), 18 s (3.12), against 65/69 s for #199. Of those, starting the Postgres container is 9–11 s: the part a `changes` job would save, left as it is (Alternatives).
