@@ -58,7 +58,7 @@ jobsmith --agent banking chat | serve # any agent, same shell
   make worktree-rm B=feat/1-grounding # after the PR is merged
   ```
 
-  **Gotchas** (verified): a venv is path-specific — never symlink or copy one across worktrees; `.env`/`agent.db`/`artifacts/` are gitignored, so a fresh worktree has no API key until `make worktree` copies it. → 0000
+  **Gotchas**: a venv is path-specific — never symlink or copy one across worktrees; `.env`/`agent.db`/`artifacts/` are gitignored, so a fresh worktree has no API key until `make worktree` copies it. → 0000
 - `make coverage`: the interactive layers (`cli/`, `chat/tools.py`) are the thin ones — a change there brings its tests with it. → 0000
 
 Leakage gates (`make leak-check`, must return nothing): no `banking|banquier|votre|analyste` in shared code, `agents/default`, `agents/base.py` or `evals/` — **not** `agents/banking`, which may be as domain-specific as it likes; no product word (`ENGINE_WORDS`) in `engine/` (G4). → 0161
@@ -206,7 +206,7 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 - **`dag/prior.py`** (`RepositoryPriorJobs`) is the only place that knows how a finished run's material is reached. → 0074
 - **Ownership is on the record** (`engine/ownership.py`, `("jobs_v1", id, "control")`): a lease written **before** RUNNING, heartbeat 2 s, TTL 30 s; **a cancel is a request the owner acts on**, never a status written over its run. → 0010
 - **Events cross processes on a shared database** (`WatchedEvents`, watching **only while someone is subscribed**, announcing a job whose `updated_at` moved): SQLite polls `PRAGMA data_version` on its own read-only connection, re-reading only when it moved; Postgres `NOTIFY`s on publish and `LISTEN`s off the pool; memory stays `InProcessEvents`. `$JOBSMITH_TEST_PG` gates the Postgres tests. → 0100, 0138, 0169
-- **Resume** re-enters with `None`, gated on CANCELLED/FAILED **and** non-empty `runner.pending()`; seeds usage; `_begin_resume` clears `job.error`, `job.result` and `job.delivered_at`, and counts `job.attempt`. **No partial re-run of a finished DAG**: that request is a new job with `from_jobs` on the old one, never a new attempt. → 0005, 0168
+- **Resume** re-enters with `None`, gated on CANCELLED/FAILED **and** non-empty `runner.pending()`; seeds usage; `_begin_resume` clears `error`, `result`, `delivered_at`, counts `attempt`. A task a stop caught between its writes is pending, and the resume forks the checkpoint first (`GraphRunner._repaired`, → 0202). **No partial re-run of a finished DAG**: that request is a new job with `from_jobs` on the old one, never a new attempt. → 0005, 0168
 - **A run paused at an `interrupt()` waits for an answer**: `needs_input` + `Job.asked`; `answer_job` resumes it with `Command(resume=…)` as a new attempt, clearing `asked`; not an ending, never delivered. → 0167
 - **A FAILED job says why, as data**: `Job.failure = {kind, pending, retryable}`; `retryable` is the same test the resume gate applies (`bool(pending)`), so the two cannot disagree. → 0187
 - **`amend_job`** stops a running job, writes an update into its checkpoint (`runner.update`), and resumes it as a new attempt — the stop is never delivered. The DAG's meaning is `DagJobs.drop_steps`: a finished step stays, a running one restarts unless dropped. → 0177. The chat's `skip_steps` (refusals returned as text) and `POST /jobs/{id}/drop` (409) reach it. → 0196
@@ -224,7 +224,7 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 
 ### Chat layer (`chat/`)
 
-`ChatSession(manager, model, *, session_id, system_prompt, checkpointer).build()` → a `langchain.agents.create_agent` (LangChain model, NOT the DAG's `LLMClient` (`dag/deps.py`) — deliberate two-stack split: LangChain handles per-provider tool formats; the job engine stays dependency-light).
+`ChatSession(manager, model, *, session_id, system_prompt, checkpointer).build()` → a `langchain.agents.create_agent` (LangChain model, NOT the DAG's `LLMClient` (`dag/deps.py`): the two-stack split).
 
 - **`chat/runner.py` alone knows what `astream` emits**: `Token`, `ToolStarted`/`ToolFinished` (real tool name; wording is the front-end's), `JobStarted`, `JobPlanned`, then exactly one terminal, `Message` or `Proposal`. → 0050, 0083, 0086
 - **Tools** (`chat/tools.py`) wrap JobManager use-cases, scoped to the session's own jobs; the generic launch tool is `adapters/langchain.launch_tool` (G5); the chat's stays a shell over `run_for` + `told_in_thread`. → 0172 `launch_job` **runs the task**: `create_job(session_id=...)` + `run_for(job_id, pick_sync_timeout())`.

@@ -116,6 +116,7 @@ current and writes the records a merged PR forgot, marked as reconstructed.
 | 0194 | [A capability is Sent the parent state without the append-only channels](0194-send-without-appended-channels.md) | `Send` strips `completed_capabilities`/`errors`: a sub-graph echoed them back and the parent appended them again, miscounting the runs 0191 bounds | accepted |
 | 0196 | [The chat skips a step with a tool of its own; the port and the API answer it like a resume](0196-skip-a-step-from-the-chat.md) | chat `skip_steps` (refusals = the DAG's words, returned to the model); `JobService.drop_steps` shaped like `resume_job`; `POST /jobs/{id}/drop`, 409; probe gains a `chat` node: `main` cancelled the job on "skip the critique" 15/25 | accepted |
 | 0198 | [A docs-only pull request runs only the docs tests, under the same check names](0198-docs-only-ci.md) | a `Scope` step diffs the merge commit against its base (`--no-renames`); only `docs/**` and top-level `*.md` → the two docs tests in a bare venv, `--noconftest`; anything else, or any doubt, runs it all | accepted |
+| 0202 | [A task a stop caught between its writes is pending, and the resume forks its checkpoint first](0202-resume-a-half-written-task.md) | LangGraph keeps a cancelled task's partial writes and counts it done on resume (no route: `next` empty); `GraphRunner._half_written` + `pending()` + `_repaired` (`__copy__` fork) before resume/answer/update; detection alone ends DONE with a wrong result | accepted |
 
 ### Issues cited without a record of their own
 
