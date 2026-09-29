@@ -4,6 +4,7 @@
 - **Status:** accepted
 - **Source:** migrated verbatim from `CLAUDE.md` at `8326b98` (#102). The text is the original; only the headings (which section of `CLAUDE.md` it lived in) and the links were added.
 - **See also:** [0085](0085-answer-in-the-conversation.md)
+- **Note (scribe, 2026-09-29):** the "Not covered" sentence below is false since #173 (PR #182): `chat/runner.py` now sums the conversation's own model calls per turn onto the terminal event's `usage`. No record was filed for #173 (a direct fix, `CLAUDE.md` updated in the same PR); flagged, not fixed, here rather than rewritten.
 
 ## From “Core concepts (read these files first)”
 

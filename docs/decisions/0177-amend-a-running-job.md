@@ -1,7 +1,7 @@
 # 0177 — A running job is amended by stop, checkpoint update, run on; the DAG drops steps with it
 
 - **Issue:** #177 · **Status:** accepted
-- **Rule in `CLAUDE.md`:** none yet (the budget pass adds it: `JobManager.amend_job` = stop + `runner.update` + resume, the stop never delivered; `DagJobs.drop_steps` is the DAG's meaning)
+- **Rule in `CLAUDE.md`:** "`amend_job` stops a running job..." (Jobs layer) — added by the scribe, 2026-09-29
 
 **Context.** 0086 left interjection on an announced plan ("skip the critique") out of scope. #177 asked two questions: is it the DAG's feature or the engine's, and what happens to a step that is already running?
 

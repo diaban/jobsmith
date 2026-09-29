@@ -1,7 +1,7 @@
 # 0165 — A graph agent is served through the engine's own port, on its own paths
 
 - **Issue:** #165 · **Status:** accepted
-- **Rule in `CLAUDE.md`:** none yet (the budget pass adds it: a graph agent's `service()` is `LocalEngineService`, served on `/engine/jobs`)
+- **Rule in `CLAUDE.md`:** "A graph agent has its own port" (The inbound port) and "Engine" (HTTP API) — added by the scribe, 2026-09-29
 
 **Context.** Since 0161 an agent may be a graph of its own, but only in Python: `AgentApp.service()` needed `.manager`, which raises for a graph agent, so `jobsmith serve --agent <graph agent>` could not start. The only port, `JobService`, speaks the DAG's request (query, document name/title/formats).
 

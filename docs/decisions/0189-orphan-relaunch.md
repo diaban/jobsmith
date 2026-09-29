@@ -1,7 +1,7 @@
 # 0189 — An interrupted job is relaunched only where its graph allows it, by the daemon, once
 
 - **Issue:** #189 (the "orphan relaunch" loop of #167) · **Status:** accepted
-- **Rule in `CLAUDE.md`:** none yet (the budget pass adds it: `GraphSpec.relaunch` opt-in and bound; `relaunch_interrupted` only from `serve`; claimed on a shared store)
+- **Rule in `CLAUDE.md`:** "`relaunch_interrupted()`..." (composition root, under Interrupted jobs) — added by the scribe, 2026-09-29
 
 **Context.** A job whose process died is settled FAILED at the next start (`failure.kind == "interrupted"`, 0187) and waits for someone to resume it. A resume runs the interrupted node again from its start. The engine cannot tell whether that is harmless.
 

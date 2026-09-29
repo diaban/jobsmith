@@ -795,29 +795,39 @@ markdown deliverables.
 
 Honest v1 boundaries:
 
-- **Cancellation crosses processes; live events do not yet.** On a shared
-  database (SQLite, Postgres) a cancel from any process reaches the one running
+- **Cancellation and live events both cross processes**, on a shared database
+  (SQLite, Postgres): a cancel from any process reaches the one running
   the job within about two seconds, and a second `jobsmith chat` no longer
   mistakes the first one's running jobs for crashed ones. Progress events
-  (`/events`, the TUI's live repaint) see every process's jobs on a shared
-  database: within about a second on SQLite (#100), at once on Postgres
+  (`/events`, the TUI's live repaint) see every process's jobs too:
+  within about a second on SQLite (#100), at once on Postgres
   (LISTEN/NOTIFY, #138).
 - **The answer lives in the turn and in a file, and nothing yet decides which.**
   A task that finishes in the conversation delivers its answer there word for
   word *and* writes the report; a promoted one only writes it. That is a
   deliberate seam, not a settled question.
-- **Resume restarts, it does not re-plan.** `jobsmith resume <id>` re-enters a
-  cancelled or interrupted job's checkpoint and runs only the steps that never
-  finished — the ones already paid for are kept as they are. A job that
-  finished, or that failed at its last step, has nothing to re-enter and is
-  refused: pushing a *finished* job further (redo one step, extend the
-  analysis) is a separate feature.
-- **Cost accounting covers jobs, not conversations.** The job engine books
-  every LLM call; the chat layer talks to LangChain models on the other side of
-  the two-stack split and is not counted yet. Dollar figures are estimates from
-  a local price table, never a bill. A resumed job reports the *total* it cost
-  across attempts, not just the resumed portion — the interrupted attempt's
-  tokens were spent all the same.
+- **Resume restarts a stopped run; it does not re-plan.** `jobsmith resume <id>`
+  re-enters a cancelled or interrupted job's checkpoint and runs only the steps
+  that never finished — the ones already paid for are kept as they are. A step
+  that failed transiently is retried automatically, before its dependents
+  (#191); an interrupted job left by a dead process can be relaunched by the
+  daemon itself, where its graph allows it (#189). `Job.failure` says why a
+  FAILED job stopped and whether it is `retryable`, so you no longer need to
+  try a resume to find out (#187). A run paused at a LangGraph `interrupt()`
+  waits as `needs_input` instead of failing, and is carried on with an answer
+  (#167, engine door only — see [HTTP API](#http-api)). A job that **finished**
+  has nothing to re-enter and is refused: pushing it further (redo one step,
+  extend the analysis) is a new job built on the old one (`from_jobs`, #168),
+  never a second attempt. Dropping a step from a *running* plan is `amend_job`
+  (#177), reachable today from the engine, not yet from the chat or the DAG's
+  own API (#196).
+- **Cost accounting covers both jobs and conversations.** The job engine books
+  every LLM call; the chat layer's own model calls (LangChain, the other side
+  of the two-stack split) are summed per turn and returned as the terminal
+  event's `usage` (#173). Dollar figures are estimates from a local price
+  table, never a bill. A resumed job reports the *total* it cost across
+  attempts, not just the resumed portion — the interrupted attempt's tokens
+  were spent all the same.
 - **Three Reporters ship: markdown, HTML, PDF.** PPTX would be a fourth over
   the same `JobDocument` — but a generation rather than a rendering, so it is
   not one of these. The PDF is the only deliverable with a **deployment**

@@ -1,7 +1,7 @@
 # 0168 — Re-running part of a finished DAG job is a new job built on it, never a new attempt
 
 - **Issue:** #168 · **Status:** accepted
-- **Rule in `CLAUDE.md`:** none yet (the budget pass adds it: a partial re-run is a new job with `from_jobs`; DONE stays unresumable)
+- **Rule in `CLAUDE.md`:** "No partial re-run of a finished DAG" (Jobs layer, under Resume) — added by the scribe, 2026-09-29
 
 **Context.** `resume_job` refuses a DONE job (`_begin_resume`). Pushing a finished run further, for example "redo the analysis with this correction" or "add a critique", needed a decision: a new attempt of the same job, or a new job built on the old one.
 
