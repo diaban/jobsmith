@@ -184,6 +184,9 @@ class CannedService(AgentService):
     async def resume_job(self, job_id: str) -> dict:
         return {"job_id": job_id, "status": "queued"}
 
+    async def drop_steps(self, job_id: str, steps) -> dict:
+        return {"job_id": job_id, "status": "running"}
+
     async def get_report(self, job_id: str) -> str | None:
         return None
 

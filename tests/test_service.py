@@ -364,6 +364,33 @@ async def test_the_jobs_a_run_builds_on_cross_either_backing(
 
 # ------------------------------------------------------------ the plan, in the turn → 0086
 
+async def test_a_step_is_dropped_the_same_way_through_either_backing(
+    store, checkpointer, tmp_path, through
+):
+    """`drop_steps` answers like a resume on both backings: the job runs on
+    without the step, and a refusal is the port's dict. → 0196"""
+    gate = Gate("web_search")
+    client = through(planned_service(planned_manager(store, checkpointer, tmp_path, gate=gate)))
+    job_id = (await client.launch_job("analyse it"))["job_id"]
+    await until(lambda: _finished(client, job_id, "documents"), what="a step")   # planned
+
+    refused = await client.drop_steps(job_id, ["critique"])
+    assert refused["status"] == "running" and "not in the plan" in refused["error"]
+    assert await client.drop_steps("nope", ["analysis"]) == {
+        "job_id": "nope", "status": "unknown", "error": "unknown job: nope"}
+    assert await client.drop_steps(job_id, ["analysis"]) == {"job_id": job_id,
+                                                             "status": "running"}
+    gate.open.set()
+    finished = await wait_done(client, job_id)
+    assert finished["status"] == "done" and "analysis" not in finished["results"]
+    assert [s["capability"] for s in finished["plan"]["steps"]] == [
+        "web_search", "documents", "research"]
+
+
+async def _finished(client: AgentService, job_id: str, step: str) -> bool:
+    return step in (await client.get_job(job_id) or {}).get("step_finished_at", {})
+
+
 async def test_the_plan_crosses_either_backing_between_the_notice_and_the_answer(
     store, checkpointer, tmp_path, through
 ):
@@ -524,6 +551,7 @@ def _port_calls(client: AgentService) -> dict:
         "get_job": lambda: client.get_job("a"),
         "cancel_job": lambda: client.cancel_job("a"),
         "resume_job": lambda: client.resume_job("a"),
+        "drop_steps": lambda: client.drop_steps("a", ["b"]),
         "get_report": lambda: client.get_report("a"),
         "list_outputs": lambda: client.list_outputs("a"),
         "find_output": lambda: client.find_output("a", "f.md"),

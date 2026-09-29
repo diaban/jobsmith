@@ -206,7 +206,14 @@ class DaemonClient(AgentService):
         return r.json()
 
     async def resume_job(self, job_id: str) -> dict:
-        r = await self._request("POST", f"/jobs/{job_id}/resume")
+        return await self._refusable(job_id, await self._request(
+            "POST", f"/jobs/{job_id}/resume"))
+
+    async def drop_steps(self, job_id: str, steps) -> dict:
+        return await self._refusable(job_id, await self._request(
+            "POST", f"/jobs/{job_id}/drop", json={"steps": list(steps)}))
+
+    async def _refusable(self, job_id: str, r: Any) -> dict:
         if r.status_code in (404, 409):
             # The API says "refused" with a status code; the port says it with
             # an `error` key, so both backings answer a caller the same way.

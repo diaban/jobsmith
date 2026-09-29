@@ -14,6 +14,8 @@ trap cleanup EXIT
 # The base worktree has no .env: export it once, for both sides.
 if [ -f "$root/.env" ]; then set -a; . "$root/.env"; set +a; fi
 git -C "$root" worktree add -q --detach "$tmp/base" "${BASE:-main}"
+# One instrument on both sides: the branch's probe, measuring BASE's product.
+cp "$root/evals/probe.py" "$tmp/base/evals/probe.py"
 
 args=(--node "$NODE" --read "$READ" --cases "$(realpath "$CASES")" -n "${N:-10}"
       --max-calls "$(( ${MAX:-300} / 2 ))")

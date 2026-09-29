@@ -95,6 +95,17 @@ async def test_resume_endpoint_restarts_a_stopped_job(store, checkpointer, tmp_p
         assert (await client.post("/jobs/nope/resume")).status_code == 404
 
 
+async def test_drop_endpoint_answers_a_refusal_with_409(store, checkpointer, tmp_path):
+    """A plan change the job cannot take is a 409 carrying the DAG's words;
+    an unknown job is a 404. → 0196"""
+    manager, job, _alpha, _slow = await cancelled_midway(store, checkpointer, tmp_path)
+    app = create_api(LocalAgentService(manager, lambda session_id=None: None))
+    async with client_for(app) as client:
+        r = await client.post(f"/jobs/{job.job_id}/drop", json={"steps": ["alpha"]})
+        assert r.status_code == 409 and "already done" in r.json()["detail"]
+        assert (await client.post("/jobs/nope/drop", json={"steps": ["alpha"]})).status_code == 404
+
+
 async def test_session_is_resumable_by_id(store, checkpointer, tmp_path):
     """The registry is a cache: chatting on a known id rebuilds the session,
     so a client keeps its conversation across a daemon restart."""

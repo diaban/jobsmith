@@ -21,11 +21,13 @@ from langgraph.types import Command
 from support import (
     CFG,
     CountingEcho,
+    Gate,
     cancelled_midway,
     dag_job,
     launch_call,
     make_manager,
     make_session,
+    planned_manager,
     until,
     wait_settled,
 )
@@ -605,6 +607,41 @@ async def test_job_tools_are_session_scoped(store, checkpointer, tmp_path):
     tool_msg = next(m for m in out["messages"] if isinstance(m, ToolMessage))
     assert "No unique job" in tool_msg.content
     assert foreign.job_id[:8] not in tool_msg.content
+
+
+async def test_a_step_is_skipped_from_the_conversation_and_the_job_runs_on(
+    store, checkpointer, tmp_path
+):
+    """"Skip the analysis" reaches `drop_steps` for this session's job; a
+    refusal comes back in words the model can act on, and nothing is
+    cancelled: the job runs on without the step. → 0196"""
+    gate = Gate("web_search")
+    manager = planned_manager(store, checkpointer, tmp_path, gate=gate)
+    job = await manager.create_job("analyse it", session_id="s-skip")
+    manager.start_job(job.job_id)
+    await until(lambda: finished(manager, job.job_id, "documents"), what="a step")   # planned
+
+    def skip(steps: list[str], call_id: str) -> AIMessage:
+        return AIMessage(content="", tool_calls=[{"name": "skip_steps", "id": call_id,
+            "args": {"job_id_prefix": job.job_id[:8], "steps": steps}}])
+
+    model = ScriptedChatModel(responses=[skip(["critique"], "c1"), skip(["analysis"], "c2"),
+                                         AIMessage(content="Skipped.")])
+    agent = ChatSession(manager, model, session_id="s-skip", checkpointer=MemorySaver()).build()
+    out = await agent.ainvoke({"messages": [HumanMessage("skip the analysis")]}, CFG)
+
+    refused, skipped = [m.content for m in out["messages"] if isinstance(m, ToolMessage)]
+    assert refused.startswith("Nothing was skipped") and "critique" in refused
+    assert "it has web_search, documents, research, analysis" in refused
+    assert skipped == (f"Job {job.job_id[:8]} runs on without analysis; its plan is now: "
+                       "web_search, documents, research.")
+    gate.open.set()
+    done = await wait_settled(manager, job.job_id)
+    assert done.status is JobStatus.DONE and "analysis" not in done.results
+
+
+async def finished(manager, job_id: str, step: str) -> bool:
+    return step in (await manager.get_job(job_id)).step_finished_at
 
 
 # ---------------- Carrying the conversation's referent into the job ----------

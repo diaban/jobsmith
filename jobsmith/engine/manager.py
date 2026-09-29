@@ -657,6 +657,11 @@ class JobManager:
             taken.append(job)
         return taken
 
+    async def pending(self, job_id: str) -> tuple[str, ...]:
+        """The nodes the job's checkpoint would run next — where it truly
+        stands, which a fact a node published mid-run can be ahead of."""
+        return await self._pending(await self._require(job_id))
+
     async def _pending(self, job: Job) -> tuple[str, ...]:
         """What a resume would run — `()` when the graph cannot say."""
         try:

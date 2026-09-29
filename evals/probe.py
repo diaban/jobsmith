@@ -19,6 +19,12 @@ query), with an optional `"expect"`: `"truthy"`, `"falsy"`, or a JSON value the
 read key must equal. Half of a probe's cases should be controls — a fix
 measured only where it should fire hides what it broke.
 
+`--node chat` is the chat's model call, which is no node of the DAG: the
+session's system prompt and job tools, as the app composes them, then a
+case's `notice` (where the middleware injects one), `history` (`[role, text]`
+pairs) and `query`. It writes `tool`, the first tool called (None for a reply),
+and its `args` — `--read tool` is the model's choice of tool (#196).
+
 `.env` is loaded (unlike `python -m evals`): this is a real-model tool.
 Refused above `--max-calls` (default 300); an LLM error is counted apart from
 the tally, never as a miss.
@@ -98,21 +104,31 @@ async def probe(
         raise ValueError(f"{len(cases)} cases x {n} = {len(cases) * n} calls, "
                          f"over the budget of {max_calls} (--max-calls)")
     from jobsmith.app.agent import build_app
-    from jobsmith.app.providers import KeywordChatModel, load_dotenv, make_llm, pick_provider
+    from jobsmith.app.providers import (
+        KeywordChatModel,
+        load_dotenv,
+        make_chat_model,
+        make_llm,
+        pick_provider,
+    )
 
     if provider != "fake":
         load_dotenv()           # never under the fake: it would leak keys into the process
+    choice = provider or pick_provider()
     pattern = re.compile(grep, re.IGNORECASE) if grep else None
     with TemporaryDirectory(prefix="jobsmith-probe-") as scratch:
-        app = await build_app(agent=agent, llm=make_llm(provider or pick_provider()),
-                              chat_model=KeywordChatModel(), db="memory",
-                              reports_dir=scratch)
+        app = await build_app(agent=agent, llm=make_llm(choice), db="memory",
+                              chat_model=make_chat_model(choice) if node == CHAT_NODE
+                              else KeywordChatModel(), reports_dir=scratch)
         try:
             nodes = app.manager.engine.graph.nodes
-            if node not in nodes:
-                raise ValueError(f"no node {node!r}; this agent has: "
+            if node == CHAT_NODE:
+                runnable = ChatCall(app.new_session())
+            elif node not in nodes:
+                raise ValueError(f"no node {node!r}; this agent has: {CHAT_NODE}, "
                                  f"{', '.join(sorted(k for k in nodes if not k.startswith('__')))}")
-            runnable = nodes[node].bound
+            else:
+                runnable = nodes[node].bound
             semaphore = asyncio.Semaphore(max(1, concurrency))
             tallies = [Tally(c["id"], expect=c.get("expect")) for c in cases]
 
@@ -136,6 +152,31 @@ async def probe(
         finally:
             await app.aclose()
     return tallies
+
+
+CHAT_NODE = "chat"
+
+
+class ChatCall:
+    """The chat's model call, as the probe calls a node (see the module doc)."""
+
+    def __init__(self, session: Any):
+        from jobsmith.chat.tools import make_job_tools
+
+        self.prompt = session.system_prompt
+        self.model = session.model.bind_tools(make_job_tools(session.manager,
+                                                             session.session_id))
+
+    async def ainvoke(self, state: dict[str, Any]) -> dict[str, Any]:
+        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+        roles = {"human": HumanMessage, "ai": AIMessage}
+        messages = [SystemMessage(self.prompt)]
+        messages += [SystemMessage(state["notice"])] if state.get("notice") else []
+        messages += [roles[role](text) for role, text in state.get("history", [])]
+        reply = await self.model.ainvoke([*messages, HumanMessage(state["query"])])
+        first = reply.tool_calls[0] if reply.tool_calls else None
+        return {"tool": first and first["name"], "args": first and first["args"]}
 
 
 def render(after: dict[str, Any], before: dict[str, Any] | None = None) -> str:
