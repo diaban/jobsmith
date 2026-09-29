@@ -770,7 +770,10 @@ together, not that the answers got better.
 CI runs what `make check` runs — lint, types, the leakage gate, tests — on
 every push and pull request, across Python 3.11 and 3.12, and verifies that
 `uv.lock` still matches `pyproject.toml`. It installs every extra, so the
-optional providers' imports are type-checked there too.
+optional providers' imports are type-checked there too. A pull request that
+touches only `docs/` and top-level Markdown runs only the two tests that read
+those files (the `CLAUDE.md` budget, the decision records), under the same
+check names.
 
 Contributions use one short-lived branch per issue (`feat/12-thing`,
 `fix/13-thing`) with a PR onto `main` — there is no `develop` branch, and

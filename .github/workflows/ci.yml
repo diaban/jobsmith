@@ -41,17 +41,45 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2          # a PR's merge commit and both parents: the scope diffs them
+
+      - name: Scope
+        # A pull request that changes only `docs/**` and top-level Markdown
+        # can break only the two docs tests: nothing else reads those files.
+        # It runs them alone, still under this job's name, since skipping the
+        # workflow would leave the required checks unreported (→ 0198). Any
+        # other path, an empty or unreadable diff and every push run it all.
+        # `--no-renames`: a file moved into docs/ is listed where it left too.
+        id: scope
+        run: |
+          docs_only=false
+          if [ "$GITHUB_EVENT_NAME" = pull_request ] \
+             && changed=$(git diff --no-renames --name-only HEAD^1 HEAD); then
+            docs_only=true
+            while IFS= read -r path; do
+              case "$path" in
+                docs/*) ;;
+                */*) docs_only=false ;;
+                *.md) ;;
+                *) docs_only=false ;;
+              esac
+            done <<< "$changed"
+            printf '%s\n' "$changed"
+          fi
+          echo "docs_only=$docs_only" | tee -a "$GITHUB_OUTPUT"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
-          enable-cache: true
+          enable-cache: ${{ steps.scope.outputs.docs_only != 'true' }}
           cache-dependency-glob: uv.lock
 
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install the project and every extra
+        if: steps.scope.outputs.docs_only != 'true'
         # Same set as `make install-all`: providers and persistence backends
         # included, so their imports are type-checked and exercised by tests.
         run: |
@@ -60,24 +88,39 @@ jobs:
             ".[dev,api,tui,web,pdf,pptx,anthropic,openai,chat-anthropic,chat-openai,sqlite,postgres]"
 
       - name: Lint
+        if: steps.scope.outputs.docs_only != 'true'
         run: .venv/bin/ruff check .
 
       - name: Type check
+        if: steps.scope.outputs.docs_only != 'true'
         # Every extra is installed above, so this is the strictest reading of
         # the tree: the optional providers' imports resolve here, and the
         # `[tool.pyright]` config is the same one Pylance applies in the editor.
         run: .venv/bin/pyright
 
       - name: Domain-leakage gate
+        if: steps.scope.outputs.docs_only != 'true'
         run: make leak-check
 
       - name: Tests
+        if: steps.scope.outputs.docs_only != 'true'
         # No API key is available here: the deterministic fakes are what make
         # the suite runnable in CI at all. The database is new on every run,
         # so each run also exercises several workers' first setup at once.
         env:
           JOBSMITH_TEST_PG: postgresql://postgres:postgres@localhost:5432/jobsmith
         run: .venv/bin/python -m pytest tests/ -q -n auto
+
+      - name: Docs tests
+        # The fast path: pytest alone (pytest-asyncio only so pyproject's
+        # `asyncio_mode` is a known option), without the conftest, which
+        # imports the dependencies this path does not install.
+        if: steps.scope.outputs.docs_only == 'true'
+        run: |
+          uv venv --python ${{ matrix.python-version }} .venv
+          uv pip install -p .venv/bin/python pytest pytest-asyncio
+          .venv/bin/python -m pytest -q --noconftest \
+            tests/test_claude_md_budget.py tests/test_decision_records.py
 
   lockfile:
     # A stale lockfile is worse than none: it silently stops matching pyproject.
