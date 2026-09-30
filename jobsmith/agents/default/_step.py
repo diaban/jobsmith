@@ -16,7 +16,7 @@ from langgraph.constants import END
 
 from ...dag.capability import Capability, CapabilityBaseState, CapabilitySpec
 from ...dag.deps import LLMClient
-from ...dag.state import CapabilityResult
+from ...dag.state import CapabilityResult, results_of
 
 #: Appended to the system prompt of every step of this pack (#58).
 #:
@@ -73,15 +73,16 @@ class SingleStepCapability(Capability):
     # -------------------- Nodes --------------------
 
     def _material(self, state: StepState) -> str:
+        """The first upstream capability, in priority order, that left
+        material — from every step that ran it, each labelled by its id."""
         for cap_name, data_key in self.UPSTREAM:
-            result = state.get("results", {}).get(cap_name)
-            if not result or not result.get("ok"):
-                continue
             # Every CapabilityResult key is NotRequired — a failed step has no
             # `data` at all — so bind the value once instead of asserting twice.
-            material = (result.get("data") or {}).get(data_key)
-            if material:
-                return f"[material from {cap_name}]\n{material}"
+            blocks = [f"[material from {sid}]\n{material}"
+                      for sid, result in results_of(state, cap_name)
+                      if (material := (result.get("data") or {}).get(data_key))]
+            if blocks:
+                return "\n\n".join(blocks)
         return "(no upstream material available — reason from the request alone)"
 
     async def work(self, state: StepState) -> dict:

@@ -59,7 +59,7 @@ jobsmith --agent banking chat | serve # any agent, same shell
   ```
 
   **Gotchas**: a venv is path-specific — never symlink or copy one across worktrees; `.env`/`agent.db`/`artifacts/` are gitignored, so a fresh worktree has no API key until `make worktree` copies it. → 0000
-- `make coverage`: the interactive layers (`cli/`, `chat/tools.py`) are the thin ones — a change there brings its tests with it. → 0000
+- `make coverage`: `cli/` and `chat/tools.py` are thin — a change there brings its tests. → 0000
 
 Leakage gates (`make leak-check`, must return nothing): no `banking|banquier|votre|analyste` in shared code, `agents/default`, `agents/base.py` or `evals/` — **not** `agents/banking`, which may be as domain-specific as it likes; no product word (`ENGINE_WORDS`) in `engine/` (G4). → 0161
 
@@ -105,7 +105,7 @@ AgentDefinition(
 )
 ```
 
-- `open_resources` gets `build_app`'s `AsyncExitStack`; teardown is reverse order on `AgentApp.aclose()`, even after a failed startup. Several capabilities on one backend share a **pool**, never a fat client. → 0000
+- `open_resources` gets `build_app`'s `AsyncExitStack`; teardown in reverse on `aclose()`, even after a failed startup; capabilities on one backend share a **pool**. → 0000
 
 - `agents/default/`: `read_files`/`prior_jobs`/`documents`/`web_search` → `research` → `analysis` → `critique`, plus `slide_deck`. `analysis`/`critique` subclass `SingleStepCapability` (`_step.py`); `critique` overrides `_material` to read both. → 0000
   - **`documents` is the grounding step**, over the `DocumentSource` port (`sources.py`; `LocalFiles` is keyword ranking, no key, no network). → 0000
@@ -151,7 +151,7 @@ Every step of the reference graph (`dag/`) is a class instance owning its deps a
 
 - **`dag/capability.py`** — `Capability` ABC + `CapabilitySpec` (name, description, JSON-schema dicts, `requires_inputs`). Capabilities take *exactly the clients they need*; the framework never introspects them. Terminal sub-graph nodes call `_emit_success`/`_emit_failure` so every capability reports uniformly.
 - **`dag/registry.py`** — `CapabilityRegistry`: single source of truth for what the agent can do. The planner prompt, executor targets and builder node map all derive from it. **Frozen at `build()`** — a compiled graph's capability set is fixed; new capability ⇒ new `AgentBuilder` (compilation is milliseconds).
-- **`dag/state.py`** — results live in one `results: dict[str, CapabilityResult]` (dict-union reducer), **keyed by step id** (`step_id`; a capability learns it via `state_graph`, → 0211); unique ids ⇒ disjoint keys. **Determinism caveat:** consumers iterate in *plan order*, never dict order.
+- **`dag/state.py`** — results live in one `results: dict[str, CapabilityResult]` (dict-union reducer), **keyed by step id** (`step_id`; a capability learns it via `state_graph`, → 0211); unique ids ⇒ disjoint keys. **A capability reads another's material by `results_of`** (every step that ran it), never `results[name]`. → 0215 **Determinism:** consumers iterate in *plan order*, never dict order.
 - **`engine/usage.py`** — an **ambient ledger** (`ContextVar` per run) adapters push into with `record_usage`, plus LangChain calls via the runner's `ModelCallUsage` callback; scope = the root node of `checkpoint_ns` (a capability's is `cap_<name>`), else `unattributed`; `$JOBSMITH_PRICES`; unpriced ⇒ `cost_usd: None`; the conversation's own calls are summed per turn (terminal `usage`, #173). → 0002, 0161
 - **`artifacts/paths.py`** — `safe_name` (one component) and `resolve_within` (refused unless it **lands** in a declared root; resolves before comparing). → 0060
 - **`dag/prior_jobs.py`** — the `PriorJobSource` port, in `dag/` because the composition root supplies it. → 0074
@@ -271,7 +271,7 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 - **Shared builders live in `tests/support.py`** (`OneStep` — a one-node capability: write `work` only —, `SlowEcho`, `ChartCapability`, `make_manager`, `planning`, `make_session`, `chat_turn`, `service_over`, `make_app`, `wait_done`, `until` — wait on state, never a fixed sleep —, `StubPdf`); **a test file never imports from another test file**. → 0110
 - `tests/conftest.py` — `FakeLLM` scripts responses by **substring of the system prompt** (`{"planner": ..., "ONLY the provided": ...}`); `plan_json()` builds planner responses. Fixtures: `checkpointer` (MemorySaver), `store` (InMemoryStore).
 - `tests/test_banking_example.py` pins the banking agent (French messages, citation rule, no vision without an image).
-- Tests import capabilities/stubs directly and assert on the final state (`terminal_kind`, `results`, `completed_capabilities`).
+- Tests import capabilities/stubs directly and assert on the final state (`results`, `terminal_kind`…).
 - **The default registry is configuration-dependent**: ask `conftest.registered_capabilities(app)`, never hardcode it (CI installs `.[pptx]`); its **order** is load-bearing for `KeywordLLM`. → 0035
 
 ## Evaluating prompts (`evals/`)

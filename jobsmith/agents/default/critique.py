@@ -37,7 +37,7 @@ from __future__ import annotations
 from typing import ClassVar
 
 from ...dag.capability import CapabilitySpec
-from ...dag.state import CapabilityResult
+from ...dag.state import CapabilityResult, results_of
 from ._step import SingleStepCapability, StepState
 
 
@@ -108,17 +108,13 @@ class CritiqueCapability(SingleStepCapability):
 
     def _material(self, state: StepState) -> str:
         """The findings AND the notes behind them, each labelled with what it is."""
-        results = state.get("results", {})
         blocks: list[str] = []
         for name, key, role in self.MATERIAL:
-            result = results.get(name)
-            if not result or not result.get("ok"):
-                continue
-            # every CapabilityResult key is NotRequired: a failed step has no
-            # `data` at all
-            text = (result.get("data") or {}).get(key)
-            if text:
-                blocks.append(f"[{name} — {role}]\n{text}")
+            for sid, result in results_of(state, name):
+                # every CapabilityResult key is NotRequired: a failed step has
+                # no `data` at all
+                if text := (result.get("data") or {}).get(key):
+                    blocks.append(f"[{sid} — {role}]\n{text}")
         if not blocks:
             return super()._material(state)
         return "\n\n".join(blocks)
