@@ -144,9 +144,11 @@ principle rests on it. Two obstacles:
 **Step 1 opens with a probe**: generate the schema of the default agent's real registry,
 submit it in strict mode to Anthropic and to OpenAI, and record what is accepted, what is
 refused, and the rate of programs valid on the first call. It covers `extract`'s
-`fields` form and the strict-mode normalisation of Pydantic's schemas (see "The registry"). **The fallback, decided now**:
-where a provider accepts only part of it, the schema constrains `op`, the step structure,
-ids and `map`; arguments are left to the analysis and the repair. Where a provider accepts
+`fields` form and the strict-mode normalisation of Pydantic's schemas (see "The registry"). **The fallback**, revised by
+the probe (0219): where a provider refuses a keyword, that keyword moves into the
+description and the analysis enforces it; the arguments stay in the schema. (The first
+draft left arguments out; strict mode closes every object, so that meant arguments as a
+JSON string, which measured worse than no schema at all.) Where a provider accepts
 none, the planner writes JSON as today and the analysis carries it all. Either way the
 promise shrinks, and the note says so: what the measurement then compares is "a checked
 program" against ReAct, not "a closed language" against ReAct.
