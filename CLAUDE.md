@@ -28,7 +28,7 @@ jobsmith serve [--port 8000] # ★ the daemon: it owns the job engine
 jobsmith chat [--session ID] # ★ converse (daemon if up, else embedded)
 jobsmith ui [--session ID] [--theme NAME] # ★ the same conversation on screen (.[tui])
 jobsmith run "<task>" [--wait] | jobs | job <id> | report <id> | cancel <id>
-# `python -m jobsmith …` is the same entrypoint when the venv's bin isn't on PATH
+# `python -m jobsmith …` = the same, venv bin off PATH
 jobsmith --agent banking chat | serve # any agent, same shell
 .venv/bin/python -m jobsmith.agents.banking.demo # scripted banking demo (fakes)
 ```
@@ -119,7 +119,8 @@ AgentDefinition(
   - Retrieved passages carry a **quotable id** (`path#chunk`).
   - **`research` reads every retrieval step's material** and `read_files`' refusals, and says so in `meta["grounded_on"]`; **`critique` checks the subject, not the work**, and feeds the generator. → 0081, 0082
 - `agents/banking/`: the domain example, with its **own ports** next to its capabilities (`deps.py`) and its own adapters (`fakes.py`); `vision` is registered only when the LLM satisfies `VisionClient`. → 0000
-- Selection: `--agent NAME` (CLI, applies to whichever process owns the engine — so pass it to `serve`), `build_app(agent=...)`, `make chat AGENT=banking`.
+- `agents/react/`: **the compiler baseline**, a graph agent over retrieval ports only, no reasoning capability. → 0206
+- Selection: `--agent NAME` (pass it to `serve`), `build_app(agent=...)`, `make chat AGENT=banking`.
 
 ### The composition root (`app/`)
 
@@ -269,8 +270,8 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 - **A prompt is asserted through the named rule it must carry** (`SUBJECT_ONLY_RULE`, `CAVEATS_RULE`, `BRIEF_RULE`, `UNREADABLE_RULE`: `RULE in prompt`), never by its wording — wording is the evals' to judge. A rule worth a test is a constant in the product. → 0110
 - **Shared builders live in `tests/support.py`** (`OneStep` — a one-node capability: write `work` only —, `SlowEcho`, `ChartCapability`, `make_manager`, `planning`, `make_session`, `chat_turn`, `service_over`, `make_app`, `wait_done`, `until` — wait on state, never a fixed sleep —, `StubPdf`); **a test file never imports from another test file**. → 0110
 - `tests/conftest.py` — `FakeLLM` scripts responses by **substring of the system prompt** (`{"planner": ..., "ONLY the provided": ...}`); `plan_json()` builds planner responses. Fixtures: `checkpointer` (MemorySaver), `store` (InMemoryStore).
-- `tests/test_banking_example.py` pins the banking agent's behavior (French rejection messages, citation rule, vision dropped without an image).
-- Tests import capabilities/stubs directly and assert on the final state dict (`terminal_kind`, `results`, `completed_capabilities`).
+- `tests/test_banking_example.py` pins the banking agent (French messages, citation rule, no vision without an image).
+- Tests import capabilities/stubs directly and assert on the final state (`terminal_kind`, `results`, `completed_capabilities`).
 - **The default registry is configuration-dependent**: ask `conftest.registered_capabilities(app)`, never hardcode it (CI installs `.[pptx]`); its **order** is load-bearing for `KeywordLLM`. → 0035
 
 ## Evaluating prompts (`evals/`)

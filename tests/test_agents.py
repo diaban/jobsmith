@@ -19,8 +19,8 @@ from jobsmith.dag.capability import Capability, CapabilityBaseState, CapabilityS
 from jobsmith.dag.profile import AgentProfile
 
 
-def test_registry_lists_both_shipped_agents():
-    assert agent_names() == ["banking", "default"]
+def test_registry_lists_every_shipped_agent():
+    assert agent_names() == ["banking", "default", "react"]
     assert get_agent(None) is AGENTS["default"]          # None = the default agent
     with pytest.raises(KeyError, match="unknown agent 'nope'"):
         get_agent("nope")
