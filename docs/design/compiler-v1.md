@@ -626,6 +626,16 @@ The optimiser (an LLM step replaced by an equivalent deterministic op, caching b
 hash), mining calibrated programs from history, a sliding-window scheduler, a per-job
 relaunch bound, nested `map`, and the router choosing a program.
 
+**A job launching a job.** Everything in v1 runs inside one job: steps, `map` instances
+and agent ops are branches of the interpreter's graph, checkpointed in one thread, so
+resume, cancel, usage and delivery stay a single job's. The engine has no parent/child
+link today: a node could call `create_job`, or an agent served as a job could carry
+`launch_tool`, but the child would be unlinked, not cancelled with its parent, and not
+awaited durably across a crash. It becomes worth building when a step must outlive its
+job, be shared by several, or run on another agent (a calibrated `banking` program
+called from the default agent); it then needs, in the engine, a parent link, cancel
+propagation, a durable wait on the child and usage rolled up to the parent.
+
 ## Decided (by the owner, before this note)
 
 1. **A constrained IR**, filled by the planner.
