@@ -100,21 +100,27 @@ Two more couplings, which the review did not list, have to move with it:
 - `PlanStep` gains `id`, **defaulting to the capability name**, so every plan written
   today is unchanged and every name in the public contract is already a valid id.
 - `results`, the `step:<id>` fact, the run count and `step_finished_at` are keyed by id.
-  The channel `completed_capabilities` becomes `completed_steps` (ids); see settled point 2
-  on checkpoints in flight across the rename.
+  As built (0211): the channel keeps its name `completed_capabilities` and holds ids;
+  renaming it would break checkpoints in flight (settled point 2), for a name only, and
+  step 0 leaves it (0217).
 - The executor Sends each step with its identity in the payload: `step = {"id", "op",
   "args"}`. `Capability._emit_*` writes under `state["step"]["id"]` instead of
-  `self.spec.name`. A capability never learns its id any other way.
+  `self.spec.name`. As built (0211): a capability learns it from the wrapper
+  `state_graph` puts around its nodes, with no change to its code.
 - `depends_on` and `drop_steps` take ids. A name that is the op of several steps and the
   id of none is refused as ambiguous, with the ids listed.
-- **Reading upstream material by name keeps working for a step with no `args`**: "the
-  latest `ok` result of a step whose op is X", in plan order. It is the fallback the
+- **Reading upstream material by name keeps working for a step with no `args`**: every
+  `ok` result of a step whose op is X, in plan order (as built, `results_of`, 0215: not
+  only the latest, which would drop material silently). It is the fallback the
   default agent runs on until its planner emits references (step 1), after which a step's
   material comes from its arguments. The fallback is removed when no shipped agent needs
   it; that removal is its own PR.
 - **Usage per instance**: see settled point 1. Until `usage_scope` lands, the duplicate ban
   stays, so no two steps can share a scope.
-- **Only then is the duplicate ban lifted.**
+- **Only then is the duplicate ban lifted.** As built (0217): it moves from capabilities
+  to ids. A step with no id has its capability's name, so a plan that writes none — every
+  plan the prompt asks for until step 1 — still refuses a capability twice; a plan that
+  gives ids runs one capability as several steps.
 
 ## The IR
 
@@ -584,7 +590,7 @@ step 1 on, each PR carries its `make compare` table (0208).
      step's identity.
    - 0b: `drop_steps`, the DAG view, the TUI, the REPL and the chat speak ids.
    - 0c: capabilities read upstream material through the by-op fallback.
-   - 0d: `usage_scope` in the engine (settled point 1), then the ban lifted.
+   - 0d: `usage_scope` in the engine (settled point 1), then the ban moved to ids.
 1. **Minimal IR** (C1).
    - 1a: the strict-mode probe (see "The IR"), a measurement and a record, no product
      code: per provider, full constraint, the fallback, or plain JSON.

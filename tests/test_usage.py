@@ -35,6 +35,7 @@ from jobsmith.engine.usage import (
     record_usage,
     reset_price_overrides,
     usage_ledger,
+    usage_scope,
 )
 
 # ---------------------------------------------------------------- the tally
@@ -553,3 +554,22 @@ async def test_two_jobs_running_at_once_never_bill_each_other(store, checkpointe
     # and the job totals stay disjoint too
     assert done_a.usage["input_tokens"] == 100
     assert done_b.usage["input_tokens"] == 7
+
+
+async def test_a_named_scope_books_what_runs_inside_it_and_no_sibling():
+    """A node run as several instances names each one's scope (→ 0217): each
+    books apart, parallel branches never see each other's name, and what
+    runs outside books as before."""
+    import asyncio
+
+    async def spend(name: str, tokens: int) -> None:
+        with usage_scope(name):
+            await asyncio.sleep(0)                  # interleave the branches
+            record_usage("claude-opus-5", output_tokens=tokens)
+
+    with usage_ledger() as ledger:
+        await asyncio.gather(spend("cap_small", 3), spend("cap_large", 50))
+        record_usage("claude-opus-5", output_tokens=1)
+    assert ledger.get("cap_small").output_tokens == 3
+    assert ledger.get("cap_large").output_tokens == 50
+    assert ledger.get(UNATTRIBUTED).output_tokens == 1

@@ -1,12 +1,15 @@
 """A plan step is known by its id: its result, its fact and its run count are
 keyed by it, a capability learns it without passing anything along, and
 whoever reads a plan (`drop_steps`, the chat, the REPL, the TUI) speaks ids
-(→ docs/design/compiler-v1.md, "Step identity"; 0211, 0213, 0215)."""
+(→ docs/design/compiler-v1.md, "Step identity"; 0211, 0213, 0215, 0217)."""
 from __future__ import annotations
 
+import json
+
 import pytest
+from conftest import FakeLLM
 from langgraph.graph import END
-from support import OneStep, dag_job
+from support import ANSWER, OneStep, dag_job, make_manager
 
 from jobsmith.chat.tools import progress_line, running_steps
 from jobsmith.cli.repl import plan_line
@@ -15,9 +18,10 @@ from jobsmith.dag.executor import Executor
 from jobsmith.dag.jobs import DagJobs
 from jobsmith.dag.planner import without_steps
 from jobsmith.dag.registry import CapabilityRegistry
-from jobsmith.dag.state import results_of
+from jobsmith.dag.state import results_of, step_id
 from jobsmith.engine.facts import FACT_KEY
 from jobsmith.engine.models import JobStatus
+from jobsmith.engine.usage import record_usage
 
 
 class Echo(OneStep):
@@ -170,3 +174,56 @@ def test_a_reasoning_step_reads_every_step_of_its_upstream_labelled_by_id():
         "notes_b": {"ok": True, "data": {"notes": "second notes"}}}})
     assert material.index("[material from notes_a]") < material.index("[material from notes_b]")
     assert "first notes" in material and "second notes" in material
+
+
+class Spend(OneStep):
+    """Spends `tokens[step id]` output tokens twice over: once as a direct
+    client books it, once through a LangChain model the run's callback books."""
+
+    def __init__(self, name: str, tokens: dict[str, int]):
+        super().__init__(name)
+        self.tokens = tokens
+
+    async def work(self, state: CapabilityBaseState) -> dict:
+        from conftest import ScriptedChatModel
+        from langchain_core.messages import AIMessage
+
+        spent = self.tokens[self._step_id()]
+        record_usage("claude-opus-5", output_tokens=spent)
+        model = ScriptedChatModel(responses=[AIMessage("ok", usage_metadata={
+            "input_tokens": 0, "output_tokens": spent, "total_tokens": spent})])
+        await model.ainvoke("spend")
+        return self._emit_success({"spent": spent})
+
+
+async def test_one_capability_runs_as_two_steps_each_with_its_own_usage(store, checkpointer,
+                                                                          tmp_path):
+    """Gate C0: two steps of one capability, told apart by id, both run; their
+    results, facts, run counts and usage stay apart (→ 0217)."""
+    plan = json.dumps({"steps": [
+        {"id": "small", "capability": "spend", "depends_on": []},
+        {"id": "large", "capability": "spend", "depends_on": []}], "rationale": "twice"})
+    manager = make_manager(store, checkpointer, tmp_path,
+                           caps=[Spend("spend", {"small": 3, "large": 50})],
+                           llm=FakeLLM({"planner": plan}, default=ANSWER))
+    job = await manager.run_job((await manager.create_job("spend twice", {})).job_id)
+
+    assert [step_id(s) for s in job.plan["steps"]] == ["small", "large"]
+    assert set(job.step_finished_at) == {"small", "large"}
+    usage = {sid: job.step_usage(sid) for sid in ("small", "large")}
+    assert (usage["small"]["output_tokens"], usage["large"]["output_tokens"]) == (6, 100)
+    assert usage["small"]["calls"] == usage["large"]["calls"] == 2
+
+
+async def test_a_plan_without_ids_still_refuses_a_capability_twice():
+    """The ban moved from capabilities to ids: a model that writes no ids —
+    every model the prompt asks — still cannot run one capability twice."""
+    from conftest import plan_json
+
+    from jobsmith.dag.deps import Deps
+    from jobsmith.dag.planner import Planner
+
+    planner = Planner(Deps(llm=FakeLLM({"planner": plan_json("echo", "echo")})),
+                      CapabilityRegistry([Echo("echo")]))
+    out = await planner.run({"query": "q"})
+    assert "duplicate step id: echo" in out["errors"][0]["detail"]

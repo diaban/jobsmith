@@ -1,6 +1,6 @@
 # 0211 — A plan step is known by its id, and a capability learns it from the node wrapper, not from its own code
 
-- **Issue:** #211 · **PR:** #212 · **Status:** accepted
+- **Issue:** #211 · **PR:** #212 · **Status:** partially superseded by [0217](0217-two-steps-one-capability.md) (the channel is not renamed)
 - **Rule in `CLAUDE.md`:** "`dag/state.py` — results … keyed by step id" (Core concepts); "`step:<id>` fact's key" (Jobs layer)
 
 **Context.** Step 0a of `docs/design/compiler-v1.md`: a step was its capability's name everywhere (`results`, the `step:` fact, the run count, `step_finished_at`), which rules out two steps of one capability (`map`, recompilation). The results are written by `Capability._emit_success`/`_emit_failure`, which receive the step's data and nothing else, from ~50 call sites across both agents and the tests.

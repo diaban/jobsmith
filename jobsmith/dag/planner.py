@@ -16,6 +16,7 @@ map, not here.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from typing import Any
 
@@ -24,6 +25,10 @@ from .deps import Deps
 from .profile import DEFAULT_PLANNER_TEMPLATE
 from .registry import CapabilityRegistry
 from .state import CONVERSATION_INPUT_KEY, AgentState, NodeError, Plan, PlanStep, step_id
+
+# What a step id may be: the same shape as a capability's name, which is what
+# a step with no id of its own is known by.
+_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def without_steps(plan: Plan, ids: Sequence[str]) -> Plan:
@@ -104,22 +109,27 @@ class Planner:
             name = step.get("capability")
             if name not in allowed:
                 raise ValueError(f"unknown capability: {name}")
-            if name in seen or name in dropped:
-                raise ValueError(f"duplicate capability: {name}")
+            # A step is known by its id, its capability's name when it gives
+            # none: so one capability may run as several steps only when each
+            # is told apart by an id — a plan with none, which is every plan
+            # the prompt asks for, still refuses a capability twice (0217).
+            sid = step.get("id") or name
+            if not isinstance(sid, str) or not _ID_RE.match(sid):
+                raise ValueError(f"bad step id for {name}: {sid!r}")
+            if sid in seen or sid in dropped:
+                raise ValueError(f"duplicate step id: {sid}")
             deps = step.get("depends_on") or []
-            if not isinstance(deps, list) or any(d not in allowed for d in deps):
-                raise ValueError(f"bad depends_on for {name}")
+            if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
+                raise ValueError(f"bad depends_on for {sid}")
             if not self.registry.get(name).is_applicable(state):
-                dropped.add(name)
+                dropped.add(sid)
                 continue
-            seen.add(name)
-            # One step per capability until the duplicate ban is lifted
-            # (docs/design/compiler-v1.md, 0d): its id is its name.
-            cleaned.append({"id": name, "capability": name, "depends_on": list(deps)})
+            seen.add(sid)
+            cleaned.append({"id": sid, "capability": name, "depends_on": list(deps)})
 
         # Prune depends_on entries that reference dropped (inapplicable) steps;
         # references to steps absent from the plan altogether are still errors.
-        surviving = {s["capability"] for s in cleaned}
+        surviving = {step_id(s) for s in cleaned}
         for s in cleaned:
             kept: list[str] = []
             for d in s["depends_on"]:
@@ -130,11 +140,11 @@ class Planner:
             s["depends_on"] = kept
 
         # Kahn's algo for cycle detection
-        indeg = {s["capability"]: len(s["depends_on"]) for s in cleaned}
-        adj: dict[str, list[str]] = {s["capability"]: [] for s in cleaned}
+        indeg = {step_id(s): len(s["depends_on"]) for s in cleaned}
+        adj: dict[str, list[str]] = {step_id(s): [] for s in cleaned}
         for s in cleaned:
             for d in s["depends_on"]:
-                adj[d].append(s["capability"])
+                adj[d].append(step_id(s))
         queue = [n for n, d in indeg.items() if d == 0]
         visited = 0
         while queue:
@@ -148,7 +158,7 @@ class Planner:
             raise ValueError("plan contains a cycle")
 
         # `cleaned` can only be empty because every step was dropped as
-        # inapplicable: an unknown name, a duplicate or a bad dependency raises,
+        # inapplicable: an unknown name, a duplicate id or a bad dependency raises,
         # and an empty `steps` from the model was rejected above. So it is a
         # fact about the request (no image for `vision`), not a broken plan —
         # it travels as an EMPTY PLAN, and `AgentBuilder._route_after_planner`
