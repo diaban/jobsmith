@@ -113,7 +113,7 @@ AgentDefinition(
   - **`prior_jobs` reads an earlier RUN, not its file** (`inputs["from_jobs"]`, bounded, session scope in `chat/tools.py`); it and `read_files` are **first in the registry** (`KeywordLLM` chains in order). → 0074
   - **`web_search`** = `DocumentsCapability` over `TavilySource`: pages, not snippets, cut per document; an HTTP error raises. → 0075
   - **A capability nothing can serve stays out of the registry** — every conditional step is registered only when something backs it (`open_default_resources`); an empty registry is then answered directly. → 0000, 0038
-  - **`slide_deck` is a generation, not a report format**: deck structure is asked of the model; only `pptx_deck.py` imports `python-pptx`; 16:9; refused without a job before the LLM call; the deck is an `annex`. **Its description says what it is NOT.** → 0035, 0061
+  - **`slide_deck` is a generation, not a report format**: deck structure is asked of the model; only `pptx_deck.py` imports `python-pptx`; 16:9; refused without a job before any LLM call; an `annex`. **Its description says what it is NOT.** → 0035, 0061
   - **The deliverable is written for its reader, and answers**: prompts oblige the answer first, from the material, doubt marked where it bears; `SUBJECT_ONLY_RULE` names the deck too (a separate step builds it, → 0129); `NO_ANSWER_INSTRUCTION` sets a high bar and shape for a refusal. → 0058, 0073
   - **The generator is told which files the run delivers** and names no other; when the list names the answer itself, `ANSWER_FILE_RULE` says that entry **is** the text — never "delivered separately". → 0077, 0126
   - Retrieved passages carry a **quotable id** (`path#chunk`).
@@ -276,16 +276,15 @@ Defaults wire the v1 stack, so `JobManager(graph, store)` still works; pass `rep
 
 ## Evaluating prompts (`evals/`)
 
-A prompt change (router, planner, generator, a capability's own instructions) is
-not judged by eye here: `make eval` scores it on a golden set of requests and
+A prompt change is not judged by eye: `make eval` scores it on a golden set and
 prints a table comparable with the previous run.
 
 - **Properties, not expected text**: one function per property, pass / fail / **skip**. Report checks read through `deliverable.extract`; a binary first format is refused. → 0003, 0025
 - **Two tiers**: `structural` (`KeywordLLM`) must be 100% and gates `make check`; `llm` never gates. **Blank the keys for the fake tier** — `.env` refills with `setdefault`: `TAVILY_API_KEY= ANTHROPIC_API_KEY= OPENAI_API_KEY=`. → 0003
 - Checks are scored against the **case**, never the job record; answer checks through `_answer_applies`, file checks through `_report_applies`; retrieval is recognised by the **shape** of a result. → 0073, 0081, 0090, 0096
-- Adding a case is one `EvalCase` in `cases.py`; adding a property is one
-  function in `scoring.py` plus its name in `CHECK_NAMES` (a test pins the two
-  together). Cases stay **domain-neutral** — `make leak-check` scans `evals/`
-  too; an agent-specific golden set would live with that agent.
+- A case is one `EvalCase` in `cases.py`; a property is one function in
+  `scoring.py` plus its name in `CHECK_NAMES` (a test pins the two). Cases stay
+  **domain-neutral** — `make leak-check` scans `evals/` too.
 - **`answer_invents_no_file` is the one check read against the record**: whether the answer tells the truth about `Job.outputs` is a fact, not a decision the case holds; a file kind the request or material already names is skipped. → 0077
 - **The structural tier must exercise every check.** The llm tier is a smoke signal, not a benchmark. → 0003
+- **`make compare`**: DAG vs `react` baseline on run-time-width tasks, same material and per-query bounds, success = coverage; a compiler step's PR carries its table. → 0208

@@ -735,6 +735,7 @@ make eval                     # deterministic tier — fakes, no API key, runs i
 make eval-llm                 # the same golden set against a real provider (opt-in)
 make eval ARGS='--repeat 3'   # sample the same cases repeatedly to see the variance
 make eval ARGS='--report-format html'   # score the other deliverable format
+make compare ARGS='--repeat 3'  # the DAG against the ReAct baseline, same tasks (real provider)
 make probe NODE=document_intent READ=document_formats \
   CASES=evals/probes/document_intent.json   # one prompt at its node, main vs branch
 python -m evals --list        # what the golden set contains

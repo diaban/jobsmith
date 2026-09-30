@@ -38,8 +38,11 @@ from ..default.sources import DocumentReader, DocumentSource, DocumentUnavailabl
 #: all its material within (`ResearchCapability.MAX_MATERIAL_CHARS`), so one
 #: call of the baseline sees no more than one step of the DAG does.
 MAX_CALL_CHARS = 32_000
-#: Hits per search call, as `DocumentsCapability.max_documents`.
-MAX_HITS = 10
+#: Hits per search call: one search of the baseline is one query of the DAG
+#: (`DocumentsCapability`'s `per_query`), so neither reads more per query.
+#: 10 (its `max_documents`, a whole step's total) read past a 7th tied hit
+#: the DAG's query cuts, and measured retrieval instead of orchestration (0208).
+MAX_HITS = 6
 TRUNCATION_NOTE = "\n\n…[truncated: only the first {kept} characters of this item]"
 
 SYSTEM_PROMPT = (
