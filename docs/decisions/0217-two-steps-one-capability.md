@@ -1,6 +1,6 @@
 # 0217 — One capability may run as several steps, told apart by id, each counting its own usage through a scope the node names
 
-- **Issue:** #217 · **PR:** see the issue · **Status:** accepted
+- **Issue:** #217 · **PR:** #218 · **Status:** accepted
 - **Rule in `CLAUDE.md`:** "scope = a node's `usage_scope` (a step's: `cap_<id>`)" (Core concepts, `engine/usage.py`); "**ids unique** (default: the name)" (Graph flow, Planner); partially supersedes [0211](0211-step-identity.md) (the channel's rename)
 
 **Context.** Step 0d of `docs/design/compiler-v1.md`, settled point 1. After 0a–0c every reader keys by step id, but usage is booked under the root node of `checkpoint_ns`, which drops the task id: two steps of one capability share `cap_<name>` and each reads back the sum. The planner refused a capability twice. The planner prompt asks for no ids and no arguments until step 1, so two steps of one capability from a model today would be the same work twice.
