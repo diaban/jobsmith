@@ -10,7 +10,8 @@ b4f0be6 and carry a file reference; claims marked *(to check)* are hypotheses a 
 probe must confirm. Revised the same day after an outside review of the note: a baseline
 that does not depend on step 1, the planner's constrained output marked as the riskiest
 hypothesis with its fallback, and two holes in the IR's semantics (`output` absent, `when`
-and references).
+and references). Extended 2026-09-30 with "Primitives v1", after a second outside review
+on which ops the IR connects.
 
 ## Why
 
@@ -146,10 +147,10 @@ program" against ReAct, not "a closed language" against ReAct.
  "steps": [
    {"id": "search", "op": "web_search", "args": {"query": "jobsmith github repository"}},
    {"id": "reads", "op": "read_repository",
-    "map": {"over": "$search.hits", "max_items": 20, "concurrency": 5, "on_error": "partial"},
-    "args": {"url": "$item.url"}},
-   {"id": "compare", "op": "analysis",
-    "args": {"material": "$reads", "instruction": "Compare the repositories on purpose and activity."}}
+    "map": {"over": "$search.items", "max_items": 20, "concurrency": 5, "on_error": "partial"},
+    "args": {"url": "$item.source"}},
+   {"id": "compare", "op": "synthesize",
+    "args": {"items": ["$reads"], "instruction": "Compare the repositories on purpose and activity."}}
  ],
  "output": "compare"}
 ```
@@ -229,6 +230,7 @@ class OpSpec:                     # today's CapabilitySpec, plus effects, schema
     output_schema: dict
     effects: Effects = Effects()
     requires_inputs: tuple[str, ...] = ()
+    output_from: str | None = None  # the argument whose literal value is the output type (extract, classify)
 ```
 
 - **Schemas become binding** (today they are "advisory", `dag/capability.py:38`). They
@@ -263,6 +265,96 @@ class OpSpec:                     # today's CapabilitySpec, plus effects, schema
 - A step's cache key (later) is the hash of its op, version and resolved args, only for
   an op that is `read_only` and `idempotent`.
 
+## Primitives v1: a rule and a starting kit, not a catalogue
+
+The contract above says what an op *is*; the IR's types only mean something through the
+ops they connect. PlanCompiler owes its success rate to 25 well-typed primitives, and
+its first cause of failure is a primitive too (a parameter left as free text: raw SQL).
+So the ops are designed now, but only the ones a measured task needs are built.
+
+**What the code shows.** Checked on b4f0be6:
+
+- **Outputs are mostly prose.** `analysis` emits `{"analysis": text}`, `critique`
+  `{"critique": text}`: a typed reference has nothing to follow in them.
+- **Only retrieval yields lists**, and not of one shape: `documents` emits
+  `{"documents": [...]}` (`documents.py:124`), `prior_jobs` `{"documents", "unavailable"}`,
+  `read_files` `{"read", "refused"}`. They are today's only possible `map` sources.
+- **`research` decomposes the request itself** (`decompose` → `aspects`, 2 to 5, then
+  `investigate`, `research.py:201,269`). It is two model calls, not a fan-out, so its
+  cost stays bounded; but under the compiler the planner decomposes and then `research`
+  decomposes again, and the second decomposition escapes typing and the analysis.
+- **The capabilities are cut for the fixed pipeline** research → analysis → critique,
+  and read each other by name (`UPSTREAM`): their grain is the pipeline's, not an IR
+  vocabulary's.
+
+### The shape rule
+
+Single step or agent are two implementations behind one `OpSpec`; the planner never
+sees which. An op's shape is chosen by:
+
+- **One model call with a known output schema ⇒ `LlmOp`.**
+- **Exploring unknown ground ⇒ a bounded ReAct op**, declaring its allowed tools, a
+  maximum number of iterations and a budget (`cost="agent"`).
+- **Deterministic ⇒ `FnOp`**, zero model calls.
+- **An op never fans out internally where the IR can express it.** If it does, it is too
+  big: split it, and let the planner write the `map`. Checked in review, and by a test
+  over the shipped ops where the fan-out is visible (a `Send` or a loop over model calls
+  inside an op's graph).
+
+### Generic ops: parameterised, not multiplied
+
+A few `LlmOp`s, each parameterised by an instruction and a schema rather than one op per
+use:
+
+| op | args | output |
+|---|---|---|
+| `analyze` | `material`, `instruction` | `{text}` |
+| `extract` | `material`, `schema` | a value of `schema` |
+| `classify` | `material`, `labels` | one of `labels` (an `enum`) |
+| `synthesize` | `items`, `instruction` | `{text}`: the "reduce" of a `map` |
+
+Without `extract` and `classify`, references and `when` have nothing typed to consume.
+Their output type **depends on an argument**, which the registry contract has to say:
+`OpSpec` gains `output_from: str | None` (the argument whose value is the output schema,
+or, for `classify`, the list that becomes an `enum`), and analysis check 4 reads the
+output type from the step's literal argument. That argument must be a literal, never a
+reference, so the type is known before the run.
+
+`material` / `items` take a list of references (`["$search", "$notes"]`), rendered in
+order, each under the step id it came from: this is what replaces `UPSTREAM`.
+
+### The starting kit, chosen to exercise the IR
+
+- **Retrieval with one output shape**: `web_search`, `documents`, `read_files`,
+  `prior_jobs` return `{"items": [{id, source, title, text}], …}`, what they refuse or
+  cannot reach kept beside it (`refused`, `unavailable`: a refusal is material, 0060).
+  These are the natural `map` sources, and exactly the baseline's tools at step −1: the
+  same work serves twice.
+- **The four generic `LlmOp`s** above.
+- **One bounded agent op** for exploration: `research`, once its aspect decomposition is
+  either a degraded mode (used when the planner wrote no decomposition) or the planner's.
+- **Two or three `FnOp`s**: `filter`, `dedupe`, `top_k`. The IR refuses arithmetic and
+  templates; this is where they live.
+
+### What becomes of today's capabilities
+
+- `analysis` and `critique` become **configured instances of `analyze`**, with today's
+  prompts as their instruction (`SUBJECT_ONLY_RULE` and the critique's rules kept in the
+  product as constants, 0110). Their material arrives through `material`: the `UPSTREAM`
+  coupling ends there, not through the by-op fallback of step 0, which then only has to
+  last until step 1.
+- `research` becomes the agent op (step 4).
+- `slide_deck` and the document writers stay end-of-run steps of the default agent,
+  outside the planner's vocabulary, unless a measured task shows otherwise.
+
+### Not now
+
+No catalogue: no MCP tools wired into the chain, no `ReviewOp` before step 3, no op for a
+case no measured task needs. **The task set of step −1 decides the primitives, not the
+other way round**: if the "compare N repositories" family needs `web_search`,
+`read_repository`, `extract` and `synthesize`, those four are built. An op no measured
+task uses is out of scope.
+
 ## Static analysis and repair
 
 Run on every program, just-in-time or calibrated, before its first step. Each check is a
@@ -275,7 +367,8 @@ code, not the wording (0110).
    `direct_answer`, 0038).
 3. **References resolve** to a step of the program, `$item` only inside a `map`;
    dependencies (derived) are acyclic (Kahn, as today).
-4. **Types**: each reference's schema, followed down its field path, is assignable to the
+4. **Types** (an op with `output_from` takes its output type from that literal
+   argument): each reference's schema, followed down its field path, is assignable to the
    argument's schema.
 5. **`map`**: `over` is an array, `max_items` present and within caps, not nested.
 6. **Output reachable**: `output` exists; a step that feeds nothing and has no effect is
@@ -406,8 +499,9 @@ that changes the planner's output), G3 and G4 unchanged.
 
 ## Order: one PR per step (split when over budget, 0130)
 
-−1. **Baseline**: the ReAct agent over the retrieval ops, `evals/compare.py`, the
-    run-time-width cases. No change under `dag/`.
+−1. **Baseline**: the ReAct agent over the retrieval ops, which gain their one output
+    shape (`items`) here, `evals/compare.py`, the run-time-width cases; the cases name
+    the primitives steps 1-4 will build. No change under `dag/`.
 0. **Step identity** (C0), without lifting the duplicate ban until open question 1 is
    settled. Split: 0a `id` + keys + facts + executor; 0b `drop_steps`, view, TUI, REPL,
    chat; 0c capabilities read material through the by-op fallback; 0d usage per
@@ -415,12 +509,16 @@ that changes the planner's output), G3 and G4 unchanged.
 1. **Minimal IR**, opened by the strict-mode probe (see "The IR"): its result picks full
    constraint, the fallback, or plain JSON, per provider, before the planner changes.
    Then ids, typed args, references, `output`; binding schemas; schema support in
-   `dag/clients.py`; `OpSpec` + `Effects` declared (not yet enforced); analysis checks
-   1-4 and 6; repair. C1.
-2. **`map`** (C2), and the default agent's first op that makes sense per item.
-3. **Effects enforced, `when`, checks 5, 7-9, `ReviewOp`** (C3).
+   `dag/clients.py`; `OpSpec` (with `output_from`) + `Effects` declared (not yet
+   enforced); analysis checks 1-4 and 6; repair. Primitives: `analyze`, `extract`,
+   `synthesize`; `analysis` and `critique` re-expressed as instances of `analyze`. C1.
+2. **`map`** (C2), and the first op that makes sense per item (`read_repository` if the
+   step −1 cases ask for it), plus the `FnOp`s those cases need.
+3. **Effects enforced, `when`, checks 5, 7-9**; `classify` for `when`, then `ReviewOp`
+   (C3).
 4. **Recompilation**: `verify`, or `amend_job` from outside, whichever the probe keeps
-   (C4).
+   (C4); `research` as a bounded agent op, with no internal decomposition the IR can
+   express.
 5. **Calibrated programs** from a supplied plan (C5).
 
 A decision record is written by each step that takes a decision (CLAUDE.md), and one
