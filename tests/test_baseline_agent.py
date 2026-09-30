@@ -97,3 +97,14 @@ async def test_the_baseline_searches_then_answers_as_a_job(tmp_path):
     assert "159 kg" in found["items"][0]["text"]
     assert app.dag is None
 
+
+
+def test_one_search_reads_what_one_query_of_the_dag_reads():
+    """A baseline that read more per query would win on retrieval, not on
+    orchestration (→ 0208)."""
+    import inspect
+
+    from jobsmith.agents.default import DocumentsCapability
+    from jobsmith.agents.react import MAX_HITS
+
+    assert MAX_HITS == inspect.signature(DocumentsCapability).parameters["per_query"].default

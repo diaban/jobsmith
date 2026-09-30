@@ -38,7 +38,7 @@ WT_DIR    := $(subst /,-,$(B))
 # it serves. A false positive is renamed, never allowlisted.
 ENGINE_WORDS := query|session|document|formats|capabilit|plan|report|announc|terminal_kind|final_answer|deliverable|artifact|annex|chat
 
-.PHONY: help install install-all hooks test test-fast snapshots coverage lint fix types check probe mutate combo leak-check eval eval-llm \
+.PHONY: help install install-all hooks test test-fast snapshots coverage lint fix types check probe mutate combo leak-check eval eval-llm compare \
         worktree worktree-rm \
         serve chat ui jobs \
         chat-banking serve-banking demo-banking clean
@@ -104,6 +104,9 @@ eval: ## Score the prompts on the golden set — deterministic tier, no API key 
 
 eval-llm: ## Same golden set against a REAL provider: opt-in, costs tokens, never gates CI
 	$(PY) -m evals $(LLM_FLAG) $(AGENT_FLAG) $(ARGS)
+
+compare: ## The DAG against the ReAct baseline on run-time-width tasks: REAL provider, costs tokens (ARGS='--repeat 3')
+	$(PY) -m evals.compare $(LLM_FLAG) $(ARGS)
 
 serve: ## Run the DAEMON: it owns the job engine, so jobs outlive their client
 	$(PY) -m jobsmith $(LLM_FLAG) $(AGENT_FLAG) $(DB_FLAG) serve --port $(PORT)
