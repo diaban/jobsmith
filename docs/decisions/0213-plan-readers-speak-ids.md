@@ -1,6 +1,6 @@
 # 0213 — Whoever reads a plan speaks step ids; a capability's name designates its only step and is refused when it runs as several
 
-- **Issue:** #213 · **PR:** see the issue · **Status:** accepted
+- **Issue:** #213 · **PR:** #214 · **Status:** accepted
 - **Rule in `CLAUDE.md`:** "`DagJobs.drop_steps` (step ids; a name stands for its only step, → 0213)" (Jobs layer)
 
 **Context.** Step 0b of `docs/design/compiler-v1.md`. After 0a (0211) the run keys everything by step id, but its readers still keyed by capability: `drop_steps` (a public contract since #203, through the chat's `skip_steps` and `POST /jobs/{id}/drop`), the chat's progress line, `job_status` and plan notice, the `JobPlanned` event, the REPL's plan line and `/job`, the TUI's DAG and steps table. With two steps of one capability they would merge two rows into one and drop the wrong step.
