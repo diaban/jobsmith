@@ -573,28 +573,49 @@ that changes the planner's output), G3 and G4 unchanged.
     whose tools return the one item shape (`items`); the capabilities keep theirs until
     step 1 (0206). −1b: `evals/compare.py` and the run-time-width cases; the cases name
     the primitives steps 1-4 will build. No change under `dag/`.
-0. **Step identity** (C0), without lifting the duplicate ban until settled point 1 has
-   landed. Split: 0a `id` + keys + facts + executor; 0b `drop_steps`, view, TUI, REPL,
-   chat; 0c capabilities read material through the by-op fallback; 0d usage per
-   instance, then the ban lifted.
-1. **Minimal IR**, opened by the strict-mode probe (see "The IR"): its result picks full
-   constraint, the fallback, or plain JSON, per provider, before the planner changes.
-   Then ids, typed args, references, `output`; binding schemas; schema support in
-   `dag/clients.py`; the strict-mode normaliser; the IR and the ops' schemas as Pydantic
-   models; `OpSpec` (with `output_from`) + `Effects` declared (not yet enforced);
-   analysis checks 1-4 and 6; repair. Primitives: `analyze`, `extract`,
-   `synthesize` (`extract` with `fields` and `schema_name`); `analysis` and `critique`
-   re-expressed as instances of `analyze`; the retrieval capabilities take the one item
-   shape. C1.
-2. **`map`** (C2), check 10 for its first typed consumers (`map`, `FnOp`), and the first op that makes sense per item (`read_repository` if the
-   step −1 cases ask for it), plus the `FnOp`s those cases need.
-3. **Effects enforced, `when`, checks 5, 7-9**, check 10 extended to `when` and
-   `classify`; `classify` for `when`, then `ReviewOp`
-   (C3).
-4. **Recompilation**: `verify`, or `amend_job` from outside, whichever the probe keeps
-   (C4); `research` as a bounded agent op, with no internal decomposition the IR can
-   express.
-5. **Calibrated programs** from a supplied plan (C5).
+Each part below is one issue and one PR, green on its own. Until 0d lifts the
+duplicate ban, a step's id defaults to its capability's name, so every part of step 0
+leaves behaviour unchanged; 0a and 0b may land as one PR if the diff stays small. From
+step 1 on, each PR carries its `make compare` table (0208).
+
+0. **Step identity** (C0), the duplicate ban kept until 0d.
+   - 0a: `id` on `PlanStep` (default: the capability's name); `results`, the `step:<id>`
+     fact, the run count and `step_finished_at` keyed by id; the executor Sends the
+     step's identity.
+   - 0b: `drop_steps`, the DAG view, the TUI, the REPL and the chat speak ids.
+   - 0c: capabilities read upstream material through the by-op fallback.
+   - 0d: `usage_scope` in the engine (settled point 1), then the ban lifted.
+1. **Minimal IR** (C1).
+   - 1a: the strict-mode probe (see "The IR"), a measurement and a record, no product
+     code: per provider, full constraint, the fallback, or plain JSON.
+   - 1b: the IR as Pydantic models (`Program`, `Step`, references, `output`); `OpSpec`
+     (with `output_from`) and `Effects` declared, not yet enforced; binding schemas;
+     the interpreter resolves references; today's plans read as an IR with no args.
+   - 1c: the planner writes the IR, constrained as 1a chose: the strict-mode
+     normaliser, schema support in `dag/clients.py`, `KeywordLLM`; analysis checks 1-4
+     and 6; repair.
+   - 1d: primitives `analyze`, `extract` (`fields`, `schema_name`) and `synthesize`;
+     `analysis` and `critique` re-expressed as instances of `analyze`; the retrieval
+     capabilities take the one item shape.
+2. **`map`** (C2).
+   - 2a: `map` in the IR and the interpreter (instance ids, `max_items`, `concurrency`,
+     `on_error`, resume); check 5; check 10 for its first typed consumers (`map`,
+     `FnOp`).
+   - 2b: the first op that makes sense per item (`read_repository` if the step −1 cases
+     ask for it) and the `FnOp`s those cases need (`filter`, `dedupe`, `top_k`).
+3. **Effects and branches** (C3).
+   - 3a: effects enforced, checks 7-9; `ReviewOp` inserted before an op with a side
+     effect (`needs_input`, 0167).
+   - 3b: `when`, `classify`, check 10 extended to `when` and `classify`.
+4. **Recompilation** (C4).
+   - 4a: the probe: a `verify` node or `amend_job` from outside.
+   - 4b: the one it keeps, with `max_recompile` and finished ids immutable.
+   - 4c: `research` as a bounded agent op, with no internal decomposition the IR can
+     express.
+5. **Calibrated programs** (C5).
+   - 5a: a program supplied at entry passes the planner with no call (loading,
+     `params`, version).
+   - 5b: `jobsmith program export <job_id> NAME`.
 
 A decision record is written by each step that takes a decision (CLAUDE.md), and one
 record for the compiler as a whole when step 5 lands, as 0161 did for core v1.
