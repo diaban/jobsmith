@@ -11,7 +11,9 @@ probe must confirm. Revised the same day after an outside review of the note: a 
 that does not depend on step 1, the planner's constrained output marked as the riskiest
 hypothesis with its fallback, and two holes in the IR's semantics (`output` absent, `when`
 and references). Extended 2026-09-30 with "Primitives v1", after a second outside review
-on which ops the IR connects.
+on which ops the IR connects; then, after a third, the planner asks for a type through a
+closed form (`fields`, `schema_name`), never a JSON Schema, and Pydantic replaces the
+home-made checker.
 
 ## Why
 
@@ -135,7 +137,8 @@ principle rests on it. Two obstacles:
 
 **Step 1 opens with a probe**: generate the schema of the default agent's real registry,
 submit it in strict mode to Anthropic and to OpenAI, and record what is accepted, what is
-refused, and the rate of programs valid on the first call. **The fallback, decided now**:
+refused, and the rate of programs valid on the first call. It covers `extract`'s
+`fields` form and the strict-mode normalisation of Pydantic's schemas (see "The registry"). **The fallback, decided now**:
 where a provider accepts only part of it, the schema constrains `op`, the step structure,
 ids and `map`; arguments are left to the analysis and the repair. Where a provider accepts
 none, the planner writes JSON as today and the analysis carries it all. Either way the
@@ -230,14 +233,29 @@ class OpSpec:                     # today's CapabilitySpec, plus effects, schema
     output_schema: dict
     effects: Effects = Effects()
     requires_inputs: tuple[str, ...] = ()
-    output_from: str | None = None  # the argument whose literal value is the output type (extract, classify)
+    output_from: str | None = None  # the argument that gives the output type (extract: fields | schema_name; classify: labels)
 ```
 
 - **Schemas become binding** (today they are "advisory", `dag/capability.py:38`). They
   are checked statically on every reference, and at run time on each value crossing a
-  step boundary. The checker is ours and covers a stated subset of JSON Schema (`type`,
-  `properties`, `required`, `items`, `enum`, `format`): no new dependency. An op with an
-  empty output schema produces `object` and cannot be referenced below the top level.
+  step boundary. An op with an empty output schema produces `object` and cannot be
+  referenced below the top level. **Tools, by role**:
+
+  | role | tool |
+  |---|---|
+  | schemas written by developers: ops' inputs and outputs, named schemas, the IR itself (`Program`, `Step`) | **Pydantic** models |
+  | a type the planner asks for through `fields` (below) | built with `pydantic.create_model` |
+  | run-time validation of a value crossing a step boundary, an `LlmOp`'s output included | **Pydantic** |
+  | what a provider receives to constrain the planner and the `LlmOp`s | **JSON Schema**, from `model_json_schema()`, normalised for strict mode |
+  | what is stored: checkpoint, `plan` fact, HTTP, calibrated programs on disk | **JSON**: the IR stays data; `fields` or `schema_name` appear in it as written, never a Python class |
+  | whether one type is assignable to another (check 4, check 10) | **ours**: Pydantic validates a value against a model; it does not say whether a type fits another |
+
+  Pydantic is already installed (2.13.5, through LangChain) and imported
+  (`api/app.py`, `adapters/langchain/launch.py`); `dag/` importing it directly declares
+  it in `pyproject.toml`. *(To check, in the step 1 probe)*: Pydantic's JSON Schema is not
+  strict-mode ready as is (`additionalProperties: false`, every property `required`, the
+  `anyOf` of an `Optional`, `$defs`/`$ref`), so one normalising function serves every
+  schema sent to a provider, the planner's own included, tested against both providers.
 - **Behind the contract, several implementations**, each compiled to one parent-graph
   node, so the interpreter never sees the difference:
   - `Capability`: today's sub-graph, the **bounded ReAct/agentic step**. Kept as is.
@@ -309,16 +327,57 @@ use:
 | op | args | output |
 |---|---|---|
 | `analyze` | `material`, `instruction` | `{text}` |
-| `extract` | `material`, `schema` | a value of `schema` |
+| `extract` | `material`, `fields` **or** `schema_name` | an object of those fields |
 | `classify` | `material`, `labels` | one of `labels` (an `enum`) |
 | `synthesize` | `items`, `instruction` | `{text}`: the "reduce" of a `map` |
 
 Without `extract` and `classify`, references and `when` have nothing typed to consume.
 Their output type **depends on an argument**, which the registry contract has to say:
-`OpSpec` gains `output_from: str | None` (the argument whose value is the output schema,
-or, for `classify`, the list that becomes an `enum`), and analysis check 4 reads the
-output type from the step's literal argument. That argument must be a literal, never a
-reference, so the type is known before the run.
+`OpSpec` gains `output_from: str | None` (the argument that gives the output type:
+`fields` or `schema_name` for `extract`, `labels` for `classify`), and analysis check 4
+reads the output type from the step's literal argument. That argument must be a
+literal, never a reference, so the type is known before the run.
+
+### The planner fills a closed form; it never writes a schema
+
+Left to write `extract`'s type as a JSON Schema, the planner would invent a type in each
+program: the place it writes most from scratch, against the owner's principle; an
+argument strict mode cannot describe, so it would escape the planner's constraint by
+construction; a weak schema that check 4 would then vouch for; and a schema outside
+what the checker knows. So `extract` takes one of two closed forms:
+
+- **`fields`**: a flat list, at most 8 entries, each `{"name", "type", "values"?}`.
+  `name` matches `^[a-z][a-z0-9_]*$` and is unique in the list; `type` is one of
+  `string`, `integer`, `number`, `boolean`, `enum`, `string[]`, `integer[]`; `values`
+  is present only for `enum`, bounded in length. No nesting. The format is an array of
+  objects whose properties are `enum`s or strings, so strict mode describes it and the
+  step 1 probe measures it like the rest. The compiler turns it into a model with
+  `create_model`.
+
+  ```json
+  {"id": "facts", "op": "extract",
+   "args": {"material": ["$reads"],
+            "fields": [{"name": "purpose", "type": "string"},
+                       {"name": "stars", "type": "integer"},
+                       {"name": "status", "type": "enum", "values": ["active", "archived"]},
+                       {"name": "topics", "type": "string[]"}]}}
+  ```
+- **`schema_name`**: one of the **named schemas** an agent declares in its registry,
+  reviewed like code (`RepoFacts`; `Invoice`, `Counterparty` for `banking`), offered as
+  an `enum` generated from the registry: the most closed set there is. **A rich schema
+  (nested objects, formats) exists only in this reviewed form**, never written on the
+  fly. It is also the bridge to calibrated programs: a `fields` list that recurs in
+  successful jobs is promoted to a named schema, then reviewed (step 5).
+
+Whether a field's type matters is said by **what consumes it**, not by a rule on the
+schema: a field read only by `analyze` or `synthesize` loses nothing as a `string`;
+one read by `when`, a `map`, a `FnOp` or `classify` needs its real type. That is check
+10. (A rule such as "refuse a schema whose properties are all strings" would refuse
+legitimate extractions read only by an `LlmOp`, and pass the one where the field `when`
+tests is mistyped next to well-typed ones.)
+
+The same idea holds wherever the planner would otherwise produce something open: it
+fills a closed form that the compiler translates, it does not write in a language.
 
 `material` / `items` take a list of references (`["$search", "$notes"]`), rendered in
 order, each under the step id it came from: this is what replaces `UPSTREAM`.
@@ -379,6 +438,10 @@ code, not the wording (0110).
 9. **Free text where a structure exists**: a literal string for an argument whose schema
    has an `enum`, a `format` or an object type is refused. It is PlanCompiler's first
    cause of failure.
+10. **Typed consumers get their type**: a field referenced by `when` (an `enum` holding
+    the tested values), by a `map` (an array), by a `FnOp` such as `filter` or `top_k`
+    (a number or a comparable field) or by `classify` has a compatible type. Its own
+    finding code; repaired like the others.
 
 **A program with findings goes back to the planner** with the program and the findings
 rendered as a list, **twice at most**; then it is today's unrecoverable `NodeError`. The
@@ -395,6 +458,9 @@ recomputes the ready steps each wave, and Sends them. It evolves:
 - before a Send, the interpreter **resolves the step's references** against `results`
   and validates the resolved args; a step whose args do not validate fails as a step
   (recoverable), not the job;
+- a step's output is validated against its type (Pydantic) as it lands; an `LlmOp`
+  whose answer does not match fails recoverably and **retryable**, within
+  `max_step_retries` (0191): a model may well match on the second call;
 - a `map` step expands into its instances, within `concurrency`;
 - retries are counted per id, `_APPENDED` (0194) still stripped from what is Sent;
 - the answer material (every successful result in program order, or `output`'s
@@ -483,13 +549,15 @@ that changes the planner's output), G3 and G4 unchanged.
 - **C1, references.** A step's argument comes from a reference; a type mismatch is a
   finding before any step runs; a planner that fixes it on the second call runs; one that
   never does fails as today. A default-agent program with no `output` hands generation
-  every successful result, as today (asserted on `merged_context`).
+  every successful result, as today (asserted on `merged_context`). An `LlmOp` answer
+  that does not match its type is retried, then fails the step.
 - **C2, map.** 9 items ⇒ 9 instances, never more than `concurrency` in flight; the job
   killed after instance 6 resumes with 3 sends (counted); a list over `max_items` is cut
   and the cut is in the view; `partial` keeps the successes.
 - **C3, effects.** A non-read-only op never runs before an answer (`needs_input`); the
   analysis refuses free text where an `enum` exists; a step referencing a skipped step
-  is skipped, or gets `null` where the argument is nullable.
+  is skipped, or gets `null` where the argument is nullable; an `extract` whose `fields`
+  give `when` a `string` where it tests an `enum` is a finding (check 10).
 - **C4, recompilation.** A rewrite after a verify failure runs; a finished id is never
   re-run; the rewritten program survives a crash between waves.
 - **C5, programs.** A supplied program runs with zero planner calls (counted on the
@@ -509,12 +577,15 @@ that changes the planner's output), G3 and G4 unchanged.
 1. **Minimal IR**, opened by the strict-mode probe (see "The IR"): its result picks full
    constraint, the fallback, or plain JSON, per provider, before the planner changes.
    Then ids, typed args, references, `output`; binding schemas; schema support in
-   `dag/clients.py`; `OpSpec` (with `output_from`) + `Effects` declared (not yet
-   enforced); analysis checks 1-4 and 6; repair. Primitives: `analyze`, `extract`,
-   `synthesize`; `analysis` and `critique` re-expressed as instances of `analyze`. C1.
-2. **`map`** (C2), and the first op that makes sense per item (`read_repository` if the
+   `dag/clients.py`; the strict-mode normaliser; the IR and the ops' schemas as Pydantic
+   models; `OpSpec` (with `output_from`) + `Effects` declared (not yet enforced);
+   analysis checks 1-4 and 6; repair. Primitives: `analyze`, `extract`,
+   `synthesize` (`extract` with `fields` and `schema_name`); `analysis` and `critique`
+   re-expressed as instances of `analyze`. C1.
+2. **`map`** (C2), check 10 for its first typed consumers (`map`, `FnOp`), and the first op that makes sense per item (`read_repository` if the
    step −1 cases ask for it), plus the `FnOp`s those cases need.
-3. **Effects enforced, `when`, checks 5, 7-9**; `classify` for `when`, then `ReviewOp`
+3. **Effects enforced, `when`, checks 5, 7-9**, check 10 extended to `when` and
+   `classify`; `classify` for `when`, then `ReviewOp`
    (C3).
 4. **Recompilation**: `verify`, or `amend_job` from outside, whichever the probe keeps
    (C4); `research` as a bounded agent op, with no internal decomposition the IR can
