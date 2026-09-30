@@ -18,7 +18,7 @@ from langgraph.types import Send
 
 from .capability import CAP_NODE_PREFIX
 from .registry import CapabilityRegistry
-from .state import AgentState
+from .state import AgentState, PlanStep, step_id
 
 # The append-only channels a capability emits back (`CapabilityOutputState`).
 # A sub-graph is entered with what it is Sent and returns those channels as they
@@ -46,33 +46,29 @@ class Executor:
         return any(not e["recoverable"] for e in state.get("errors", []))
 
     def _to_retry(self, state: AgentState) -> set[str]:
-        """Steps whose last run failed saying another try is worth it, while
-        they have run at most `max_retries` times (#191). Each run appends the
-        step to `completed_capabilities`, so the count is already there."""
+        """Steps (by id) whose last run failed saying another try is worth
+        it, while they have run at most `max_retries` times (#191). Each run
+        appends the step's id to `completed_capabilities`, so the count is
+        already there."""
         results = state.get("results", {})
         runs = Counter(state.get("completed_capabilities", []))
-        return {cap for cap, result in results.items()
+        return {step for step, result in results.items()
                 if not result.get("ok") and result.get("retryable")
-                and runs[cap] <= self.max_retries}
+                and runs[step] <= self.max_retries}
 
     def _done(self, state: AgentState) -> set[str]:
         """Finished for good: a step to retry is not, so it is dispatched
         again and nothing that depends on it runs before it."""
         return set(state.get("completed_capabilities", [])) - self._to_retry(state)
 
-    def _ready_capabilities(self, state: AgentState) -> list[str]:
+    def _ready_steps(self, state: AgentState) -> list[PlanStep]:
         plan = state.get("plan")
         if not plan:
             return []
         done = self._done(state)
-        ready: list[str] = []
-        for step in plan["steps"]:
-            cap = step["capability"]
-            if cap in done:
-                continue
-            if all(dep in done for dep in step["depends_on"]):
-                ready.append(cap)
-        return ready
+        return [step for step in plan["steps"]
+                if step_id(step) not in done
+                and all(dep in done for dep in step["depends_on"])]
 
     def _all_done(self, state: AgentState) -> bool:
         plan = state.get("plan")
@@ -94,8 +90,12 @@ class Executor:
             return "execution_error"
         if self._all_done(state):
             return "merge_results"
-        ready = self._ready_capabilities(state)
+        ready = self._ready_steps(state)
         if not ready:
             return "execution_error"  # deadlock — shouldn't happen
         sent = {key: value for key, value in state.items() if key not in _APPENDED}
-        return [Send(self.node_name(cap), sent) for cap in ready]
+        # Each step is sent with its identity, which is what its result, its
+        # fact and its run count are keyed by (`Capability._step_id`).
+        return [Send(self.node_name(step["capability"]),
+                     {**sent, "step": {"id": step_id(step), "capability": step["capability"]}})
+                for step in ready]

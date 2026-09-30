@@ -10,9 +10,12 @@ Pattern (same OO idiom as the rest of the framework):
 """
 from __future__ import annotations
 
+import functools
+import inspect
 import json
 import re
 from abc import ABC, abstractmethod
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from operator import add
 from typing import Annotated, Any, Required, TypedDict
@@ -23,7 +26,7 @@ from langgraph.graph.state import CompiledStateGraph
 from ..artifacts.store import JobOutput, artifact_refs, declare
 from ..engine.facts import publish
 from ..engine.usage import current_ledger
-from .state import AgentState, CapabilityResult, NodeError, merge_results
+from .state import AgentState, CapabilityResult, NodeError, StepRef, merge_results
 
 CAP_NODE_PREFIX = "cap_"          # a capability's node in the planner DAG
 
@@ -87,6 +90,61 @@ class CapabilityBaseState(CapabilityOutputState, total=False):
     query: Required[str]
     inputs: dict[str, Any]
     job_id: str
+    # Which plan step this run is (`Executor.route` sends it): what the
+    # result, the fact and the run count are keyed by. Absent when the
+    # capability runs on its own — a test, a script — which keys by its name.
+    step: StepRef
+
+
+# The step the node running in this context belongs to, set by the wrapper
+# `Capability.state_graph` puts around every node, so `_emit_*` key by it
+# without a capability passing its state along (docs/design/compiler-v1.md,
+# step 0). A context variable because each node runs in a context of its own.
+_CURRENT_STEP: ContextVar[str | None] = ContextVar("jobsmith_current_step", default=None)
+
+
+def _knows_its_step(action: Any) -> Any:
+    """`action` run with its state's step id in `_CURRENT_STEP`.
+
+    Signature and name are kept (`functools.wraps`): LangGraph reads the
+    state schema off the annotations and passes config/runtime by parameter
+    name. A node that is not a plain function (a compiled sub-graph) is left
+    as it is.
+    """
+    if not inspect.isfunction(action) and not inspect.ismethod(action):
+        return action
+
+    def enter(state: Any) -> Any:
+        step = state.get("step") if isinstance(state, dict) else None
+        return _CURRENT_STEP.set(step.get("id") if isinstance(step, dict) else None)
+
+    if inspect.iscoroutinefunction(action):
+        @functools.wraps(action)
+        async def run_async(state: Any, *args: Any, **kwargs: Any) -> Any:
+            token = enter(state)
+            try:
+                return await action(state, *args, **kwargs)
+            finally:
+                _CURRENT_STEP.reset(token)
+        return run_async
+
+    @functools.wraps(action)
+    def run(state: Any, *args: Any, **kwargs: Any) -> Any:
+        token = enter(state)
+        try:
+            return action(state, *args, **kwargs)
+        finally:
+            _CURRENT_STEP.reset(token)
+    return run
+
+
+class _StepGraph(StateGraph):
+    """A capability's StateGraph: every node it is given knows its step."""
+
+    def add_node(self, node: Any, action: Any = None, **kwargs: Any) -> Any:
+        if action is None and not isinstance(node, str):
+            return super().add_node(_knows_its_step(node), **kwargs)
+        return super().add_node(node, _knows_its_step(action), **kwargs)
 
 
 class Capability(ABC):
@@ -101,8 +159,13 @@ class Capability(ABC):
 
     @staticmethod
     def state_graph(private_schema: type) -> StateGraph:
-        """StateGraph pre-configured with the mandatory capability output schema."""
-        return StateGraph(private_schema, output_schema=CapabilityOutputState)
+        """StateGraph pre-configured with the mandatory capability output
+        schema, whose nodes know which plan step they run as."""
+        return _StepGraph(private_schema, output_schema=CapabilityOutputState)
+
+    def _step_id(self) -> str:
+        """The plan step this run is, or the capability's name outside a plan."""
+        return _CURRENT_STEP.get() or self.spec.name
 
     # ---- Planner integration ----
 
@@ -163,15 +226,16 @@ class Capability(ABC):
         chart is evidence worth keeping (0041)."""
         for ref in artifact_refs(result.get("meta")):
             declare(JobOutput(path=ref.path, format=ref.file_format, title=ref.title,
-                              role="annex", produced_by=self.spec.name))
+                              role="annex", produced_by=self._step_id()))
 
     def _emit_success(self, data: dict[str, Any], meta: dict[str, Any] | None = None) -> dict:
         result: CapabilityResult = {"ok": True, "data": data, "meta": self._usage_meta(meta)}
-        publish(f"step:{self.spec.name}", result)     # the job records it as it lands
+        step = self._step_id()
+        publish(f"step:{step}", result)               # the job records it as it lands
         self._declare_files(result)
         return {
-            "results": {self.spec.name: result},
-            "completed_capabilities": [self.spec.name],
+            "results": {step: result},
+            "completed_capabilities": [step],
         }
 
     def _emit_failure(
@@ -207,11 +271,12 @@ class Capability(ABC):
                                     "meta": self._usage_meta(meta)}
         if retryable:
             result["retryable"] = True
-        publish(f"step:{self.spec.name}", result)
+        step = self._step_id()
+        publish(f"step:{step}", result)
         self._declare_files(result)
         return {
-            "results": {self.spec.name: result},
-            "completed_capabilities": [self.spec.name],
+            "results": {step: result},
+            "completed_capabilities": [step],
             "errors": [err],
         }
 

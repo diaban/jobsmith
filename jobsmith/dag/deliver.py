@@ -22,7 +22,7 @@ from typing import Any
 from ..artifacts.store import declare
 from ..engine.usage import current_ledger
 from .report import Reporter, ReportWriteError, compose_reporters
-from .state import AgentState, CapabilityResult, Plan, job_id_of
+from .state import AgentState, CapabilityResult, Plan, job_id_of, step_id
 
 
 @dataclass(frozen=True)
@@ -50,13 +50,13 @@ class RunView:
 
     def ordered_results(self) -> list[tuple[str, CapabilityResult]]:
         """Results in plan order — see `Job.ordered_results` for why."""
-        order = [step["capability"] for step in (self.plan or {}).get("steps", [])]
+        order = [step_id(step) for step in (self.plan or {}).get("steps", [])]
         names = sorted(self.results,
                        key=lambda n: order.index(n) if n in order else len(order))
         return [(name, self.results[name]) for name in names]
 
-    def step_usage(self, capability: str) -> dict[str, Any]:
-        return ((self.results.get(capability) or {}).get("meta") or {}).get("usage") or {}
+    def step_usage(self, step: str) -> dict[str, Any]:
+        return ((self.results.get(step) or {}).get("meta") or {}).get("usage") or {}
 
 
 class DocumentWriter:

@@ -189,7 +189,7 @@ class JobOutput:
     format: str = "markdown"
     title: str = ""
     role: str = "main"
-    produced_by: str | None = None      # capability name, when a step made it
+    produced_by: str | None = None      # the plan step (its id) that made it, if one did
 
     @property
     def name(self) -> str:

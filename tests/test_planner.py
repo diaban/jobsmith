@@ -47,11 +47,13 @@ def test_prompt_rendered_from_registry(registry):
 
 
 async def test_valid_plan_accepted(registry):
+    """Each step is known by an id, its capability's name while a plan holds
+    one step per capability (→ docs/design/compiler-v1.md, step 0)."""
     planner = make_planner(registry, plan_json("alpha", "beta", deps={"beta": ["alpha"]}))
     out = await planner.run({"query": "q"})
     assert out["plan"]["steps"] == [
-        {"capability": "alpha", "depends_on": []},
-        {"capability": "beta", "depends_on": ["alpha"]},
+        {"id": "alpha", "capability": "alpha", "depends_on": []},
+        {"id": "beta", "capability": "beta", "depends_on": ["alpha"]},
     ]
 
 
@@ -85,13 +87,13 @@ async def test_inapplicable_dropped_and_dangling_deps_pruned(registry):
     dep on gamma pruned instead of raising (the fixed latent bug)."""
     planner = make_planner(registry, plan_json("gamma", "beta", deps={"beta": ["gamma"]}))
     out = await planner.run({"query": "q"})  # no inputs
-    assert out["plan"]["steps"] == [{"capability": "beta", "depends_on": []}]
+    assert out["plan"]["steps"] == [{"id": "beta", "capability": "beta", "depends_on": []}]
 
 
 async def test_applicable_kept_when_input_present(registry):
     planner = make_planner(registry, plan_json("gamma"))
     out = await planner.run({"query": "q", "inputs": {"attachment": "x"}})
-    assert out["plan"]["steps"] == [{"capability": "gamma", "depends_on": []}]
+    assert out["plan"]["steps"] == [{"id": "gamma", "capability": "gamma", "depends_on": []}]
 
 
 async def test_all_steps_inapplicable_yields_an_empty_plan(registry):
@@ -142,7 +144,7 @@ async def test_conversation_context_reaches_the_prompt(registry):
         "inputs": {CONVERSATION_INPUT_KEY: "user: the Q3 churn spike\nassistant: noted"},
     })
 
-    assert out["plan"]["steps"] == [{"capability": "alpha", "depends_on": []}]
+    assert out["plan"]["steps"] == [{"id": "alpha", "capability": "alpha", "depends_on": []}]
     user_msg = next(m["content"] for m in llm.calls[0]["messages"] if m["role"] == "user")
     assert "the Q3 churn spike" in user_msg
     assert user_msg.endswith("Request to plan for:\nanalyse that")
