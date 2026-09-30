@@ -18,7 +18,7 @@ from ..artifacts.store import artifact_refs
 from .deps import Deps
 from .profile import NO_ANSWER_MARKER, AgentProfile
 from .registry import CapabilityRegistry
-from .state import TERMINAL_UNANSWERED, AgentState, NodeError
+from .state import TERMINAL_UNANSWERED, AgentState, NodeError, step_id
 
 # What DirectResponder renders where the capability list would go when the
 # registry is empty. Not a profile message: nothing here is shown to the human,
@@ -39,11 +39,10 @@ class ContextMerger:
         parts: list[str] = []
         # Iterate in plan order, NOT results-dict order (see state.py determinism caveat)
         for step in (plan["steps"] if plan else []):
-            name = step["capability"]
-            result = results.get(name)
+            result = results.get(step_id(step))
             if not result or not result.get("ok"):
                 continue
-            text = self.registry.get(name).render_context(result)
+            text = self.registry.get(step["capability"]).render_context(result)
             if text:
                 parts.append(text)
         return {"merged_context": "\n\n".join(parts) if parts else self.empty_message}
@@ -133,7 +132,7 @@ def delivered_files(state: AgentState) -> list[str]:
     results = state.get("results", {})
     seen: set[str] = set()
     for step in (plan["steps"] if plan else []):
-        result = results.get(step["capability"]) or {}
+        result = results.get(step_id(step)) or {}
         for ref in artifact_refs(result.get("meta")):
             if ref.path in seen:
                 continue

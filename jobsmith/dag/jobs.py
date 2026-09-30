@@ -19,7 +19,7 @@ from ..engine.graph import GraphSpec, JobFailed
 from ..engine.manager import JobManager
 from ..engine.models import Job, JobStatus
 from .report import document_stem, ensure_formats_available
-from .state import TERMINAL_UNANSWERED, CapabilityResult, Plan
+from .state import TERMINAL_UNANSWERED, CapabilityResult, Plan, step_id
 
 #: The facts the DAG publishes (`dag/planner.py`, `dag/capability.py`).
 PLAN_FACT = "plan"
@@ -201,7 +201,7 @@ class DagJob:
                 if key.startswith(STEP_FACT)}
 
     def _plan_order(self) -> list[str]:
-        return [step["capability"] for step in (self.plan or {}).get("steps", [])]
+        return [step_id(step) for step in (self.plan or {}).get("steps", [])]
 
     def ordered_results(self) -> list[tuple[str, CapabilityResult]]:
         """Results in PLAN order — the only deterministic order there is.
@@ -215,9 +215,9 @@ class DagJob:
         names = sorted(results, key=lambda n: order.index(n) if n in order else len(order))
         return [(name, results[name]) for name in names]
 
-    def step_usage(self, capability: str) -> dict[str, Any]:
-        """What one step spent — empty when it made no LLM call."""
-        return ((self.results.get(capability) or {}).get("meta") or {}).get("usage") or {}
+    def step_usage(self, step: str) -> dict[str, Any]:
+        """What one step (by id) spent — empty when it made no LLM call."""
+        return ((self.results.get(step) or {}).get("meta") or {}).get("usage") or {}
 
     # ---- the files it declared ----
 

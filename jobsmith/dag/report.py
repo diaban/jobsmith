@@ -49,7 +49,7 @@ from typing import Any, Protocol
 from ..artifacts.paths import PathRefused, safe_name
 from ..artifacts.store import JobOutput
 from ..engine.usage import Usage
-from .state import TERMINAL_UNANSWERED, CapabilityResult, Plan
+from .state import TERMINAL_UNANSWERED, CapabilityResult, Plan, step_id
 
 # What a deliverable opens with when the run declared it could not answer
 # (#59). One sentence, above the text, in every format: a file that reads like
@@ -417,7 +417,7 @@ def build_document(
         usage=Usage.from_dict(job.usage),
     )
     for step in (job.plan or {}).get("steps", []) if job.plan else []:
-        name = step["capability"]
+        name = step_id(step)
         result = job.results.get(name)
         doc.plan.append(PlanRow(
             capability=name,

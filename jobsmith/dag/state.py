@@ -40,9 +40,25 @@ from ..engine.facts import current_job_id
 
 # ---------- Plan ----------
 
-class PlanStep(TypedDict):
-    capability: str         # registered capability name
-    depends_on: list[str]   # other capability names; [] = ready immediately
+class PlanStep(TypedDict, total=False):
+    # What the step is known by: its result, its `step:<id>` fact, its run
+    # count. The planner writes it, as the capability's name while a plan
+    # holds one step per capability (docs/design/compiler-v1.md, step 0); a
+    # plan checkpointed before ids existed has none — read it with `step_id`.
+    id: str
+    capability: Required[str]           # registered capability name
+    depends_on: Required[list[str]]     # other steps' ids; [] = ready immediately
+
+
+def step_id(step: PlanStep) -> str:
+    """The id a step is known by; its capability's name when it has none."""
+    return step.get("id") or step["capability"]
+
+
+class StepRef(TypedDict):
+    """Which plan step a capability is running as — sent with it by the executor."""
+    id: str
+    capability: str
 
 
 class Plan(TypedDict):

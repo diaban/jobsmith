@@ -23,18 +23,18 @@ from ..engine.facts import publish
 from .deps import Deps
 from .profile import DEFAULT_PLANNER_TEMPLATE
 from .registry import CapabilityRegistry
-from .state import CONVERSATION_INPUT_KEY, AgentState, NodeError, Plan, PlanStep
+from .state import CONVERSATION_INPUT_KEY, AgentState, NodeError, Plan, PlanStep, step_id
 
 
-def without_steps(plan: Plan, names: Sequence[str]) -> Plan:
-    """`plan` with the steps `names` removed and every `depends_on` on them
+def without_steps(plan: Plan, ids: Sequence[str]) -> Plan:
+    """`plan` with the steps `ids` removed and every `depends_on` on them
     pruned — what dropping a step from a running plan leaves (#177). Still
     acyclic: removing nodes adds no edge."""
-    gone = set(names)
+    gone = set(ids)
     return {**plan, "steps": [
-        {"capability": step["capability"],
+        {"id": step_id(step), "capability": step["capability"],
          "depends_on": [d for d in step["depends_on"] if d not in gone]}
-        for step in plan["steps"] if step["capability"] not in gone]}
+        for step in plan["steps"] if step_id(step) not in gone]}
 
 
 class Planner:
@@ -113,7 +113,9 @@ class Planner:
                 dropped.add(name)
                 continue
             seen.add(name)
-            cleaned.append({"capability": name, "depends_on": list(deps)})
+            # One step per capability until the duplicate ban is lifted
+            # (docs/design/compiler-v1.md, 0d): its id is its name.
+            cleaned.append({"id": name, "capability": name, "depends_on": list(deps)})
 
         # Prune depends_on entries that reference dropped (inapplicable) steps;
         # references to steps absent from the plan altogether are still errors.
