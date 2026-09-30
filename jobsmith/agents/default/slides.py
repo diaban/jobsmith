@@ -33,7 +33,7 @@ from langgraph.constants import END
 from ...artifacts.store import ArtifactRef, ArtifactStore, artifact_meta
 from ...dag.capability import Capability, CapabilityBaseState, CapabilitySpec
 from ...dag.deps import LLMClient
-from ...dag.state import CapabilityResult, job_id_of
+from ...dag.state import CapabilityResult, job_id_of, results_of
 
 # Bounds on what the model is allowed to hand back. A deck is a document a
 # human presents: past a dozen slides or half a dozen bullets it stops being
@@ -250,17 +250,13 @@ class SlideDeckCapability(Capability):
         wrote it: the deck is the one deliverable that reads this material
         directly, with no generation between it and the reader (#58).
         """
-        results = state.get("results", {})
         blocks: list[str] = []
         for name, key, role in self.MATERIAL:
-            result = results.get(name)
-            if not result or not result.get("ok"):
-                continue
-            # every CapabilityResult key is NotRequired: a failed step has no
-            # `data` at all
-            text = (result.get("data") or {}).get(key)
-            if text:
-                blocks.append(f"[{name} — {role}]\n{text}")
+            for sid, result in results_of(state, name):
+                # every CapabilityResult key is NotRequired: a failed step has
+                # no `data` at all
+                if text := (result.get("data") or {}).get(key):
+                    blocks.append(f"[{sid} — {role}]\n{text}")
         if not blocks:
             return "(no upstream material — build the deck from the request alone)"
         return "\n\n".join(blocks)[: self.max_material_chars]

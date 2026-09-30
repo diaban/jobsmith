@@ -1,7 +1,7 @@
 """A plan step is known by its id: its result, its fact and its run count are
 keyed by it, a capability learns it without passing anything along, and
 whoever reads a plan (`drop_steps`, the chat, the REPL, the TUI) speaks ids
-(→ docs/design/compiler-v1.md, "Step identity"; 0211, 0213)."""
+(→ docs/design/compiler-v1.md, "Step identity"; 0211, 0213, 0215)."""
 from __future__ import annotations
 
 import pytest
@@ -15,6 +15,7 @@ from jobsmith.dag.executor import Executor
 from jobsmith.dag.jobs import DagJobs
 from jobsmith.dag.planner import without_steps
 from jobsmith.dag.registry import CapabilityRegistry
+from jobsmith.dag.state import results_of
 from jobsmith.engine.facts import FACT_KEY
 from jobsmith.engine.models import JobStatus
 
@@ -126,3 +127,46 @@ def test_the_repl_and_the_chat_show_and_key_steps_by_id():
                   results={"notes_a": {"ok": True}}, step_finished_at={"notes_a": "t1"})
     assert running_steps(job) == ["notes_b"]
     assert "1/3 steps done (notes_a)" in progress_line(job)
+
+
+class Reader(OneStep):
+    """Says which `echo` steps' material it could read, in order."""
+
+    async def work(self, state: CapabilityBaseState) -> dict:
+        return self._emit_success({"read": [sid for sid, _ in results_of(state, "echo")]})
+
+
+def test_material_is_read_by_capability_from_every_step_that_ran_it_in_plan_order():
+    state = {"plan": {"steps": [
+        {"id": "b_first", "capability": "echo", "depends_on": []},
+        {"id": "a_second", "capability": "echo", "depends_on": []},
+        {"id": "broken", "capability": "echo", "depends_on": []},
+        {"id": "other", "capability": "research", "depends_on": []}], "rationale": ""},
+        "results": {"a_second": {"ok": True}, "b_first": {"ok": True},
+                    "broken": {"ok": False}, "other": {"ok": True}}}
+    assert [sid for sid, _ in results_of(state, "echo")] == ["b_first", "a_second"]
+    assert [sid for sid, _ in results_of({"results": {"echo": {"ok": True}}}, "echo")] == ["echo"]
+
+
+async def test_the_plan_reaches_the_step_so_it_can_read_by_capability():
+    """A sub-graph is entered with the keys its schema declares and no other:
+    without `plan` there, `results_of` would find nothing (→ 0215)."""
+    plan = {"steps": [{"id": "e1", "capability": "echo", "depends_on": []},
+                      {"id": "e2", "capability": "echo", "depends_on": []},
+                      {"id": "r", "capability": "reader", "depends_on": ["e1", "e2"]}],
+            "rationale": ""}
+    executor = Executor(CapabilityRegistry([Echo("echo"), Reader("reader")]))
+    [sent] = executor.route({"query": "q", "plan": plan, "completed_capabilities": ["e1", "e2"],
+                             "results": {"e1": {"ok": True}, "e2": {"ok": True}}})
+    output, _ = await run(Reader("reader"), sent.arg)
+    assert output["results"]["r"]["data"]["read"] == ["e1", "e2"]
+
+
+def test_a_reasoning_step_reads_every_step_of_its_upstream_labelled_by_id():
+    from jobsmith.agents.default import AnalysisCapability
+
+    material = AnalysisCapability(llm=None)._material({"query": "q", "plan": TWICE, "results": {
+        "notes_a": {"ok": True, "data": {"notes": "first notes"}},
+        "notes_b": {"ok": True, "data": {"notes": "second notes"}}}})
+    assert material.index("[material from notes_a]") < material.index("[material from notes_b]")
+    assert "first notes" in material and "second notes" in material

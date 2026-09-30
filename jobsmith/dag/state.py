@@ -124,6 +124,27 @@ class CapabilityResult(TypedDict, total=False):
     retryable: bool             # failed, and another try is worth it (#191)
 
 
+def results_of(state: Mapping[str, Any], capability: str) -> list[tuple[str, CapabilityResult]]:
+    """Every successful result of a step that runs `capability`, in plan order,
+    each with its step id — how a capability reads another's material.
+
+    By capability, not by key: once one capability may run as several steps
+    (docs/design/compiler-v1.md, step 0), `results[name]` would read one of
+    them and miss the rest. Plan order, because `results` fills in waves. A
+    result keyed by the capability's name that no plan step accounts for — a
+    capability run outside a plan — still counts, last. The fallback until
+    explicit references (step 1) hand a step its material by argument.
+    """
+    results = state.get("results") or {}
+    plan = state.get("plan") or {}
+    ids = [step_id(step) for step in plan.get("steps", [])
+           if step.get("capability") == capability]
+    if capability not in ids:
+        ids.append(capability)
+    return [(sid, result) for sid in ids
+            if (result := results.get(sid)) and result.get("ok")]
+
+
 def merge_results(
     left: dict[str, CapabilityResult] | None,
     right: dict[str, CapabilityResult] | None,

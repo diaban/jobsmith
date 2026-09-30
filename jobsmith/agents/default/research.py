@@ -27,7 +27,7 @@ from langgraph.constants import END
 
 from ...dag.capability import Capability, CapabilityBaseState, CapabilitySpec
 from ...dag.deps import LLMClient
-from ...dag.state import CapabilityResult
+from ...dag.state import CapabilityResult, results_of
 from ._step import SUBJECT_ONLY_RULE
 
 TRUNCATION_NOTE = "\n\n…[truncated: only the first {kept} characters of this document]"
@@ -226,9 +226,9 @@ class ResearchCapability(Capability):
         the reason the recall prompt still exists.
         """
         found = [
-            (name, doc)
+            (sid, doc)
             for name, key in self.GROUNDING
-            if (result := (state.get("results") or {}).get(name)) and result.get("ok")
+            for sid, result in results_of(state, name)
             for doc in ((result.get("data") or {}).get(key) or [])
             if isinstance(doc, dict) and (doc.get("text") or "").strip()
         ]
@@ -246,7 +246,7 @@ class ResearchCapability(Capability):
         refused = [
             str(why)
             for name, key in self.REFUSALS
-            if (result := (state.get("results") or {}).get(name)) and result.get("ok")
+            for _, result in results_of(state, name)
             for why in ((result.get("data") or {}).get(key) or [])
             if str(why).strip()
         ]

@@ -10,7 +10,7 @@ from ...dag.profile import (
     rule_min_answer_len,
     rule_nonempty_answer,
 )
-from ...dag.state import AgentState
+from ...dag.state import AgentState, results_of
 
 MAX_QUERY_LEN = 4000
 
@@ -89,8 +89,7 @@ def rule_max_query_len_fr(state: AgentState) -> str | None:
 def rule_citations_when_search(state: AgentState) -> str | None:
     """Search succeeded but the draft cites nothing → refine."""
     draft = state.get("draft_answer") or ""
-    search = state.get("results", {}).get("search")
-    if search and search.get("ok") and "[" not in draft and "(" not in draft:
+    if results_of(state, "search") and "[" not in draft and "(" not in draft:
         return "missing_citations"
     return None
 

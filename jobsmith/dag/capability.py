@@ -26,7 +26,7 @@ from langgraph.graph.state import CompiledStateGraph
 from ..artifacts.store import JobOutput, artifact_refs, declare
 from ..engine.facts import publish
 from ..engine.usage import current_ledger
-from .state import AgentState, CapabilityResult, NodeError, StepRef, merge_results
+from .state import AgentState, CapabilityResult, NodeError, Plan, StepRef, merge_results
 
 CAP_NODE_PREFIX = "cap_"          # a capability's node in the planner DAG
 
@@ -90,6 +90,10 @@ class CapabilityBaseState(CapabilityOutputState, total=False):
     query: Required[str]
     inputs: dict[str, Any]
     job_id: str
+    # The plan this step belongs to: a sub-graph is entered with the keys its
+    # schema declares and no other, and `results_of` reads material in plan
+    # order (0215). Absent outside a plan.
+    plan: Plan
     # Which plan step this run is (`Executor.route` sends it): what the
     # result, the fact and the run count are keyed by. Absent when the
     # capability runs on its own — a test, a script — which keys by its name.
