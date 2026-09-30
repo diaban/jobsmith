@@ -115,6 +115,7 @@ from ..dag.state import (
     FROM_JOBS_INPUT_KEY,
     SOURCE_FILES_INPUT_KEY,
     TERMINAL_UNANSWERED,
+    step_id,
 )
 from ..engine.models import JobStatus
 from .runner import CUSTOM_ANSWER, CUSTOM_JOB_PLANNED, CUSTOM_JOB_STARTED
@@ -269,9 +270,9 @@ def running_steps(job: DagJob) -> list[str]:
         return []
     done = job.step_finished_at
     return [
-        step["capability"]
+        step_id(step)
         for step in job.plan["steps"]
-        if step["capability"] not in done
+        if step_id(step) not in done
         and all(dep in done for dep in step.get("depends_on", []))
     ]
 
@@ -300,7 +301,7 @@ def progress_line(job: DagJob) -> str:
     tail = f" · {age} elapsed" if (age := elapsed_since(job.created_at)) else ""
     if not job.plan:
         return f"{head}: {job.status.value}, planning{tail}"
-    steps = [s["capability"] for s in job.plan["steps"]]
+    steps = [step_id(s) for s in job.plan["steps"]]
     done = [name for name in steps if name in job.step_finished_at]
     parts = [f"{len(done)}/{len(steps)} steps done"]
     if done:
@@ -382,7 +383,7 @@ async def announce_plan(manager: DagJobs, job_id: str,
         if job.plan:
             if len(steps := job.plan["steps"]) > 1:
                 write({"event": CUSTOM_JOB_PLANNED, "job_id": job_id, "steps": [
-                    {"capability": step["capability"],
+                    {"id": step_id(step), "capability": step["capability"],
                      "depends_on": list(step.get("depends_on") or [])}
                     for step in steps]})
             return
@@ -742,7 +743,7 @@ def make_job_tools(
         if job.plan:
             wave = set(running_steps(job))
             for step in job.plan["steps"]:
-                name = step["capability"]
+                name = step_id(step)
                 if name in job.step_finished_at:
                     mark = f"done at {job.step_finished_at[name]}"
                 else:
@@ -775,7 +776,7 @@ def make_job_tools(
     async def skip_steps(job_id_prefix: str, steps: list[str]) -> str:
         """Take steps out of one of this session's running jobs, by id prefix,
         and let it run on without them: "skip the critique", "no need for the
-        slides". `steps` are plan step names, as job_status lists them.
+        slides". `steps` are plan step ids, as job_status lists them.
 
         The job is NOT cancelled: steps already done stay done, and a step
         running right now restarts unless it is one of those skipped. Use
@@ -789,7 +790,7 @@ def make_job_tools(
             # The DAG's refusals name what to do instead (the plan's steps,
             # "cancel it instead"): handed back as they are, the model can act.
             return f"Nothing was skipped: {refused}"
-        plan = [s["capability"] for s in (amended.plan or {}).get("steps", [])]
+        plan = [step_id(s) for s in (amended.plan or {}).get("steps", [])]
         return (f"Job {job.job_id[:8]} runs on without {', '.join(steps)}; its plan "
                 f"is now: {', '.join(plan)}.")
 

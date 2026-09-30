@@ -31,7 +31,7 @@ from typing import Any
 from textual.markup import escape
 
 from ..dag.report import format_cost, format_usage
-from ..dag.state import plan_depths, plan_waves
+from ..dag.state import plan_depths, plan_waves, step_id
 from ..engine.usage import Usage
 
 # The roles, once. Nothing below names a colour, and nothing invents a variable.
@@ -89,8 +89,7 @@ def plan_activity(steps: list[dict[str, Any]]) -> str:
     and the jobs pane keeps the exact DAG, live — this is the one line of it
     a reader in the chat pane can see without leaving it.
     """
-    waves = plan_waves((str(s.get("capability") or ""), s.get("depends_on") or [])
-                       for s in steps)
+    waves = plan_waves((step_id(s), s.get("depends_on") or []) for s in steps)
     chain = " → ".join(" + ".join(escape(name) for name in wave) for wave in waves)
     return f"… {tool_activity('launch_job')}: {chain}"
 
@@ -177,7 +176,7 @@ def step_states(job: dict[str, Any]) -> list[dict[str, Any]]:
     job_status = str(job.get("status", "queued"))
     rows: list[dict[str, Any]] = []
     for step in plan.get("steps", []):
-        name = step["capability"]
+        name = step_id(step)
         deps = list(step.get("depends_on") or [])
         result = results.get(name) or {}
         if name in finished:
@@ -189,7 +188,7 @@ def step_states(job: dict[str, Any]) -> list[dict[str, Any]]:
         started = max((finished[dep] for dep in deps if dep in finished),
                       default=str(job.get("created_at") or ""))
         rows.append({
-            "capability": name,
+            "step": name,
             "depends_on": deps,
             "status": status,
             "took": span(started, finished.get(name)),
@@ -207,7 +206,7 @@ def steps_table(job: dict[str, Any]) -> str:
     rows = step_states(job)
     if not rows:
         return f"[{DIM}]no plan yet[/]"
-    name_width = max(12, *(len(row["capability"]) for row in rows)) + 1
+    name_width = max(12, *(len(row["step"]) for row in rows)) + 1
     head = (f"{'step':<{name_width}}{'status':<9}{'took':>8}"
             f"{'tokens':>10}{'cost':>11}")
     out = [f"[{DIM}]{head}[/]", f"[{RULE}]{'─' * len(head)}[/]"]
@@ -217,7 +216,7 @@ def steps_table(job: dict[str, Any]) -> str:
         cost = format_cost(usage) if usage else ""
         body = "$foreground" if row["status"] == "done" else DIM
         out.append(
-            f"{row['capability']:<{name_width}}"
+            f"{row['step']:<{name_width}}"
             f"[{status_role(row['status'])}]{STEP_LABEL[row['status']]:<9}[/]"
             f"[{body}]{row['took']:>8}{tokens:>10}[/][{DIM}]{cost or NONE:>11}[/]"
         )
@@ -277,21 +276,21 @@ def dag(job: dict[str, Any]) -> str:
     rows = step_states(job)
     if not rows:
         return f"[{DIM}]no plan yet[/]"
-    depth = plan_depths((row["capability"], row["depends_on"]) for row in rows)
+    depth = plan_depths((row["step"], row["depends_on"]) for row in rows)
 
     columns: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
-        columns.setdefault(depth[row["capability"]], []).append(row)
+        columns.setdefault(depth[row["step"]], []).append(row)
 
     column_x: dict[int, int] = {}
     trunk_x: dict[str, int] = {}        # capability -> the vertical its edges leave on
     x = 0
     for column in sorted(columns):
         members = columns[column]
-        widest = max(len(row["capability"]) for row in members)
+        widest = max(len(row["step"]) for row in members)
         column_x[column] = x
         for index, row in enumerate(members):
-            trunk_x[row["capability"]] = x + widest + _TRUNK_PAD + index
+            trunk_x[row["step"]] = x + widest + _TRUNK_PAD + index
         x += widest + _TRUNK_PAD + len(members) + _ARRIVAL_PAD
     width = x
 
@@ -324,12 +323,12 @@ def dag(job: dict[str, Any]) -> str:
 
     for column, members in columns.items():
         for index, row in enumerate(members):
-            name, cy = row["capability"], index * 2
+            name, cy = row["step"], index * 2
             write(name, column_x[column], cy, status_role(row["status"]))
             place[name] = (column_x[column], cy, len(name))
 
     for row in rows:
-        target = row["capability"]
+        target = row["step"]
         for dep in row["depends_on"]:
             if dep not in place:
                 continue

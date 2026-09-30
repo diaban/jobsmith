@@ -53,6 +53,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage
 
+from ..dag.state import step_id
 from ..engine.usage import Usage, usage_of
 
 # `create_agent`'s node names. The updates stream is keyed by them, so this is
@@ -141,7 +142,7 @@ class JobPlanned:
 
     The plan is the first moment a run has a shape worth showing, and it is
     decided seconds into a turn that may wait twenty. `steps` is the plan as
-    the planner left it — `{"capability", "depends_on"}` per step, in plan
+    the planner left it — `{"id", "capability", "depends_on"}` per step, in plan
     order — and never a sentence: how a DAG reads on one line is each
     front-end's wording, exactly as `ToolStarted` carries a name and not a
     phrase. Not a `Token`: a plan is not the answer, and a token would put it
@@ -240,12 +241,12 @@ def _from_custom(payload: Any) -> ChatEvent | None:
 
 
 def _plan_steps(value: Any) -> list[dict[str, Any]]:
-    """A payload's plan steps as fresh `{capability, depends_on}` dicts.
+    """A payload's plan steps as fresh `{id, capability, depends_on}` dicts.
 
     Lists of strings whatever arrived, because this crosses HTTP and both
     backings must answer with the same JSON (#50).
     """
-    return [{"capability": str(step.get("capability") or ""),
+    return [{"id": step_id(step), "capability": str(step.get("capability") or ""),
              "depends_on": [str(dep) for dep in step.get("depends_on") or []]}
             for step in value or [] if isinstance(step, dict)]
 

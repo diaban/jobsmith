@@ -51,6 +51,7 @@ from jobsmith.tui.render import (
     dag,
     job_row,
     outputs_block,
+    plan_activity,
     step_states,
     steps_table,
     where_files_are,
@@ -881,14 +882,27 @@ def test_a_step_is_running_only_when_its_dependencies_have_landed():
     """Derived from the record, which holds finishes and nothing else: a step
     whose dependency has not landed cannot be on the executor's wave."""
     running = canned_jobs()[0].to_dict()
-    states = {row["capability"]: row["status"] for row in step_states(running)}
+    states = {row["step"]: row["status"] for row in step_states(running)}
     assert states == {"documents": "done", "research": "done", "web_search": "done",
                       "analysis": "running", "critique": "queued"}
 
     failed = canned_jobs()[2].to_dict()
-    states = {row["capability"]: row["status"] for row in step_states(failed)}
+    states = {row["step"]: row["status"] for row in step_states(failed)}
     assert states["documents"] == "failed"
     assert states["analysis"] == "queued", "a stopped job has no running step"
+
+
+def test_steps_are_keyed_and_shown_by_their_id():
+    """Two steps of one capability are two rows and two names on the activity
+    line, told apart by id (→ 0213)."""
+    steps = [{"id": "notes_a", "capability": "research", "depends_on": []},
+             {"id": "notes_b", "capability": "research", "depends_on": []},
+             {"id": "review", "capability": "critique", "depends_on": ["notes_a", "notes_b"]}]
+    job = {"status": "running", "created_at": T0, "plan": {"steps": steps, "rationale": ""},
+           "step_finished_at": {"notes_a": T0}, "results": {"notes_a": {"ok": True}}}
+    states = {row["step"]: row["status"] for row in step_states(job)}
+    assert states == {"notes_a": "done", "notes_b": "running", "review": "queued"}
+    assert plan_activity(steps).endswith("notes_a + notes_b → review")
 
 
 def test_the_plan_is_drawn_in_waves_with_junctions():
@@ -1013,7 +1027,7 @@ async def test_took_measures_a_real_step_not_the_end_of_the_run(
     manager = make_manager(store, checkpointer, tmp_path, caps=caps, llm=llm)
     done = await manager.run_job((await manager.create_job("a chain")).job_id)
 
-    took = {row["capability"]: row["took"] for row in step_states(done.to_dict())}
+    took = {row["step"]: row["took"] for row in step_states(done.to_dict())}
     assert took["alpha"] != NONE and took["beta"] != NONE and took["gamma"] != NONE
     # `alpha`'s window starts at job creation, so only the dependent steps
     # bound their own time — and each must show roughly its own sleep.

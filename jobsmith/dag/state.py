@@ -50,9 +50,13 @@ class PlanStep(TypedDict, total=False):
     depends_on: Required[list[str]]     # other steps' ids; [] = ready immediately
 
 
-def step_id(step: PlanStep) -> str:
-    """The id a step is known by; its capability's name when it has none."""
-    return step.get("id") or step["capability"]
+def step_id(step: Mapping[str, Any]) -> str:
+    """The id a step is known by; its capability's name when it has none.
+
+    Any mapping, not only a `PlanStep`: a front-end reading a plan off HTTP
+    holds plain dicts, and must key steps by the same rule as the executor.
+    """
+    return str(step.get("id") or step.get("capability") or "")
 
 
 class StepRef(TypedDict):

@@ -230,11 +230,11 @@ async def cancelled_midway(store, checkpointer, tmp_path, *, session_id=None, fo
 
 
 PLANNED_DEPS = {"research": ["web_search", "documents"], "analysis": ["research"]}
-PLANNED_STEPS = [
-    {"capability": "web_search", "depends_on": []},
-    {"capability": "documents", "depends_on": []},
-    {"capability": "research", "depends_on": ["web_search", "documents"]},
-    {"capability": "analysis", "depends_on": ["research"]},
+PLANNED_STEPS = [          # as the plan event carries them: each step by its id
+    {"id": "web_search", "capability": "web_search", "depends_on": []},
+    {"id": "documents", "capability": "documents", "depends_on": []},
+    {"id": "research", "capability": "research", "depends_on": ["web_search", "documents"]},
+    {"id": "analysis", "capability": "analysis", "depends_on": ["research"]},
 ]
 
 
