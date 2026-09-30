@@ -3,9 +3,9 @@
 Design note written 2026-09-29 on `main` b4f0be6. It follows an outside review of that
 commit (in French, not checked in), which set the target and the reasons for it. It
 turns that review into a design: the shape of the IR, the effects model, the gates and the
-build order. **Status: proposed.** The owner has decided three things (listed under
-"Decided"); everything else here is a proposal to accept or amend. "Open questions" lists
-what the owner has to settle before step 0 lands. Claims about today's code were read on
+build order. **Status: accepted** (2026-09-30). The owner decided three things before the note
+(listed under "Decided") and approved its five remaining proposals (under "Settled with
+the owner"). Claims about today's code were read on
 b4f0be6 and carry a file reference; claims marked *(to check)* are hypotheses a step's
 probe must confirm. Revised the same day after an outside review of the note: a baseline
 that does not depend on step 1, the planner's constrained output marked as the riskiest
@@ -57,7 +57,7 @@ core v1). Two paths reach the engine, and both hand it the same `GraphSpec`:
 the compile target (A1's approach: more expressive, much less checkable); replacing ReAct
 agents; an optimiser beyond "independent steps run in parallel" (element 4 of the review
 is deferred, see "Later"). **Engine changes are out of scope except the ones named in this
-note**, each generic (G4) and each an open question.
+note**, each generic (G4): one in v1, `usage_scope` (settled point 1).
 
 ## Layers
 
@@ -100,7 +100,7 @@ Two more couplings, which the review did not list, have to move with it:
 - `PlanStep` gains `id`, **defaulting to the capability name**, so every plan written
   today is unchanged and every name in the public contract is already a valid id.
 - `results`, the `step:<id>` fact, the run count and `step_finished_at` are keyed by id.
-  The channel `completed_capabilities` becomes `completed_steps` (ids); see open question 2
+  The channel `completed_capabilities` becomes `completed_steps` (ids); see settled point 2
   on checkpoints in flight across the rename.
 - The executor Sends each step with its identity in the payload: `step = {"id", "op",
   "args"}`. `Capability._emit_*` writes under `state["step"]["id"]` instead of
@@ -112,7 +112,7 @@ Two more couplings, which the review did not list, have to move with it:
   default agent runs on until its planner emits references (step 1), after which a step's
   material comes from its arguments. The fallback is removed when no shipped agent needs
   it; that removal is its own PR.
-- **Usage per instance**: see open question 1. Until it is settled, the duplicate ban
+- **Usage per instance**: see settled point 1. Until `usage_scope` lands, the duplicate ban
   stays, so no two steps can share a scope.
 - **Only then is the duplicate ban lifted.**
 
@@ -279,7 +279,7 @@ class OpSpec:                     # today's CapabilitySpec, plus effects, schema
   twice" (0189). With effects declared, the graph knows. But `relaunch` is **per graph**,
   not per job: the DAG's value can only be derived from its whole registry (every op
   idempotent ⇒ it may be > 0). Deriving it per program needs a per-job bound on the
-  record, which is an engine change: open question 4.
+  record, which is an engine change: later (settled point 4).
 - A step's cache key (later) is the hash of its op, version and resolved args, only for
   an op that is `read_only` and `idempotent`.
 
@@ -505,7 +505,7 @@ reviewed as a diff, covered by golden cases** in `evals/`. It lives with its age
 - **Promotion is manual in v1**: `jobsmith program export <job_id> NAME` writes a
   finished job's program as a file to commit. Mining the job history for recurring,
   successful programs is later.
-- **Who chooses a program** is open question 3.
+- **A program is chosen explicitly** in v1 (settled point 3).
 
 ## Measurement (step −1)
 
@@ -570,8 +570,8 @@ that changes the planner's output), G3 and G4 unchanged.
 −1. **Baseline**: the ReAct agent over the retrieval ops, which gain their one output
     shape (`items`) here, `evals/compare.py`, the run-time-width cases; the cases name
     the primitives steps 1-4 will build. No change under `dag/`.
-0. **Step identity** (C0), without lifting the duplicate ban until open question 1 is
-   settled. Split: 0a `id` + keys + facts + executor; 0b `drop_steps`, view, TUI, REPL,
+0. **Step identity** (C0), without lifting the duplicate ban until settled point 1 has
+   landed. Split: 0a `id` + keys + facts + executor; 0b `drop_steps`, view, TUI, REPL,
    chat; 0c capabilities read material through the by-op fallback; 0d usage per
    instance, then the ban lifted.
 1. **Minimal IR**, opened by the strict-mode probe (see "The IR"): its result picks full
@@ -595,25 +595,30 @@ that changes the planner's output), G3 and G4 unchanged.
 A decision record is written by each step that takes a decision (CLAUDE.md), and one
 record for the compiler as a whole when step 5 lands, as 0161 did for core v1.
 
-## Open questions for the owner
+## Settled with the owner (2026-09-30, the five proposals approved)
 
-1. **Usage per instance needs the engine.** Options: (a) a generic `usage_scope(name)`
-   context the engine offers and a node may enter, so an op instance books under its
-   step id: a small engine addition with no product word; (b) the engine keeps the task
-   id in the scope and the DAG's view sums per node: changes the ledger's shape for
-   every graph; (c) no per-instance usage, only per op, and the per-step figure is
-   dropped from the view. Proposal: (a), probed in 0d (*to check*: that the context
-   reaches the LangChain callback inside a sub-graph run by a Send).
-2. **Checkpoints in flight across the rename** of `completed_capabilities`. Proposal: as
-   core v1 decided for records, start clean: a job interrupted before the upgrade is not
-   resumable after it, and says so (`Job.failure`).
-3. **Who picks a calibrated program?** Proposal for v1: explicitly (`--program`, an API
-   field, a chat tool argument). The router choosing one from the request is later, and
-   would be measured like any prompt.
-4. **`relaunch` per job.** Proposal: not in v1; the DAG derives its per-graph value from
-   its registry's effects.
-5. **The superstep barrier.** Proposal: accept it in v1 and let the latency measurement
-   decide on a sliding window.
+1. **Usage per instance: a generic `usage_scope(name)` in the engine**, a context a node
+   may enter so an op instance books under its step id: the one engine addition of v1,
+   with no product word (G4). Rejected: the engine keeping the task id in the scope (it
+   changes the ledger's shape for every graph), and per-op usage only (it drops the
+   per-step figure from the view). Probed in 0d (*to check*: that the context reaches
+   the LangChain callback inside a sub-graph run by a Send); the duplicate ban stays
+   until it lands.
+2. **Checkpoints in flight across the rename** of `completed_capabilities`: start clean,
+   as core v1 decided for records. A job interrupted before the upgrade is not resumable
+   after it, and says so (`Job.failure`).
+3. **A calibrated program is picked explicitly** in v1 (`--program`, an API field, a chat
+   tool argument). The router choosing one from the request is later, and measured like
+   any prompt.
+4. **`relaunch` stays per graph.** Today the bound lives on the `GraphSpec`
+   (`engine/graph.py:45`) and the engine reads it by the job's graph
+   (`engine/manager.py:794`), so every DAG job shares one value whatever its program. The
+   DAG derives it from its whole registry's effects: every op idempotent ⇒ it may be
+   > 0, else 0 — pessimistic for a job whose program only reads, harmless while the
+   shipped agents only read. A bound per job, derived from its program's effects, would
+   live on the job's record, which is the engine's: later.
+5. **The superstep barrier is accepted** in v1; the latency measurement decides on a
+   sliding window.
 
 ## Later
 
