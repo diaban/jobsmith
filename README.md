@@ -617,6 +617,7 @@ jobsmith/
     default/      read_files/prior_jobs/documents → research → analysis
                   → critique, + slide_deck (a .pptx annex)
     banking/      a domain agent: its own capabilities, ports and adapters
+    react/        the compiler's baseline: one ReAct loop over the retrieval tools
   app/          composition: providers, persistence, build_app(agent=...)
 evals/          the golden set + the property checks that score a prompt change
 ```

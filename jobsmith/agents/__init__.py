@@ -8,10 +8,12 @@ from __future__ import annotations
 from .banking import BANKING_AGENT
 from .base import AgentDefinition
 from .default import DEFAULT_AGENT
+from .react import REACT_AGENT
 
 AGENTS: dict[str, AgentDefinition] = {
     DEFAULT_AGENT.name: DEFAULT_AGENT,
     BANKING_AGENT.name: BANKING_AGENT,
+    REACT_AGENT.name: REACT_AGENT,
 }
 
 DEFAULT_AGENT_NAME = DEFAULT_AGENT.name
