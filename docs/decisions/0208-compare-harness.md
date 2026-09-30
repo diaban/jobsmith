@@ -1,6 +1,6 @@
 # 0208 — The DAG and the ReAct baseline are compared on run-time-width tasks, same material and bounds, scored on coverage
 
-- **Issue:** #208 · **PR:** see the issue · **Status:** accepted
+- **Issue:** #208 · **PR:** #209 · **Status:** accepted
 - **Rule in `CLAUDE.md`:** "`make compare`: DAG vs `react` baseline…" (Evaluating prompts); partially supersedes [0206](0206-react-baseline.md) (hits per search)
 
 **Context.** Step −1 of `docs/design/compiler-v1.md`: every compiler step is measured against the baseline of 0206 on one task set, or "compiled is better" stays a claim. The golden set (`evals/cases.py`) scores the DAG's own decisions (route, plan, file) and cannot score a graph agent.
