@@ -263,14 +263,37 @@ def current_ledger() -> UsageLedger | None:
     return _current_ledger.get()
 
 
+# A scope a node named for itself, over its root node's: one node run as
+# several instances in one superstep (several Sends to it) would otherwise
+# book them all under one name, and each read back the sum.
+_named_scope: ContextVar[str | None] = ContextVar("jobsmith_usage_scope", default=None)
+
+
+@contextmanager
+def usage_scope(name: str) -> Iterator[None]:
+    """Book what runs inside this block under `name`, not under the root node.
+
+    A context variable, so it holds for the calls made in this context and
+    the tasks it starts, and never for a sibling branch running beside it.
+    """
+    token = _named_scope.set(name)
+    try:
+        yield
+    finally:
+        _named_scope.reset(token)
+
+
 def current_scope() -> str:
-    """Which root node is spending, read from LangGraph's runtime config.
+    """Which root node is spending, read from LangGraph's runtime config —
+    or the scope the running node named for itself (`usage_scope`).
 
     `checkpoint_ns` is `<node>:<uuid>` in the root graph and
     `<node>:<uuid>|<inner node>:<uuid>` inside a sub-graph, so its root
     segment names the responsible node, as it is named. Outside a graph (a
     direct client call, a unit test) there is nothing to attribute to.
     """
+    if named := _named_scope.get():
+        return named
     try:
         from langgraph.config import get_config
 
@@ -364,4 +387,5 @@ __all__ = [
     "usage_of",
     "reset_price_overrides",
     "usage_ledger",
+    "usage_scope",
 ]

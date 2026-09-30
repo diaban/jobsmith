@@ -15,6 +15,8 @@ import inspect
 import json
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from operator import add
@@ -25,7 +27,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from ..artifacts.store import JobOutput, artifact_refs, declare
 from ..engine.facts import publish
-from ..engine.usage import current_ledger
+from ..engine.usage import current_ledger, usage_scope
 from .state import AgentState, CapabilityResult, NodeError, Plan, StepRef, merge_results
 
 CAP_NODE_PREFIX = "cap_"          # a capability's node in the planner DAG
@@ -118,28 +120,37 @@ def _knows_its_step(action: Any) -> Any:
     if not inspect.isfunction(action) and not inspect.ismethod(action):
         return action
 
-    def enter(state: Any) -> Any:
-        step = state.get("step") if isinstance(state, dict) else None
-        return _CURRENT_STEP.set(step.get("id") if isinstance(step, dict) else None)
-
     if inspect.iscoroutinefunction(action):
         @functools.wraps(action)
         async def run_async(state: Any, *args: Any, **kwargs: Any) -> Any:
-            token = enter(state)
-            try:
+            with _as_step(state):
                 return await action(state, *args, **kwargs)
-            finally:
-                _CURRENT_STEP.reset(token)
         return run_async
 
     @functools.wraps(action)
     def run(state: Any, *args: Any, **kwargs: Any) -> Any:
-        token = enter(state)
-        try:
+        with _as_step(state):
             return action(state, *args, **kwargs)
-        finally:
-            _CURRENT_STEP.reset(token)
     return run
+
+
+@contextmanager
+def _as_step(state: Any) -> Iterator[None]:
+    """The node's call as its plan step: its id for `_emit_*`, and its own
+    usage scope, so two steps of one capability each count what they spent
+    (settled point 1 of docs/design/compiler-v1.md; 0217). Outside a plan,
+    neither: the capability's name keys, and the root node books."""
+    step = state.get("step") if isinstance(state, dict) else None
+    sid = step.get("id") if isinstance(step, dict) else None
+    token = _CURRENT_STEP.set(sid)
+    try:
+        if sid:
+            with usage_scope(CAP_NODE_PREFIX + sid):
+                yield
+        else:
+            yield
+    finally:
+        _CURRENT_STEP.reset(token)
 
 
 class _StepGraph(StateGraph):
@@ -218,7 +229,7 @@ class Capability(ABC):
         ledger = current_ledger()
         if ledger is None or "usage" in meta:
             return meta
-        usage = ledger.get(CAP_NODE_PREFIX + self.spec.name)   # booked by root node
+        usage = ledger.get(CAP_NODE_PREFIX + self._step_id())  # booked by `_as_step`
         if usage:
             meta["usage"] = usage.to_dict()
         return meta
