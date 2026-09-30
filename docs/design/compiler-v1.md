@@ -387,8 +387,9 @@ order, each under the step id it came from: this is what replaces `UPSTREAM`.
 - **Retrieval with one output shape**: `web_search`, `documents`, `read_files`,
   `prior_jobs` return `{"items": [{id, source, title, text}], …}`, what they refuse or
   cannot reach kept beside it (`refused`, `unavailable`: a refusal is material, 0060).
-  These are the natural `map` sources, and exactly the baseline's tools at step −1: the
-  same work serves twice.
+  These are the natural `map` sources. The shape is already the one the baseline's
+  tools return at step −1 (0206), where each tool puts a port's answer into it; the
+  capabilities themselves take it at step 1, when references first read it.
 - **The four generic `LlmOp`s** above.
 - **One bounded agent op** for exploration: `research`, once its aspect decomposition is
   either a degraded mode (used when the planner wrote no decomposition) or the planner's.
@@ -520,10 +521,11 @@ model, not an agent in `agents/`), and no harness running one case set through t
 agents. Step −1 builds both:
 
 - `agents/react/`: `AgentDefinition(graph=…)` over `create_agent`, whose tools are **the
-  retrieval ops only** (`web_search`, `documents`, `read_files`, `prior_jobs`), each
-  wrapped with a `query` argument that stands for `state["query"]` (`read_files` and
-  `prior_jobs` take their `inputs` keys as arguments). **The agent does the analysis and
-  the critique itself.** Not the reasoning ops: today they take no arguments and read
+  retrieval ports only**, each registered when a port backs it: `search_documents` and
+  `web_search` take the query the model writes (it stands for `state["query"]` and the
+  capability's own query planning), `read_file` a path, `read_prior_job` a job id (the
+  `inputs` keys, as arguments). **The agent does the analysis and the critique
+  itself.** Not the reasoning ops: today they take no arguments and read
   their material from the graph state by name (`_material`, `agents/default/_step.py`),
   so wrapped before step 1 gives them arguments, `analysis` and `critique` would find
   `results` empty and reason "from the request alone": a baseline weakened by
@@ -567,8 +569,9 @@ that changes the planner's output), G3 and G4 unchanged.
 
 ## Order: one PR per step (split when over budget, 0130)
 
-−1. **Baseline**: the ReAct agent over the retrieval ops, which gain their one output
-    shape (`items`) here, `evals/compare.py`, the run-time-width cases; the cases name
+−1. **Baseline**, split in two (#206). −1a: the ReAct agent over the retrieval ports,
+    whose tools return the one item shape (`items`); the capabilities keep theirs until
+    step 1 (0206). −1b: `evals/compare.py` and the run-time-width cases; the cases name
     the primitives steps 1-4 will build. No change under `dag/`.
 0. **Step identity** (C0), without lifting the duplicate ban until settled point 1 has
    landed. Split: 0a `id` + keys + facts + executor; 0b `drop_steps`, view, TUI, REPL,
@@ -581,7 +584,8 @@ that changes the planner's output), G3 and G4 unchanged.
    models; `OpSpec` (with `output_from`) + `Effects` declared (not yet enforced);
    analysis checks 1-4 and 6; repair. Primitives: `analyze`, `extract`,
    `synthesize` (`extract` with `fields` and `schema_name`); `analysis` and `critique`
-   re-expressed as instances of `analyze`. C1.
+   re-expressed as instances of `analyze`; the retrieval capabilities take the one item
+   shape. C1.
 2. **`map`** (C2), check 10 for its first typed consumers (`map`, `FnOp`), and the first op that makes sense per item (`read_repository` if the
    step −1 cases ask for it), plus the `FnOp`s those cases need.
 3. **Effects enforced, `when`, checks 5, 7-9**, check 10 extended to `when` and
