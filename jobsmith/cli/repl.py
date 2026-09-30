@@ -22,7 +22,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from ..dag.report import deliverable_filenames, format_step_usage, format_usage
-from ..dag.state import plan_waves
+from ..dag.state import plan_waves, step_id
 from ..engine.usage import Usage
 from ..service import TERMINAL_EVENTS, BinaryDeliverable, ChatStreamError, ServiceUnavailable
 from .client import AgentClient
@@ -57,8 +57,7 @@ def plan_line(steps: list[dict]) -> str:
     steps run together. The columns are `plan_waves`, the drawings' own, so
     this line and `/job`'s DAG agree on where a step belongs.
     """
-    waves = plan_waves((str(s.get("capability") or ""), s.get("depends_on") or [])
-                       for s in steps)
+    waves = plan_waves((step_id(s), s.get("depends_on") or []) for s in steps)
     return " → ".join(" + ".join(wave) for wave in waves)
 
 
@@ -218,7 +217,7 @@ def show_job(job: dict, *, verbose: bool = True) -> None:
     if plan:
         done = job.get("step_finished_at") or {}
         steps = " -> ".join(
-            s["capability"] + ("" if s["capability"] in done else " (pending)")
+            step_id(s) + ("" if step_id(s) in done else " (pending)")
             for s in plan["steps"]
         )
         print(f"  plan:      {steps}")

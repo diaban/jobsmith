@@ -385,6 +385,10 @@ class DagJobs:
         checkpoint loses those steps and every `depends_on` on them, and the
         `plan` fact says so. A step the plan does not have, one that already
         finished, and a plan left with nothing are refused, in these words.
+
+        `names` are step ids; a capability's name stands for the one step
+        that runs it, and is refused as ambiguous when several do
+        (docs/design/compiler-v1.md, step 0).
         """
         from .planner import without_steps
 
@@ -394,13 +398,15 @@ class DagJobs:
         plan = job.plan
         if not plan:
             raise ValueError(f"job {job_id} has no plan yet: there is nothing to skip")
-        planned = [step["capability"] for step in plan["steps"]]
-        if unknown := [n for n in names if n not in planned]:
+        planned = [step_id(step) for step in plan["steps"]]
+        ids = [self._one_step(job_id, plan, name) for name in names]
+        if unknown := [n for n, i in zip(names, ids, strict=True) if i is None]:
             raise ValueError(f"not in the plan of job {job_id}: {', '.join(unknown)} "
                              f"(it has {', '.join(planned)})")
-        if finished := [n for n in names if n in job.step_finished_at]:
+        chosen = [i for i in ids if i is not None]
+        if finished := [i for i in chosen if i in job.step_finished_at]:
             raise ValueError(f"already done in job {job_id}: {', '.join(finished)}")
-        amended = without_steps(plan, names)
+        amended = without_steps(plan, chosen)
         if not amended["steps"]:
             raise ValueError(f"that would leave job {job_id} nothing to do: cancel it instead")
         # The plan fact is published from inside the planner, before its
@@ -410,6 +416,18 @@ class DagJobs:
             raise ValueError(f"job {job_id} is still planning: try again in a moment")
         return DagJob(await self.engine.amend_job(job_id, {"plan": amended},
                                                   facts={PLAN_FACT: amended}))
+
+    @staticmethod
+    def _one_step(job_id: str, plan: Plan, name: str) -> str | None:
+        """The id `name` designates in `plan`: itself, or the one step whose
+        capability it names. None when neither; ambiguous is refused."""
+        if any(step_id(step) == name for step in plan["steps"]):
+            return name
+        running = [step_id(step) for step in plan["steps"] if step["capability"] == name]
+        if len(running) > 1:
+            raise ValueError(f"{name!r} runs as several steps of job {job_id}: "
+                             f"name one of {', '.join(running)}")
+        return running[0] if running else None
 
     async def recover_interrupted(self) -> list[DagJob]:
         return [DagJob(job) for job in await self.engine.recover_interrupted()]
