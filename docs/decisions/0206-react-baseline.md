@@ -1,6 +1,6 @@
 # 0206 — The compiler's baseline is a ReAct agent over the retrieval ports only, reasoning alone
 
-- **Issue:** #206 · **PR:** see the issue · **Status:** accepted
+- **Issue:** #206 · **PR:** #207 · **Status:** accepted
 - **Rule in `CLAUDE.md`:** "`agents/react/`: the compiler baseline…" (Agents)
 
 **Context.** `docs/design/compiler-v1.md` (step −1) measures every compiler step against a ReAct agent on one task set; none existed (G1 is a scripted test). The first draft gave it "the registry's ops, wrapped as tools". But `analysis` and `critique` take no arguments and read their material from the DAG state by name (`_material`, `agents/default/_step.py`), so wrapped before step 1 they would find `results` empty and reason from the request alone.
