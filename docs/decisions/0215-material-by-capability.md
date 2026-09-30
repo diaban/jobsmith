@@ -1,6 +1,6 @@
 # 0215 — A capability reads another's material by capability, from every step that ran it, in plan order
 
-- **Issue:** #215 · **PR:** see the issue · **Status:** accepted
+- **Issue:** #215 · **PR:** #216 · **Status:** accepted
 - **Rule in `CLAUDE.md`:** "A capability reads another's material by `results_of` … never `results[name]`" (Core concepts)
 
 **Context.** Step 0c of `docs/design/compiler-v1.md`. After 0a/0b (0211, 0213) results are keyed by step id, but five readers took another step's result as `results[name]`: `SingleStepCapability._material` (`UPSTREAM`), `research`'s grounding and refusals, `critique`, `slide_deck`, the banking citation rule. With two steps of one capability they would read one key and miss the other; with an id that is not a name, nothing.
