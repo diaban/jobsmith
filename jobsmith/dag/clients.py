@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 from typing import Any
 
 from ..engine.usage import record_usage
@@ -175,9 +176,18 @@ class AnthropicLLMClient:
 
 DEFAULT_OPENAI_MODEL = "gpt-5.1"
 
-# Reasoning-model families: temperature is rejected (only the default is
-# allowed) and the output cap is `max_completion_tokens`, not `max_tokens`.
-_OPENAI_REASONING_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+# Reasoning models reject temperature (only the default is allowed) and take
+# the output cap as `max_completion_tokens`, not `max_tokens`. Every OpenAI
+# model since gpt-5 is one, so the test names the CLASSIC families — closed,
+# they will not grow — and any other OpenAI name is a reasoning model: a list
+# of the new families broke on gpt-6 (→ 0222). A name from another
+# OpenAI-compatible server (Ollama, vLLM: `llama3`, `qwen2.5`) stays classic.
+_OPENAI_CLASSIC_PREFIXES = ("gpt-4", "gpt-3.5")
+_OPENAI_NAME = re.compile(r"^(gpt-|o\d)")
+
+
+def is_reasoning_model(model: str) -> bool:
+    return bool(_OPENAI_NAME.match(model)) and not model.startswith(_OPENAI_CLASSIC_PREFIXES)
 
 
 class OpenAILLMClient:
@@ -185,7 +195,8 @@ class OpenAILLMClient:
 
     The framework's LLMClient protocol is OpenAI-shaped, so this is mostly a
     pass-through. Two model-dependent quirks are handled automatically for
-    reasoning models (gpt-5*/o*): `temperature` is dropped (the API rejects
+    reasoning models (every OpenAI model outside the classic gpt-4/gpt-3.5
+    families): `temperature` is dropped (the API rejects
     non-default values) and the cap is sent as `max_completion_tokens`.
     """
 
@@ -208,7 +219,7 @@ class OpenAILLMClient:
 
     @property
     def _is_reasoning_model(self) -> bool:
-        return self.model.startswith(_OPENAI_REASONING_PREFIXES)
+        return is_reasoning_model(self.model)
 
     def _base_kwargs(self, max_tokens: int | None) -> dict[str, Any]:
         cap = max_tokens or self.max_output_tokens

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jobsmith.dag.clients import AnthropicLLMClient, OpenAILLMClient
+from jobsmith.dag.clients import AnthropicLLMClient, OpenAILLMClient, is_reasoning_model
 
 
 def make_response(text="hello", stop_reason="end_turn", category=None):
@@ -151,6 +151,18 @@ async def test_openai_reasoning_model_drops_temperature_uses_completion_cap():
     assert "max_tokens" not in call
     # system message passes through unchanged (native role on this API)
     assert call["messages"][0] == {"role": "system", "content": "You are a planner."}
+
+
+@pytest.mark.parametrize("model, reasoning", [
+    ("gpt-5-nano", True), ("gpt-5.4-mini", True), ("gpt-6-luna", True), ("gpt-7", True),
+    ("o3-mini", True), ("o5", True),
+    ("gpt-4o", False), ("gpt-4.1-mini", False), ("gpt-3.5-turbo", False),
+    ("llama3.1", False), ("qwen2.5", False), ("chatgpt-4o-latest", False),
+])
+def test_an_openai_model_reasons_unless_it_is_of_a_classic_family(model, reasoning):
+    """The classic families are closed; a new one must not break the client
+    as gpt-6 did, sent `max_tokens` and `temperature=0.0` (→ 0222)."""
+    assert is_reasoning_model(model) is reasoning
 
 
 async def test_openai_classic_model_keeps_temperature_and_max_tokens():
