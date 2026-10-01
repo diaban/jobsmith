@@ -65,7 +65,7 @@ async def test_a_step_runs_and_reports_under_its_id_not_its_capability_name():
     state = {"query": "q", "plan": PLAN, "completed_capabilities": [], "results": {}}
 
     [first] = executor.route(state)
-    assert (first.node, first.arg["step"]) == ("cap_echo", {"id": "early", "capability": "echo"})
+    assert (first.node, first.arg["step"]) == ("cap_echo", {"id": "early", "capability": "echo", "args": {}})
     output, facts = await run(Echo("echo"), first.arg)
     assert output["results"].keys() == {"early"} and output["completed_capabilities"] == ["early"]
     assert "step:early" in facts and "step:echo" not in facts
@@ -89,7 +89,7 @@ async def test_a_capability_outside_a_plan_and_a_plan_without_ids_key_by_name():
     executor = Executor(CapabilityRegistry([Echo("echo")]))
     [sent] = executor.route({"plan": {"steps": [{"capability": "echo", "depends_on": []}],
                                       "rationale": ""}, "completed_capabilities": []})
-    assert sent.arg["step"] == {"id": "echo", "capability": "echo"}
+    assert sent.arg["step"] == {"id": "echo", "capability": "echo", "args": {}}
 
 
 def test_the_view_orders_and_drops_steps_by_id():

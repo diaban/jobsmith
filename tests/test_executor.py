@@ -171,3 +171,56 @@ async def test_each_run_of_a_step_is_counted_once():
                               config={"configurable": {"thread_id": "n1"}})
     assert out["completed_capabilities"] == ["a", "b", "b", "b", "c"]
     assert Step.runs == 3 and len(out["errors"]) == 3
+
+
+# ---- The interpreter resolves a step's references before Sending it (#230) ----
+
+class TextIn(StubCap):
+    """An op whose arguments are binding: `text` must be a string."""
+
+    def __init__(self, name: str):
+        from pydantic import BaseModel
+
+        class Args(BaseModel):
+            text: str
+
+        self.spec = CapabilitySpec(name=name, description=name, input_model=Args)
+
+
+REFERENCING = {"steps": [
+    {"id": "a", "capability": "a", "depends_on": [], "args": {}},
+    {"id": "b", "capability": "b", "depends_on": ["a"], "args": {"text": "$a.text"}},
+    {"id": "c", "capability": "c", "depends_on": ["b"], "args": {"text": "$b.text"}},
+], "rationale": "a chain of references"}
+
+
+def make_interpreter() -> Executor:
+    return Executor(CapabilityRegistry([StubCap("a"), TextIn("b"), TextIn("c")]))
+
+
+async def test_a_ready_step_is_sent_its_resolved_arguments():
+    ex = make_interpreter()
+    state = {"plan": REFERENCING, "completed_capabilities": ["a"],
+             "results": {"a": {"ok": True, "data": {"text": "alpha"}}}}
+    assert await ex.dispatch(state) == {}
+    [sent] = ex.route(state)
+    assert sent.arg["step"] == {"id": "b", "capability": "b", "args": {"text": "alpha"}}
+
+
+@pytest.mark.parametrize("a_result, why", [
+    ({"ok": False, "error": "boom"}, "has no successful result"),
+    ({"ok": True, "data": {"text": 7}}, "arguments refused at text"),
+])
+async def test_a_step_without_its_arguments_fails_as_a_step_and_so_do_its_dependents(a_result, why):
+    """Recoverable, so the run degrades; written by the dispatch node, so
+    the router never Sends a step that cannot run."""
+    ex = make_interpreter()
+    state = {"plan": REFERENCING, "completed_capabilities": ["a"], "results": {"a": a_result}}
+    update = await ex.dispatch(state)
+
+    assert update["completed_capabilities"] == ["b", "c"]
+    assert why in update["results"]["b"]["error"]
+    assert all(e["recoverable"] for e in update["errors"])
+    after = {**state, "results": {**state["results"], **update["results"]},
+             "completed_capabilities": ["a", "b", "c"], "errors": update["errors"]}
+    assert ex.route(after) == "merge_results"

@@ -13,12 +13,10 @@ from __future__ import annotations
 import functools
 import inspect
 import json
-import re
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
 from operator import add
 from typing import Annotated, Any, Required, TypedDict
 
@@ -28,32 +26,10 @@ from langgraph.graph.state import CompiledStateGraph
 from ..artifacts.store import JobOutput, artifact_refs, declare
 from ..engine.facts import publish
 from ..engine.usage import current_ledger, usage_scope
+from .ops import CapabilitySpec, Effects, OpSpec  # noqa: F401 — specs are imported from here
 from .state import AgentState, CapabilityResult, NodeError, Plan, StepRef, merge_results
 
 CAP_NODE_PREFIX = "cap_"          # a capability's node in the planner DAG
-
-_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
-
-
-@dataclass(frozen=True, slots=True)
-class CapabilitySpec:
-    """Self-description used for the planner prompt and job metadata.
-
-    Schemas are plain JSON-schema dicts: they exist to be rendered into the
-    planner prompt and stored alongside jobs — enforcement is advisory.
-    """
-    name: str                                   # unique; doubles as node-name suffix & results key
-    description: str                            # one paragraph, feeds the planner prompt
-    input_schema: dict[str, Any] = field(default_factory=dict)
-    output_schema: dict[str, Any] = field(default_factory=dict)
-    requires_inputs: tuple[str, ...] = ()       # keys that must exist in state["inputs"]
-
-    def __post_init__(self) -> None:
-        if not _NAME_RE.match(self.name):
-            raise ValueError(
-                f"invalid capability name {self.name!r} (must match {_NAME_RE.pattern})"
-            )
-
 
 class CapabilityOutputState(TypedDict, total=False):
     """The ONLY channels a capability sub-graph emits back to the parent.

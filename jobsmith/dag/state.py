@@ -41,13 +41,18 @@ from ..engine.facts import current_job_id
 # ---------- Plan ----------
 
 class PlanStep(TypedDict, total=False):
-    # What the step is known by: its result, its `step:<id>` fact, its run
-    # count. The planner writes it, as the capability's name while a plan
-    # holds one step per capability (docs/design/compiler-v1.md, step 0); a
-    # plan checkpointed before ids existed has none — read it with `step_id`.
+    """A step of the program as the `plan` channel stores it: the IR's step
+    (`dag/ir.py`: `id`, `op`, `args`, `after`) plus the two fields today's
+    readers key on, `capability` (its op) and `depends_on` (derived from its
+    references and `after`). A plan checkpointed before 1b has only `id`,
+    `capability` and `depends_on`; one checkpointed before ids, no `id` —
+    read it with `step_id`."""
     id: str
-    capability: Required[str]           # registered capability name
+    capability: Required[str]           # its op's name
     depends_on: Required[list[str]]     # other steps' ids; [] = ready immediately
+    op: str
+    args: dict[str, Any]
+    after: list[str]
 
 
 def step_id(step: Mapping[str, Any]) -> str:
@@ -59,15 +64,29 @@ def step_id(step: Mapping[str, Any]) -> str:
     return str(step.get("id") or step.get("capability") or "")
 
 
-class StepRef(TypedDict):
-    """Which plan step a capability is running as — sent with it by the executor."""
-    id: str
-    capability: str
+class StepRef(TypedDict, total=False):
+    """Which plan step a capability is running as, and its arguments with
+    every reference resolved — sent with it by the executor."""
+    id: Required[str]
+    capability: Required[str]
+    args: dict[str, Any]
 
 
-class Plan(TypedDict):
-    steps: list[PlanStep]
-    rationale: str          # for observability / debugging
+class Plan(TypedDict, total=False):
+    """The program (`dag/ir.py`, `Program.stored()`) as the `plan` channel
+    holds it; `version` and `result` are absent from a plan checkpointed
+    before 1b."""
+    steps: Required[list[PlanStep]]
+    rationale: Required[str]          # for observability / debugging
+    version: int
+    result: dict[str, Any]          # the result slots: {"answer": {...}}
+
+
+def step_args(state: Mapping[str, Any]) -> dict[str, Any]:
+    """The arguments this step was sent, references resolved; {} outside a
+    plan or for a step with none."""
+    step = state.get("step") or {}
+    return dict(step.get("args") or {})
 
 
 def plan_depths(steps: Iterable[tuple[str, Iterable[str]]]) -> dict[str, int]:

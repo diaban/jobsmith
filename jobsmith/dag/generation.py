@@ -16,6 +16,7 @@ from pathlib import Path
 
 from ..artifacts.store import artifact_refs
 from .deps import Deps
+from .ir import parse_ref
 from .profile import NO_ANSWER_MARKER, AgentProfile
 from .registry import CapabilityRegistry
 from .state import TERMINAL_UNANSWERED, AgentState, NodeError, step_id
@@ -37,8 +38,16 @@ class ContextMerger:
         plan = state.get("plan")
         results = state.get("results", {})
         parts: list[str] = []
-        # Iterate in plan order, NOT results-dict order (see state.py determinism caveat)
-        for step in (plan["steps"] if plan else []):
+        steps = plan["steps"] if plan else []
+        # The answer slot's material, when it names steps, in the order it
+        # names them; else every step, in plan order, NOT results-dict order
+        # (see state.py determinism caveat). A plan from before 1b has no slot.
+        material = (((plan or {}).get("result") or {}).get("answer") or {}).get("material")
+        if material is not None:
+            by_id = {step_id(step): step for step in steps}
+            named = [ref[0] for ref in map(parse_ref, material) if ref]
+            steps = [by_id[sid] for sid in named if sid in by_id]
+        for step in steps:
             result = results.get(step_id(step))
             if not result or not result.get("ok"):
                 continue
