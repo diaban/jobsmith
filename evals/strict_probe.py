@@ -26,6 +26,7 @@ out of the grammar. `.env` is loaded; refused above `--max-calls` (300).
 
     python -m evals.strict_probe --provider openai -n 4 --out probe.json
     python -m evals.strict_probe --provider anthropic -n 4   # needs a key
+    python -m evals.strict_probe --provider openai --variants shared,plain
     python -m evals.strict_probe --static                    # no call
 """
 from __future__ import annotations
@@ -499,8 +500,8 @@ FORMS = {"pydantic": lambda v: schema_of(v), "strict": lambda v: strict(schema_o
          "degraded": lambda v: degraded(strict(schema_of(v)))}
 
 
-async def measure(call: Caller, n: int, concurrency: int,
-                  forms: dict[str, str]) -> dict[str, Any]:
+async def measure(call: Caller, n: int, concurrency: int, forms: dict[str, str],
+                  variants: tuple[str, ...] = VARIANTS) -> dict[str, Any]:
     gate = asyncio.Semaphore(concurrency)
     tally: dict[str, Counter] = {v: Counter() for v in VARIANTS}
     per_case: dict[str, dict[str, Counter]] = defaultdict(lambda: defaultdict(Counter))
@@ -525,7 +526,7 @@ async def measure(call: Caller, n: int, concurrency: int,
         per_case[case][variant][verdict] += 1
         samples.setdefault(f"{variant}/{case}/{verdict}", text[:1500])
 
-    await asyncio.gather(*(one(v, c, q) for v in VARIANTS if forms.get(v) != "refused"
+    await asyncio.gather(*(one(v, c, q) for v in variants if forms.get(v) != "refused"
                            for c, q in REQUESTS for _ in range(n)))
     return {"tally": {v: dict(c) for v, c in tally.items()},
             "per_case": {c: {v: dict(t) for v, t in vs.items()} for c, vs in per_case.items()},
@@ -543,8 +544,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-n", type=int, default=4)
     parser.add_argument("--concurrency", type=int, default=10)
     parser.add_argument("--max-calls", type=int, default=MAX_CALLS)
+    parser.add_argument("--variants", default=",".join(VARIANTS),
+                        help="the variants to measure, comma-separated (default: all)")
     parser.add_argument("--out")
     args = parser.parse_args(argv)
+    variants = tuple(v for v in VARIANTS if v in args.variants.split(","))
+    constrained = tuple(v for v in CONSTRAINED if v in variants)
 
     report: dict[str, Any] = {"static": {}}
     for variant in CONSTRAINED:
@@ -555,7 +560,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.static:
         if args.provider is None:
             parser.error("--provider is required unless --static")
-        calls = len(CONSTRAINED) * len(FORMS) + len(VARIANTS) * len(REQUESTS) * args.n
+        calls = len(constrained) * len(FORMS) + len(variants) * len(REQUESTS) * args.n
         if calls > args.max_calls:
             parser.error(f"{calls} calls > --max-calls {args.max_calls}")
         from jobsmith.app.providers import load_dotenv
@@ -566,12 +571,12 @@ def main(argv: list[str] | None = None) -> int:
         async def run() -> None:
             report["acceptance"] = {
                 f"{variant}/{form}": await accepts(call, build(variant))
-                for variant in CONSTRAINED for form, build in FORMS.items()}
+                for variant in constrained for form, build in FORMS.items()}
             ok = report["acceptance"]
             forms = {v: next((f for f in ("strict", "degraded")
                               if ok[f"{v}/{f}"] == "accepted"), "refused")
-                     for v in CONSTRAINED}
-            report["validity"] = await measure(call, args.n, args.concurrency, forms)
+                     for v in constrained}
+            report["validity"] = await measure(call, args.n, args.concurrency, forms, variants)
         asyncio.run(run())
     text = json.dumps(report, indent=1, ensure_ascii=False)
     if args.out:
