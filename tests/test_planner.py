@@ -35,6 +35,12 @@ def registry():
     ])
 
 
+def as_read(steps):
+    """A stored step as today's readers see it (TUI, REPL, chat, views): the
+    IR's fields come beside these, never instead of them (#230)."""
+    return [{key: step[key] for key in ("id", "capability", "depends_on")} for step in steps]
+
+
 def make_planner(registry, response: str = "") -> Planner:
     return Planner(Deps(llm=FakeLLM({"planner": response})), registry)
 
@@ -51,7 +57,7 @@ async def test_valid_plan_accepted(registry):
     one step per capability (→ docs/design/compiler-v1.md, step 0)."""
     planner = make_planner(registry, plan_json("alpha", "beta", deps={"beta": ["alpha"]}))
     out = await planner.run({"query": "q"})
-    assert out["plan"]["steps"] == [
+    assert as_read(out["plan"]["steps"]) == [
         {"id": "alpha", "capability": "alpha", "depends_on": []},
         {"id": "beta", "capability": "beta", "depends_on": ["alpha"]},
     ]
@@ -87,13 +93,13 @@ async def test_inapplicable_dropped_and_dangling_deps_pruned(registry):
     dep on gamma pruned instead of raising (the fixed latent bug)."""
     planner = make_planner(registry, plan_json("gamma", "beta", deps={"beta": ["gamma"]}))
     out = await planner.run({"query": "q"})  # no inputs
-    assert out["plan"]["steps"] == [{"id": "beta", "capability": "beta", "depends_on": []}]
+    assert as_read(out["plan"]["steps"]) == [{"id": "beta", "capability": "beta", "depends_on": []}]
 
 
 async def test_applicable_kept_when_input_present(registry):
     planner = make_planner(registry, plan_json("gamma"))
     out = await planner.run({"query": "q", "inputs": {"attachment": "x"}})
-    assert out["plan"]["steps"] == [{"id": "gamma", "capability": "gamma", "depends_on": []}]
+    assert as_read(out["plan"]["steps"]) == [{"id": "gamma", "capability": "gamma", "depends_on": []}]
 
 
 async def test_all_steps_inapplicable_yields_an_empty_plan(registry):
@@ -144,7 +150,7 @@ async def test_conversation_context_reaches_the_prompt(registry):
         "inputs": {CONVERSATION_INPUT_KEY: "user: the Q3 churn spike\nassistant: noted"},
     })
 
-    assert out["plan"]["steps"] == [{"id": "alpha", "capability": "alpha", "depends_on": []}]
+    assert as_read(out["plan"]["steps"]) == [{"id": "alpha", "capability": "alpha", "depends_on": []}]
     user_msg = next(m["content"] for m in llm.calls[0]["messages"] if m["role"] == "user")
     assert "the Q3 churn spike" in user_msg
     assert user_msg.endswith("Request to plan for:\nanalyse that")
@@ -153,3 +159,46 @@ async def test_conversation_context_reaches_the_prompt(registry):
 def test_planner_prompt_tells_the_model_what_the_excerpt_is_for(registry):
     prompt = make_planner(registry).system_prompt()
     assert "excerpt of the conversation" in prompt
+
+
+# ---- The planner reads the IR (#230) ----
+
+@pytest.mark.parametrize("program, error", [
+    ({"steps": [{"id": "x", "op": "beta", "args": {"t": "$nowhere"}}]}, "unknown step: nowhere"),
+    ({"steps": [{"id": "x", "op": "alpha", "args": {"t": "$y"}},
+                {"id": "y", "op": "beta", "args": {"t": "$x"}}]}, "cycle"),
+    ({"steps": [{"id": "x", "op": "alpha"}],
+      "result": {"answer": {"material": ["$x.text"]}}}, "must name a step"),
+    ({"steps": [{"id": "Bad", "op": "alpha"}]}, "malformed plan at steps.0.id"),
+])
+async def test_a_program_that_cannot_run_is_refused_before_any_step(registry, program, error):
+    out = await make_planner(registry, json.dumps(program)).run({"query": "q"})
+    assert error in out["errors"][0]["detail"]
+
+
+async def test_a_program_is_stored_with_its_derived_dependencies_and_answer_slot(registry):
+    program = {"steps": [{"id": "x", "op": "alpha"},
+                         {"id": "y", "op": "beta", "args": {"t": "$x"}, "after": []}],
+               "result": {"answer": {"material": ["$y"]}}}
+    out = await make_planner(registry, json.dumps(program)).run({"query": "q"})
+    assert as_read(out["plan"]["steps"]) == [
+        {"id": "x", "capability": "alpha", "depends_on": []},
+        {"id": "y", "capability": "beta", "depends_on": ["x"]}]
+    assert out["plan"]["result"]["answer"]["material"] == ["$y"]
+
+
+def test_dropping_a_step_prunes_it_from_after_dependencies_and_the_answer_material():
+    """What `drop_steps` leaves (#177): no step waits for a dropped one, and
+    the answer does not name it; a reference in arguments stays, for the
+    interpreter to fail (#230)."""
+    from jobsmith.dag.ir import Program, Step
+    from jobsmith.dag.planner import without_steps
+
+    program = Program(steps=[Step(id="x", op="alpha"), Step(id="y", op="beta", after=["x"]),
+                             Step(id="z", op="gamma", args={"t": "$x"})])
+    program.result.answer.material = ["$x", "$y"]
+    left = without_steps(program.stored(), ["x"])
+    assert [(s["id"], s["after"], s["depends_on"]) for s in left["steps"]] == [
+        ("y", [], []), ("z", [], [])]
+    assert left["steps"][1]["args"] == {"t": "$x"}
+    assert left["result"]["answer"]["material"] == ["$y"]

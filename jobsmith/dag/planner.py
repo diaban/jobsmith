@@ -16,30 +16,42 @@ map, not here.
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, cast
+
+from pydantic import ValidationError
 
 from ..engine.facts import publish
 from .deps import Deps
+from .ir import Program, Step, dependencies, from_plan, parse_ref
 from .profile import DEFAULT_PLANNER_TEMPLATE
 from .registry import CapabilityRegistry
 from .state import CONVERSATION_INPUT_KEY, AgentState, NodeError, Plan, PlanStep, step_id
 
-# What a step id may be: the same shape as a capability's name, which is what
-# a step with no id of its own is known by.
-_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
-
 
 def without_steps(plan: Plan, ids: Sequence[str]) -> Plan:
-    """`plan` with the steps `ids` removed and every `depends_on` on them
-    pruned — what dropping a step from a running plan leaves (#177). Still
-    acyclic: removing nodes adds no edge."""
+    """`plan` with the steps `ids` removed and every `depends_on`, `after`
+    and answer material naming them pruned — what dropping a step from a
+    running plan leaves (#177). Still acyclic: removing nodes adds no edge. A
+    step whose arguments reference a dropped one keeps the reference, and
+    fails when the interpreter cannot resolve it (#230)."""
     gone = set(ids)
-    return {**plan, "steps": [
-        {"id": step_id(step), "capability": step["capability"],
-         "depends_on": [d for d in step["depends_on"] if d not in gone]}
-        for step in plan["steps"] if step_id(step) not in gone]}
+    steps: list[PlanStep] = []
+    for step in plan["steps"]:
+        if step_id(step) in gone:
+            continue
+        kept: PlanStep = {**step, "id": step_id(step),
+                          "depends_on": [d for d in step["depends_on"] if d not in gone]}
+        if "after" in step:
+            kept["after"] = [d for d in step["after"] if d not in gone]
+        steps.append(kept)
+    amended: Plan = {**plan, "steps": steps}
+    answer = (plan.get("result") or {}).get("answer") or {}
+    if answer.get("material"):
+        material = [ref for ref in answer["material"]
+                    if (parse_ref(ref) or ("", []))[0] not in gone]
+        amended["result"] = {**plan.get("result", {}), "answer": {**answer, "material": material}}
+    return amended
 
 
 class Planner:
@@ -100,51 +112,65 @@ class Planner:
         steps = raw["steps"]
         if not isinstance(steps, list) or not steps:
             raise ValueError("plan 'steps' must be a non-empty list")
+        # Today's plans (`capability`, `depends_on`) read as an IR with no
+        # args (dag/ir.py); a step with no id has its op's name, so a plan
+        # with none still refuses an op twice (0217).
+        try:
+            program = from_plan(raw)
+        except ValidationError as exc:
+            error = exc.errors()[0]
+            where = ".".join(str(part) for part in error["loc"])
+            raise ValueError(f"malformed plan at {where}: {error['msg']}") from None
 
         allowed = set(self.registry.names())
         seen: set[str] = set()
         dropped: set[str] = set()
-        cleaned: list[PlanStep] = []
-        for step in steps:
-            name = step.get("capability")
-            if name not in allowed:
-                raise ValueError(f"unknown capability: {name}")
-            # A step is known by its id, its capability's name when it gives
-            # none: so one capability may run as several steps only when each
-            # is told apart by an id — a plan with none, which is every plan
-            # the prompt asks for, still refuses a capability twice (0217).
-            sid = step.get("id") or name
-            if not isinstance(sid, str) or not _ID_RE.match(sid):
-                raise ValueError(f"bad step id for {name}: {sid!r}")
-            if sid in seen or sid in dropped:
-                raise ValueError(f"duplicate step id: {sid}")
-            deps = step.get("depends_on") or []
-            if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
-                raise ValueError(f"bad depends_on for {sid}")
-            if not self.registry.get(name).is_applicable(state):
-                dropped.add(sid)
+        kept: list[Step] = []
+        for step in program.steps:
+            if step.op not in allowed:
+                raise ValueError(f"unknown capability: {step.op}")
+            if step.id in seen or step.id in dropped:
+                raise ValueError(f"duplicate step id: {step.id}")
+            if not self.registry.get(step.op).is_applicable(state):
+                dropped.add(step.id)
                 continue
-            seen.add(sid)
-            cleaned.append({"id": sid, "capability": name, "depends_on": list(deps)})
+            seen.add(step.id)
+            kept.append(step)
 
-        # Prune depends_on entries that reference dropped (inapplicable) steps;
-        # references to steps absent from the plan altogether are still errors.
-        surviving = {step_id(s) for s in cleaned}
-        for s in cleaned:
-            kept: list[str] = []
-            for d in s["depends_on"]:
-                if d in surviving:
-                    kept.append(d)
-                elif d not in dropped:
-                    raise ValueError(f"depends_on references unknown step: {d}")
-            s["depends_on"] = kept
+        # `after` entries naming dropped (inapplicable) steps are pruned; a
+        # step absent from the program altogether is still an error, and so
+        # is a reference to a dropped step: its argument would have no value.
+        cleaned: list[Step] = []
+        for step in kept:
+            step = step.model_copy(update={"after": [d for d in step.after if d not in dropped]})
+            for dep in dependencies(step):
+                if dep in dropped:
+                    raise ValueError(f"{step.id} references {dep}, which cannot run here")
+                if dep not in seen:
+                    raise ValueError(f"depends_on references unknown step: {dep}")
+            cleaned.append(step)
 
-        # Kahn's algo for cycle detection
-        indeg = {step_id(s): len(s["depends_on"]) for s in cleaned}
-        adj: dict[str, list[str]] = {step_id(s): [] for s in cleaned}
-        for s in cleaned:
-            for d in s["depends_on"]:
-                adj[d].append(step_id(s))
+        # The answer's material names whole steps of the program (#230);
+        # a dropped one is pruned like `after`.
+        answer = program.result.answer
+        if answer.material is not None:
+            material = []
+            for ref in answer.material:
+                head, path = parse_ref(ref) or ("", [])
+                if head in dropped:
+                    continue
+                if head not in seen or path:
+                    raise ValueError(f"answer material must name a step of the program: {ref}")
+                material.append(ref)
+            answer = answer.model_copy(update={"material": material})
+
+        # Kahn's algo for cycle detection, over the derived dependencies
+        deps = {step.id: dependencies(step) for step in cleaned}
+        indeg = {sid: len(ds) for sid, ds in deps.items()}
+        adj: dict[str, list[str]] = {sid: [] for sid in deps}
+        for sid, ds in deps.items():
+            for d in ds:
+                adj[d].append(sid)
         queue = [n for n, d in indeg.items() if d == 0]
         visited = 0
         while queue:
@@ -164,7 +190,9 @@ class Planner:
         # it travels as an EMPTY PLAN, and `AgentBuilder._route_after_planner`
         # decides where that goes. The decision belongs to the path map, not
         # to a rescue hidden in here.
-        return Plan(steps=cleaned, rationale=str(raw.get("rationale", "")))
+        result = program.result.model_copy(update={"answer": answer})
+        stored = Program(steps=cleaned, result=result, rationale=program.rationale).stored()
+        return cast(Plan, stored)
 
     # -------- Node --------
 
