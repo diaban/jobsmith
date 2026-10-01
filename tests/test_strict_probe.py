@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from evals.strict_probe import judge, schema_of, strict
+from evals.strict_probe import REFUSED, degraded, judge, schema_of, strict
 
 PROGRAM = {"version": 1, "output": ["compare"], "steps": [
     {"id": "search", "op": "web_search", "args": {"query": "q"}},
@@ -63,3 +63,19 @@ def test_the_fallback_checks_the_arguments_it_left_unconstrained():
     assert judge("fallback", json.dumps({"version": 1, "steps": [step]}))[0] == "args"
     step["args_json"] = json.dumps({"query": "x"})
     assert judge("fallback", json.dumps({"version": 1, "steps": [step]}))[0] == "valid"
+
+
+def test_a_shared_step_leaves_the_op_and_args_pairing_to_the_analysis():
+    """`{material}` alone is a valid `args` shape, so the schema takes it for
+    `analyze`, which needs an instruction: Haiku wrote it 3 times in 40 (0219)."""
+    step = {"id": "a", "op": "analyze", "args": {"material": ["$input.notes"]}}
+    assert judge("shared", json.dumps({"version": 1, "steps": [step]}))[0] == "op_args"
+    step["op"] = "analysis"
+    assert judge("shared", json.dumps({"version": 1, "steps": [step]}))[0] == "valid"
+
+
+def test_degrading_moves_only_the_refused_keywords_and_keeps_pattern():
+    """Anthropic refuses bounds and `maxItems` but accepts `pattern` (0219)."""
+    text = json.dumps(degraded(strict(schema_of("full"))))
+    assert '"pattern"' in text
+    assert not any(f'"{key}"' in text for key in REFUSED)
