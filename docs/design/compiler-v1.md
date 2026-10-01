@@ -146,7 +146,9 @@ submit it in strict mode to Anthropic and to OpenAI, and record what is accepted
 refused, and the rate of programs valid on the first call. It covers `extract`'s
 `fields` form and the strict-mode normalisation of Pydantic's schemas (see "The registry"). **The fallback**, revised by
 the probe (0219): where a provider refuses a keyword, that keyword moves into the
-description and the analysis enforces it; the arguments stay in the schema. (The first
+description and the analysis enforces it, and a schema whose grammar a provider refuses
+as too large (Anthropic, on a step shape per op) gives every op one step shape, the op/args
+pairing left to the analysis; the arguments stay in the schema. (The first
 draft left arguments out; strict mode closes every object, so that meant arguments as a
 JSON string, which measured worse than no schema at all.) Where a provider accepts
 none, the planner writes JSON as today and the analysis carries it all. Either way the

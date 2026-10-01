@@ -7,20 +7,22 @@ before any product code depends on it (record 0219):
 1. **Acceptance.** The step-1 IR schema — the default registry's ops plus the
    1d kit (`analyze`, `extract` with its `fields` form, `synthesize`), each
    op's `args`, `$…` references, `map`, `when`, `output` — is written as
-   Pydantic models, then submitted twice: as Pydantic emits it, and through
-   `strict()`, the draft of the one normaliser 1c will ship. What a provider
-   refuses is its 400, recorded verbatim.
-2. **Validity on the first call**, three variants on one request set:
-   `full` (the schema above), `fallback` (op, ids, `map` and `when`
-   constrained; `args` a JSON string left to the analysis) and `plain`
-   (today's `json_object`). A program is valid when it parses against the IR
-   models AND passes the structural checks `findings()` runs (analysis checks
-   1 and 3: unique ids, references that resolve, `$item` only in a `map`,
-   `after`/`output` that name steps, no cycle). No repair: first call only.
+   Pydantic models and submitted in three forms: as Pydantic emits it,
+   through `strict()` (the draft of the one normaliser 1c will ship), and
+   `degraded` (0219's fallback: a keyword the provider refuses moves into the
+   description). What a provider refuses is its 400, recorded verbatim.
+2. **Validity on the first call**, on one request set, each constrained
+   variant in the first form its provider accepts: `full` (a step shape per
+   op, discriminated by `op`), `shared` (one step shape, `args` typed by shape,
+   the op/args pairing left to the analysis), `fallback` (`args` a JSON
+   string) and `plain` (today's `json_object`). A program is valid when it
+   parses against the IR models AND passes the structural checks
+   `findings()` runs (analysis checks 1 and 3: unique ids, references that
+   resolve, `$item` only in a `map`, `after`/`output` that name steps, no
+   cycle). No repair: first call only.
 
-For Anthropic, `--static` also reports what its SDK's `transform_schema`
-would move out of the grammar into a description (enforced client-side, not
-by decoding). `.env` is loaded; refused above `--max-calls` (default 300).
+`--static` also reports what Anthropic's SDK `transform_schema` would move
+out of the grammar. `.env` is loaded; refused above `--max-calls` (300).
 
     python -m evals.strict_probe --provider openai -n 4 --out probe.json
     python -m evals.strict_probe --provider anthropic -n 4   # needs a key
@@ -144,6 +146,27 @@ class Program(_Closed):
     output: list[Id] | None = None
 
 
+_ARGS = tuple(dict.fromkeys(model for _, model, _ in OPS))  # the 7 distinct shapes
+
+
+class SharedStep(_Closed):
+    """One step shape for every op: `args` is typed by shape, and which shape
+    goes with which op is left to the analysis (Anthropic refuses the
+    discriminated union as a grammar too large, 0219)."""
+    id: Id
+    op: Literal[OP_NAMES]  # type: ignore[valid-type]
+    args: Union[_ARGS]  # type: ignore[valid-type]  # noqa: UP007 — a runtime tuple
+    after: list[Id] = []
+    map: MapSpec | None = None
+    when: When | None = None
+
+
+class SharedProgram(_Closed):
+    version: Literal[1]
+    steps: Annotated[list[SharedStep], Field(min_length=1)]
+    output: list[Id] | None = None
+
+
 class LooseStep(_Closed):
     """The fallback: structure constrained, arguments a JSON-encoded string."""
     id: Id
@@ -185,8 +208,12 @@ def strict(schema: dict[str, Any]) -> dict[str, Any]:
     return walk(copy.deepcopy(schema))
 
 
+MODELS: dict[str, type[BaseModel]] = {
+    "full": Program, "shared": SharedProgram, "fallback": LooseProgram, "plain": Program}
+
+
 def schema_of(variant: str) -> dict[str, Any]:
-    return (Program if variant == "full" else LooseProgram).model_json_schema()
+    return MODELS[variant].model_json_schema()
 
 
 def schema_stats(schema: dict[str, Any]) -> dict[str, Any]:
@@ -305,19 +332,24 @@ def judge(variant: str, text: str) -> tuple[str, dict[str, Any] | None]:
     except json.JSONDecodeError:
         return "json", None
     try:
-        model = LooseProgram if variant == "fallback" else Program
-        program = model.model_validate(raw).model_dump(by_alias=True)
+        program = MODELS[variant].model_validate(raw).model_dump(by_alias=True)
     except ValidationError as exc:
         where = str(exc.errors()[0]["loc"])
         return ("args" if "args" in where else "schema"), raw
+    args_of = {name: model for name, model, _ in OPS}
     if variant == "fallback":
-        args_of = {name: model for name, model, _ in OPS}
         try:
             for step in program["steps"]:
                 step["args"] = args_of[step["op"]].model_validate_json(
                     step.pop("args_json")).model_dump()
         except ValidationError:
             return "args", raw
+    if variant == "shared":  # the pairing the schema left to the analysis
+        try:
+            for step in program["steps"]:
+                args_of[step["op"]].model_validate(step["args"])
+        except ValidationError:
+            return "op_args", raw
     codes = findings(program)
     return (codes[0] if codes else "valid"), program
 
@@ -394,7 +426,8 @@ REQUESTS: tuple[tuple[str, str], ...] = (
     ("control_file", "Summarise the file I gave you (source_files is set)."),
     ("control_prior", "Turn the result of my previous job into three bullet points."),
 )
-VARIANTS = ("full", "fallback", "plain")
+VARIANTS = ("full", "shared", "fallback", "plain")
+CONSTRAINED = VARIANTS[:-1]
 
 
 def response_format(provider: str, variant: str, schema: dict[str, Any]) -> dict[str, Any]:
@@ -429,7 +462,8 @@ class Caller:
             model=self.model, max_tokens=16000, system=system,
             messages=[{"role": "user", "content": user}], **fmt)
         text = "".join(b.text for b in r.content if b.type == "text")
-        return text, r.usage.output_tokens
+        from jobsmith.dag.clients import AnthropicLLMClient  # what the product parses
+        return AnthropicLLMClient._strip_fences(text), r.usage.output_tokens
 
 
 async def accepts(call: Caller, schema: dict[str, Any]) -> str:
@@ -442,7 +476,31 @@ async def accepts(call: Caller, schema: dict[str, Any]) -> str:
         return f"{type(exc).__name__}: {str(exc)[:600]}"
 
 
-async def measure(call: Caller, n: int, concurrency: int) -> dict[str, Any]:
+REFUSED = ("minimum", "maximum", "maxItems")  # by Anthropic, measured (0219)
+
+
+def degraded(schema: dict[str, Any]) -> dict[str, Any]:
+    """0219's fallback: a keyword the provider refuses moves into the
+    description (the analysis enforces it); `pattern` stays, it is accepted."""
+    def walk(node: Any) -> Any:
+        if isinstance(node, list):
+            return [walk(n) for n in node]
+        if not isinstance(node, dict):
+            return node
+        out = {k: walk(v) for k, v in node.items() if k not in REFUSED}
+        moved = {k: node[k] for k in REFUSED if k in node}
+        if moved:
+            out["description"] = (out.get("description", "") + f" {moved}").strip()
+        return out
+    return walk(schema)
+
+
+FORMS = {"pydantic": lambda v: schema_of(v), "strict": lambda v: strict(schema_of(v)),
+         "degraded": lambda v: degraded(strict(schema_of(v)))}
+
+
+async def measure(call: Caller, n: int, concurrency: int,
+                  forms: dict[str, str]) -> dict[str, Any]:
     gate = asyncio.Semaphore(concurrency)
     tally: dict[str, Counter] = {v: Counter() for v in VARIANTS}
     per_case: dict[str, dict[str, Counter]] = defaultdict(lambda: defaultdict(Counter))
@@ -450,7 +508,8 @@ async def measure(call: Caller, n: int, concurrency: int) -> dict[str, Any]:
     samples: dict[str, str] = {}
 
     async def one(variant: str, case: str, query: str) -> None:
-        fmt = response_format(call.provider, variant, strict(schema_of(variant)))
+        form = FORMS[forms.get(variant, "strict")](variant)
+        fmt = response_format(call.provider, variant, form)
         async with gate:
             start = time.monotonic()
             try:
@@ -466,15 +525,15 @@ async def measure(call: Caller, n: int, concurrency: int) -> dict[str, Any]:
         per_case[case][variant][verdict] += 1
         samples.setdefault(f"{variant}/{case}/{verdict}", text[:1500])
 
-    await asyncio.gather(*(one(v, c, q) for v in VARIANTS for c, q in REQUESTS
-                           for _ in range(n)))
+    await asyncio.gather(*(one(v, c, q) for v in VARIANTS if forms.get(v) != "refused"
+                           for c, q in REQUESTS for _ in range(n)))
     return {"tally": {v: dict(c) for v, c in tally.items()},
             "per_case": {c: {v: dict(t) for v, t in vs.items()} for c, vs in per_case.items()},
             "mean_seconds": {v: round(s / max(sum(tally[v].values()), 1), 1)
                              for v, (s, _) in cost.items()},
             "mean_output_tokens": {v: round(t / max(sum(tally[v].values()), 1))
                                    for v, (_, t) in cost.items()},
-            "samples": samples}
+            "forms": forms, "samples": samples}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -488,7 +547,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     report: dict[str, Any] = {"static": {}}
-    for variant in ("full", "fallback"):
+    for variant in CONSTRAINED:
         raw, normalised = schema_of(variant), strict(schema_of(variant))
         report["static"][variant] = {
             "pydantic": schema_stats(raw), "strict": schema_stats(normalised),
@@ -496,7 +555,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.static:
         if args.provider is None:
             parser.error("--provider is required unless --static")
-        calls = 4 + len(VARIANTS) * len(REQUESTS) * args.n
+        calls = len(CONSTRAINED) * len(FORMS) + len(VARIANTS) * len(REQUESTS) * args.n
         if calls > args.max_calls:
             parser.error(f"{calls} calls > --max-calls {args.max_calls}")
         from jobsmith.app.providers import load_dotenv
@@ -506,10 +565,13 @@ def main(argv: list[str] | None = None) -> int:
 
         async def run() -> None:
             report["acceptance"] = {
-                f"{variant}/{form}": await accepts(
-                    call, schema_of(variant) if form == "pydantic" else strict(schema_of(variant)))
-                for variant in ("full", "fallback") for form in ("pydantic", "strict")}
-            report["validity"] = await measure(call, args.n, args.concurrency)
+                f"{variant}/{form}": await accepts(call, build(variant))
+                for variant in CONSTRAINED for form, build in FORMS.items()}
+            ok = report["acceptance"]
+            forms = {v: next((f for f in ("strict", "degraded")
+                              if ok[f"{v}/{f}"] == "accepted"), "refused")
+                     for v in CONSTRAINED}
+            report["validity"] = await measure(call, args.n, args.concurrency, forms)
         asyncio.run(run())
     text = json.dumps(report, indent=1, ensure_ascii=False)
     if args.out:
