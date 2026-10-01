@@ -4,11 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **This file holds the rules; `docs/decisions/` holds why.** A rule that came out of a decision ends with `→ NNNN`, meaning `docs/decisions/NNNN-*.md`: the measurements, the alternatives that lost and why. Read the record before changing the rule; the index is `docs/decisions/README.md`. → 0102
 
-**Size budget: 40 000 characters** (≈ 10k tokens), enforced by `tests/test_claude_md_budget.py`. 40k — under a quarter of the pre-migration size — fits the code map and the rules, not narrative. When the test fails, move history into a record; do not raise the number. → 0102
+**Size budget: 40 000 characters** (≈ 10k tokens), enforced by `tests/test_claude_md_budget.py`. It fits the code map and the rules, not narrative. When the test fails, move history into a record; do not raise the number. → 0102
 
 ## Project overview
 
 `jobsmith` is a **job engine** (`jobsmith/engine/`) — the product since 2026-09-27: it runs any LangGraph graph as a durable, trackable, cancellable **Job** and delivers each ending exactly once to a return address (`reply_to`). → 0161. On top sits one **reference graph**, the planner DAG (`jobsmith/dag/`): a registry-driven planner emits a DAG of capabilities, a wave-based executor fans them out, a generation pipeline merges results. **`jobsmith/agents/` holds the agent definitions** (a capability pack + a profile — `default` and `banking` ship — **or a graph of its own**, `AgentDefinition.graph`: no DAG, no chat); **`jobsmith/app/`** composes any of them (`build_app(agent=...)`). The bench — `chat/`, `cli/`, `api/`, `tui/` — drives and tests the engine; it is not the differentiator.
+
+**Vocabulary: `docs/glossary.md`**, one name per concept; new text uses its terms. → 0228
 
 `README.md` is the human-facing counterpart of this file: product pitch, quickstart,
 CLI/API surface, limits. Keep it in sync when a command or a limit changes.
@@ -61,7 +63,7 @@ jobsmith --agent banking chat | serve # any agent, same shell
   **Gotchas**: a venv is path-specific — never symlink or copy one across worktrees; `.env`/`agent.db`/`artifacts/` are gitignored, so a fresh worktree has no API key until `make worktree` copies it. → 0000
 - `make coverage`: `cli/` and `chat/tools.py` are thin — a change there brings its tests. → 0000
 
-Leakage gates (`make leak-check`, must return nothing): no `banking|banquier|votre|analyste` in shared code, `agents/default`, `agents/base.py` or `evals/` — **not** `agents/banking`, which may be as domain-specific as it likes; no product word (`ENGINE_WORDS`) in `engine/` (G4). → 0161
+Leakage gates (`make leak-check`, must return nothing): no `banking|banquier|votre|analyste` in shared code, `agents/default`, `agents/base.py` or `evals/` — **not** `agents/banking`; no product word (`ENGINE_WORDS`) in `engine/` (G4). → 0161
 
 ### The inbound port (`service.py`)
 

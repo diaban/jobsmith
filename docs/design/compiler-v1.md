@@ -13,7 +13,11 @@ hypothesis with its fallback, and two holes in the IR's semantics (`output` abse
 and references). Extended 2026-09-30 with "Primitives v1", after a second outside review
 on which ops the IR connects; then, after a third, the planner asks for a type through a
 closed form (`fields`, `schema_name`), never a JSON Schema, and Pydantic replaces the
-home-made checker.
+home-made checker. Revised 2026-10-01 after the strict-mode probe (0219) and a decision
+with the owner on who owns the deliverable (0228): everything is a step; a program has a
+`result` whose slots the compiler generates and the planner fills; every model-calling
+step gets an instruction written for it; the framework stays chat-agnostic (see "What a
+program delivers"). Vocabulary: `docs/glossary.md`.
 
 ## Why
 
@@ -165,7 +169,10 @@ program" against ReAct, not "a closed language" against ReAct.
    {"id": "compare", "op": "synthesize",
     "args": {"items": ["$reads"], "instruction": "Compare the repositories on purpose and activity."}}
  ],
- "output": "compare"}
+ "result": {
+   "answer": {"mode": "reply",
+              "instruction": "Say which repository is the project's and why, in a few sentences.",
+              "material": ["$compare"]}}}
 ```
 
 - **A step** is `id` (`^[a-z][a-z0-9_]*$`, unique in the program), `op` (a registered
@@ -176,15 +183,24 @@ program" against ReAct, not "a closed language" against ReAct.
   reference is a whole argument value; there is no string interpolation (`"see $x"` is a
   literal). Dependencies are **derived** from references plus `after`; the planner no
   longer writes `depends_on`, which removes a class of inconsistent plans.
-- **`output`**, optional, is a list of step ids that **restricts** the answer material to
-  their results (a `map` step's instances in item order). **Absent, the material is every
-  successful result, in program order**:
-  today's behaviour, where `ContextMerger.run` (`dag/generation.py`) merges all of them,
-  not the last one. (A first draft said "absent ⇒ the last step": a default-agent plan
+- **`result`** holds the **result slots**: the steps that produce the job result, which
+  the compiler generates (see "What a program delivers"). Each slot has an `instruction`
+  and a `material`: a list of references (a `map` step's instances in item order), or
+  `null` for **every successful work step result, in program order**: today's behaviour,
+  where `ContextMerger.run` (`dag/generation.py`) merges all of them, not the last one.
+  (A first draft had an `output` field, "absent ⇒ the last step": a default-agent plan
   would then have handed generation the critique alone, a silent regression the
-  structural evals might not catch.)
-- **`instruction`** is not special: it is a string argument that ops calling a model
-  declare in their input schema. An op that is deterministic has none.
+  structural evals might not catch.) A work step may not reference a result slot; a slot
+  may reference another (a brief presents the deliverable it references), acyclically.
+- **`instruction`** is a string argument of every op that calls a model, and of every
+  result slot: what *that* step must do, written by the planner for it. It is the
+  content; the form is the profile's (how a brief or a deck is written). A step receives
+  the request only as **background**, marked as such ("the request this job serves; your
+  task is the instruction"): 0004's guard against a rewrite that drifts. Today every
+  component reads the raw request and tries to answer all of it; 0129 is the symptom
+  (`analysis` read "deck" and designed slides, 8 times in 8). The planner's prompt says
+  an instruction states what this step must do, never the whole request, and the probe
+  measures how much of the request each instruction copies. A deterministic op has none.
 - **`when`** (step 3, reserved in v1's schema): `{"ref": "$triage.kind", "in": ["a",
   "b"]}`. A step whose condition is false is **skipped**. The value must be typed by an
   `enum` in the producer's output schema, so the branch set is closed. No `else`: two
@@ -223,6 +239,74 @@ arithmetic. The day a program needs one, it is a sign the step belongs inside a 
   (`reads[0..5]` done ⇒ `reads[6..8]` sent); progress reads `6/9` from the facts.
 - **No nested `map`.** A body is one op.
 - A "reduce" is not an operator: it is an ordinary step whose input is `array<U>`.
+
+## What a program delivers: the result
+
+**Everything is a step** (0228): the answer and the deliverables are steps of the
+program, with ids, references, waves, usage and retries like any other. They are not
+written by the planner, though: what a job must produce is known before planning, so the
+compiler **generates the result slots** and the planner fills only what is a real choice,
+each slot's `instruction` and `material`. Strict mode makes every key of an object
+required (0219), so a slot in the schema is a slot in the program: no "contains an
+answer" check, no repair for a missing one. The schema is generated per job; the
+combinations are few (a mode times a set of deliverables), so a provider's schema cache
+still serves, and a slot adds little grammar (Anthropic takes `shared`, 0219).
+
+What a job produces:
+
+- **The answer**, a text for a human, in one of two modes: **reply** (the answer is the
+  response; a file that is the answer is a rendering of it, 0126) or **brief** (an
+  account of the job that presents its deliverables; `BRIEF_RULE` is its seed). A
+  refusal (0059, `unanswered`) is an outcome of the answer op, not a route.
+- **Deliverables**: **authored**, designed by a model **from the material** for their own
+  audience, a sibling of the answer and not a serialization of it (the slide deck: 0035
+  and 0129 hold, its owner changes); **rendered**, a deterministic formatting of an
+  existing text in a **format** (`markdown`, `html`, `pdf`: today's Reporters), which the
+  compiler appends and the planner never sees.
+- **A typed object** (an `extract` to a `schema_name`), for a caller that wants data and
+  no prose.
+
+**The framework stays chat-agnostic** (the owner, 2026-10-01: "it is its value"). The
+engine already is (G4); the compiler is not yet, at three places: every job ends with
+prose, the requirements are read from prose (`document_intent`), and the conversation
+excerpt is a compiler input. The target is a **result contract** declared by the caller
+(text with its mode, an object, deliverables, formats); the slots are generated from it.
+A conversation is one caller: its adapter infers the contract from the request, which is
+today's `document_intent` moved to the conversation's side; an API caller declares it.
+
+A conversation, "make a short deck comparing TCP and UDP for real-time games"; the
+adapter infers `{"text": {"mode": "brief"}, "authored": ["deck"]}`, and the planner
+writes:
+
+```json
+{"version": 1,
+ "steps": [
+   {"id": "compare", "op": "analyze",
+    "args": {"material": [],
+             "instruction": "Compare TCP and UDP for real-time games: latency, reliability, head-of-line blocking, what engines use."}}],
+ "result": {
+   "deck":   {"instruction": "5 slides for game developers, one criterion each, the recommendation last.",
+              "material": ["$compare"]},
+   "answer": {"mode": "brief",
+              "instruction": "State the recommendation in two sentences, then present the deck.",
+              "material": ["$compare", "$deck"]}}}
+```
+
+An API caller that declares `{"object": {"schema_name": "RepoFacts", "many": true}}` gets
+a program whose only slot is `"object": {"instruction": "One entry per repository named
+jobsmith; skip forks.", "material": ["$reads"]}`, run as `extract(material,
+schema_name="RepoFacts")`, and its webhook receives the object (#225, #226): no prose.
+
+A direct answer is `"steps": []` with one `answer` slot, so the triage node can go: one
+fixed model call less on the planned route.
+
+**When.** Step 1c introduces `result` with a single `answer` slot in reply mode, today's
+behaviour, so the program format is fixed early and a calibrated program stored on disk
+(step 5) survives the contract. The contract itself is step R (see "Order"). Open, for
+step R: the mode of a deck request by default (today the full written answer comes with
+the deck; brief would present it instead), and whether an authored deliverable runs
+beside the answer (no added latency, a refusal not filtered, as today) or after its
+verdict (one call more).
 
 ## The registry: one notion of a step
 
@@ -414,8 +498,13 @@ order, each under the step id it came from: this is what replaces `UPSTREAM`.
   coupling ends there, not through the by-op fallback of step 0, which then only has to
   last until step 1.
 - `research` becomes the agent op (step 4).
-- `slide_deck` and the document writers stay end-of-run steps of the default agent,
-  outside the planner's vocabulary, unless a measured task shows otherwise.
+- `slide_deck` becomes the op of an **authored-deliverable slot** (`deck`), outside the
+  work ops `steps` may name, reading the material as today (0129); until step R it stays
+  the work step it is. The step 1a probe included it as a work op, against this line,
+  and the deck request then caused 14 of the 35 failures (0219).
+- The writing pipeline (`merge_results` → `generation` → `validate_output` → `refine`)
+  becomes the **answer op**, its validation loop internal to it; the Reporters become
+  **rendered-deliverable** ops the compiler appends.
 
 ### Not now
 
@@ -441,8 +530,9 @@ code, not the wording (0110).
    argument): each reference's schema, followed down its field path, is assignable to the
    argument's schema.
 5. **`map`**: `over` is an array, `max_items` present and within caps, not nested.
-6. **Output reachable**: `output` exists; a step that feeds nothing and has no effect is
-   a finding (dropped, not an error).
+6. **Result reachable**: every reference of a result slot resolves; no work step
+   references a result slot; a work step that feeds nothing and has no effect is a
+   finding (dropped, not an error).
 7. **Cost bounded**: Σ over steps of cost class × width (`max_items` for a map) is within
    the profile's budget.
 8. **Effects policy**: as above.
@@ -474,10 +564,10 @@ recomputes the ready steps each wave, and Sends them. It evolves:
   `max_step_retries` (0191): a model may well match on the second call;
 - a `map` step expands into its instances, within `concurrency`;
 - retries are counted per id, `_APPENDED` (0194) still stripped from what is Sent;
-- the answer material (every successful result in program order, or `output`'s
-  restriction) feeds the generation pipeline, which stays as it is
-  (`merge_results` → `generation` → `validate_output` → …): the compiler changes how
-  material is gathered, not how the deliverable is written.
+- the answer slot's material (every successful work step result in program order, or
+  the slot's references) feeds the generation pipeline, which stays as it is until step
+  R (`merge_results` → `generation` → `validate_output` → …), now told the slot's
+  instruction.
 
 The `plan` fact publishes the program (with `version` and a `revision`, see below). The
 DAG view derives what it shows today from it; the HTTP shape changes additively (`id`,
@@ -560,8 +650,10 @@ that changes the planner's output), G3 and G4 unchanged.
   refused; every existing test passes with plans that have no ids.
 - **C1, references.** A step's argument comes from a reference; a type mismatch is a
   finding before any step runs; a planner that fixes it on the second call runs; one that
-  never does fails as today. A default-agent program with no `output` hands generation
-  every successful result, as today (asserted on `merged_context`). An `LlmOp` answer
+  never does fails as today. A default-agent program whose answer slot has `material:
+  null` hands generation every successful result, as today (asserted on
+  `merged_context`); a program without an `answer` slot cannot be written (the schema
+  requires it). An `LlmOp` answer
   that does not match its type is retried, then fails the step.
 - **C2, map.** 9 items ⇒ 9 instances, never more than `concurrency` in flight; the job
   killed after instance 6 resumes with 3 sends (counted); a list over `max_items` is cut
@@ -597,13 +689,18 @@ step 1 on, each PR carries its `make compare` table (0208).
    - 0d: `usage_scope` in the engine (settled point 1), then the ban moved to ids.
 1. **Minimal IR** (C1).
    - 1a: the strict-mode probe (see "The IR"), a measurement and a record, no product
-     code: per provider, full constraint, the fallback, or plain JSON.
-   - 1b: the IR as Pydantic models (`Program`, `Step`, references, `output`); `OpSpec`
+     code: per provider, full constraint, the fallback, or plain JSON. Done (0219):
+     `full` on OpenAI, `shared` where the grammar is refused (Anthropic).
+   - 1b: the IR as Pydantic models (`Program` with `steps` and `result`, `Step`,
+     references); `OpSpec`
      (with `output_from`) and `Effects` declared, not yet enforced; binding schemas;
      the interpreter resolves references; today's plans read as an IR with no args.
    - 1c: the planner writes the IR, constrained as 1a chose: the strict-mode
      normaliser, schema support in `dag/clients.py`, `KeywordLLM`; analysis checks 1-4
-     and 6; repair.
+     and 6; repair, measured after repair as well as on the first call; `result` with
+     one `answer` slot (reply); an instruction on every model-calling step, the request
+     passed as background, the overlap measured at the `analysis` node
+     (`evals/probes/analysis.json`, 0129's case as a control).
    - 1d: primitives `analyze`, `extract` (`fields`, `schema_name`) and `synthesize`;
      `analysis` and `critique` re-expressed as instances of `analyze`; the retrieval
      capabilities take the one item shape.
@@ -626,6 +723,17 @@ step 1 on, each PR carries its `make compare` table (0208).
    - 5a: a program supplied at entry passes the planner with no call (loading,
      `params`, version).
    - 5b: `jobsmith program export <job_id> NAME`.
+
+R. **The result contract** (chat-agnostic, 0228), after step 1, in the order the owner
+   chooses.
+   - Ra: the contract on the job's input, declared by an API caller (with #225 and
+     #226: the webhook reachable, its payload carrying the files) or inferred by the
+     conversation's adapter (`document_intent` moved there, its rules 0061, 0096, 0125
+     kept and re-probed); the result slots generated from it; a direct answer as
+     `"steps": []`, the triage node removed.
+   - Rb: the answer op (the writing pipeline, reply and brief); `slide_deck` as an
+     authored-deliverable slot; the Reporters as rendered deliverables the compiler
+     appends; the typed-object slot.
 
 A decision record is written by each step that takes a decision (CLAUDE.md), and one
 record for the compiler as a whole when step 5 lands, as 0161 did for core v1.
@@ -654,6 +762,28 @@ record for the compiler as a whole when step 5 lands, as 0161 did for core v1.
    live on the job's record, which is the engine's: later.
 5. **The superstep barrier is accepted** in v1; the latency measurement decides on a
    sliding window.
+
+## Settled with the owner (2026-10-01, after the strict-mode probe)
+
+Recorded in 0228; "What a program delivers" is their design.
+
+6. **Everything is a step**: the answer and the deliverables are steps of the program.
+   **The compiler generates the result slots**, the planner fills each one's
+   `instruction` and `material`; it never decides whether a slot exists. Rejected: the
+   planner writing the mandatory steps, checked by the analysis, repaired, and appended
+   by the compiler as a last resort (the planner would rewrite facts already known, the
+   only room it leaves being for errors); a body written by the planner and a tail
+   appended after it (the deliverable stays outside the program, so nothing in it can be
+   referenced, and the answer cannot present it); a reserved `$answer`.
+7. **Every model-calling step gets an instruction written for it**; the request reaches a
+   step only as marked background.
+8. **The framework stays chat-agnostic**: the target is a result contract declared by the
+   caller, the conversation being one caller whose adapter infers it. 1c fixes the
+   program format with a single `answer` slot so the contract changes the slots, not the
+   format.
+9. **An authored deliverable is written from the material**, a sibling of the answer,
+   each calibrated by the profile for its audience. Rejected: the deck written from the
+   answer (it can say no more than the answer, and a short answer makes a thin deck).
 
 ## Later
 
